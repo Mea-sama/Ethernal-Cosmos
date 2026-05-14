@@ -1,0 +1,8 @@
+{
+	"status": "valid",
+	"contact": [
+		"mailto:admin@mea-sama.duckdns.org"
+	],
+	"termsOfServiceAgreed": true,
+	"location": "https://acme-v02.api.letsencrypt.org/acme/acct/3325027926"
+}

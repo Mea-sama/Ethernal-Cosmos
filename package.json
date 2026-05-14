@@ -1,0 +1,20 @@
+{
+  "name": "ethernal-cosmos",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "shared",
+    "server",
+    "sdk"
+  ],
+  "scripts": {
+    "dev:server": "npm run dev --workspace=server",
+    "build:shared": "npm run build --workspace=shared",
+    "build:server": "npm run build --workspace=server",
+    "build:sdk": "npm run build --workspace=sdk",
+    "build": "npm run build:shared && npm run build:server && npm run build:sdk"
+  },
+  "devDependencies": {
+    "ts-node": "^10.9.2"
+  }
+}

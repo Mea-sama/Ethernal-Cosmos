@@ -1,0 +1,610 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>TicTacToe — Ethernal Cosmos</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #0d0d1a;
+      color: #e0e0f0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 1.5rem 1rem 3rem;
+      gap: 1rem;
+    }
+
+    h1 { font-size: 1.6rem; color: #a78bfa; letter-spacing: .05em; }
+
+    #status {
+      font-size: .9rem;
+      color: #94a3b8;
+      min-height: 1.4rem;
+      text-align: center;
+      padding: .25rem .75rem;
+      border-radius: 999px;
+      background: #1a1a2e;
+      border: 1px solid #2d2d5a;
+    }
+    #status.ok   { color: #6ee7b7; border-color: #065f46; }
+    #status.err  { color: #f87171; border-color: #7f1d1d; }
+    #status.warn { color: #fbbf24; border-color: #78350f; }
+
+    .screen {
+      width: 100%;
+      max-width: 360px;
+      display: flex;
+      flex-direction: column;
+      gap: .9rem;
+    }
+
+    .btn {
+      background: #7c3aed;
+      color: #fff;
+      border: none;
+      border-radius: 10px;
+      padding: .85rem 1.5rem;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background .15s, opacity .15s;
+      width: 100%;
+    }
+    .btn:hover:not(:disabled) { background: #6d28d9; }
+    .btn:disabled { opacity: .4; cursor: default; }
+    .btn.ghost {
+      background: transparent;
+      border: 1px solid #4c1d95;
+      color: #c4b5fd;
+    }
+    .btn.ghost:hover:not(:disabled) { background: #1e1e3a; }
+
+    .code-input {
+      background: #1a1a2e;
+      border: 1px solid #4c1d95;
+      border-radius: 8px;
+      padding: .75rem 1rem;
+      color: #e0e0f0;
+      font-size: 1.4rem;
+      font-weight: 700;
+      width: 100%;
+      text-align: center;
+      letter-spacing: .3em;
+      text-transform: uppercase;
+    }
+    .code-input:focus { outline: none; border-color: #7c3aed; }
+    .code-input::placeholder { color: #475569; font-size: 1rem; font-weight: 400; letter-spacing: .05em; }
+
+    /* Login / Register */
+    .field { display: flex; flex-direction: column; gap: .4rem; }
+    .field label { font-size: .8rem; color: #94a3b8; text-transform: uppercase; letter-spacing: .08em; }
+    .field input {
+      background: #1a1a2e;
+      border: 1px solid #4c1d95;
+      border-radius: 8px;
+      padding: .75rem 1rem;
+      color: #e0e0f0;
+      font-size: 1rem;
+      width: 100%;
+    }
+    .field input:focus { outline: none; border-color: #7c3aed; }
+    .tab-bar { display: flex; gap: .5rem; margin-bottom: .5rem; }
+    .tab-bar button {
+      flex: 1; background: transparent; border: 1px solid #4c1d95;
+      border-radius: 8px; padding: .5rem; color: #94a3b8;
+      font-size: .9rem; cursor: pointer; transition: all .15s;
+    }
+    .tab-bar button.active { background: #7c3aed; border-color: #7c3aed; color: #fff; font-weight: 600; }
+
+    .divider {
+      display: flex;
+      align-items: center;
+      gap: .75rem;
+      color: #475569;
+      font-size: .8rem;
+    }
+    .divider::before, .divider::after {
+      content: '';
+      flex: 1;
+      height: 1px;
+      background: #2d2d5a;
+    }
+
+    /* Code display box */
+    .code-box {
+      background: #1a1a2e;
+      border: 2px solid #7c3aed;
+      border-radius: 14px;
+      padding: 1.5rem;
+      text-align: center;
+    }
+    .code-box .label { font-size: .75rem; color: #94a3b8; text-transform: uppercase; letter-spacing: .12em; margin-bottom: .5rem; }
+    .code-box .code  { font-size: 2.8rem; font-weight: 900; color: #a78bfa; letter-spacing: .3em; line-height: 1; }
+    .code-box .hint  { font-size: .8rem; color: #64748b; margin-top: .6rem; }
+
+    /* Game — player cards */
+    .players {
+      display: flex;
+      align-items: center;
+      gap: .75rem;
+    }
+    .p-card {
+      flex: 1;
+      background: #1a1a2e;
+      border: 2px solid transparent;
+      border-radius: 12px;
+      padding: .7rem .5rem;
+      text-align: center;
+      transition: border-color .2s;
+      min-width: 0;
+    }
+    .p-card.active { border-color: #7c3aed; }
+    .p-card .sym  { font-size: 1.6rem; font-weight: 900; line-height: 1; }
+    .p-card .name { font-size: .7rem; color: #94a3b8; margin-top: .25rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .p-card.x .sym { color: #60a5fa; }
+    .p-card.o .sym { color: #f472b6; }
+    .vs { color: #475569; font-weight: 700; flex-shrink: 0; }
+
+    #turn {
+      text-align: center;
+      font-size: .9rem;
+      font-weight: 600;
+      min-height: 1.4rem;
+      color: #94a3b8;
+    }
+
+    /* Board */
+    #board {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 7px;
+      width: 100%;
+      max-width: 300px;
+      margin: 0 auto;
+    }
+    .cell {
+      aspect-ratio: 1;
+      background: #1a1a2e;
+      border: 2px solid #2d2d5a;
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 2.4rem;
+      font-weight: 900;
+      cursor: pointer;
+      transition: background .12s, border-color .15s;
+      user-select: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .cell:hover:not(.taken):not(.off) { background: #21213d; }
+    .cell.taken, .cell.off { cursor: default; }
+    .cell.x { color: #60a5fa; }
+    .cell.o { color: #f472b6; }
+    .cell.win { background: #1e1b4b; border-color: #7c3aed; }
+
+    /* Result */
+    #result-box {
+      background: #1e1b4b;
+      border: 1px solid #7c3aed;
+      border-radius: 14px;
+      padding: 1.2rem;
+      text-align: center;
+    }
+    #result-box .rt  { font-size: 1.4rem; font-weight: 800; margin-bottom: .75rem; }
+    #result-box .win  { color: #6ee7b7; }
+    #result-box .lose { color: #f87171; }
+    #result-box .draw { color: #fbbf24; }
+
+    .small { font-size: .8rem; color: #64748b; text-align: center; }
+  </style>
+</head>
+<body>
+  <h1>✕ TicTacToe ○</h1>
+  <div id="status">Verbinde...</div>
+
+  <!-- ── Login / Register screen ── -->
+  <div class="screen" id="s-auth">
+    <div class="tab-bar">
+      <button id="tab-login" class="active" onclick="switchTab('login')">Anmelden</button>
+      <button id="tab-reg" onclick="switchTab('reg')">Registrieren</button>
+    </div>
+    <div class="field">
+      <label>Benutzername</label>
+      <input id="auth-user" type="text" autocomplete="username" placeholder="dein_name">
+    </div>
+    <div class="field">
+      <label>Passwort</label>
+      <input id="auth-pass" type="password" autocomplete="current-password" placeholder="••••••••">
+    </div>
+    <button class="btn" id="btn-auth" onclick="doAuth()">Anmelden</button>
+    <p class="small" id="auth-err" style="color:#f87171;min-height:1.2rem"></p>
+  </div>
+
+  <!-- ── Lobby screen ── -->
+  <div class="screen" id="s-lobby" style="display:none">
+    <button class="btn" id="btn-create" onclick="createGame()">Neues Spiel erstellen</button>
+    <div class="divider">oder beitreten</div>
+    <input class="code-input" id="code-in" maxlength="6" placeholder="Code eingeben"
+           oninput="this.value=this.value.toUpperCase().replace(/[^A-Z0-9]/g,'')">
+    <button class="btn ghost" id="btn-join" onclick="joinGame()">Beitreten</button>
+  </div>
+
+  <!-- ── Waiting screen (host) ── -->
+  <div class="screen" id="s-wait" style="display:none">
+    <div class="code-box">
+      <div class="label">Einladungscode</div>
+      <div class="code" id="invite-code">——</div>
+      <div class="hint">Teile diesen Code mit deinem Gegner</div>
+    </div>
+    <button class="btn ghost" onclick="copyCode()">📋 Code kopieren</button>
+    <p class="small" id="wait-msg">Warte auf Gegner...</p>
+    <button class="btn ghost" onclick="leaveGame()">Abbrechen</button>
+  </div>
+
+  <!-- ── Game screen ── -->
+  <div class="screen" id="s-game" style="display:none">
+    <div class="players">
+      <div class="p-card x" id="card-x">
+        <div class="sym">✕</div>
+        <div class="name" id="name-x">—</div>
+      </div>
+      <div class="vs">VS</div>
+      <div class="p-card o" id="card-o">
+        <div class="sym">○</div>
+        <div class="name" id="name-o">—</div>
+      </div>
+    </div>
+
+    <div id="turn"></div>
+    <div id="board"></div>
+    <div id="result-box" style="display:none"></div>
+    <button class="btn ghost" style="margin-top:.25rem" onclick="leaveGame()">Spiel verlassen</button>
+  </div>
+
+  <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+  <script src="/assets/panel.js"></script>
+  <script>
+  const ETHERNAL = 'https://mea-sama.duckdns.org:12346';
+
+  // ── State ────────────────────────────────────────────────────────────────
+  let token = null, refreshToken = null, myUserId = null, myUsername = null, socket = null;
+  let lobbyId = null, mySymbol = null;
+  let board = Array(9).fill(null);
+  let currentTurn = 'X';
+  let gameActive = false;
+  let pNames = { X: '?', O: '?' };
+  let authMode = 'login'; // 'login' | 'reg'
+
+  // ── UI helpers ────────────────────────────────────────────────────────────
+  function setStatus(msg, cls = '') {
+    const el = document.getElementById('status');
+    el.textContent = msg; el.className = cls;
+  }
+  function show(name) {
+    ['auth','lobby','wait','game'].forEach(s =>
+      document.getElementById('s-' + s).style.display = s === name ? '' : 'none'
+    );
+  }
+
+  // Panel-Logout: Spiel aufräumen wenn User sich über das Panel abmeldet
+  window.addEventListener('ethernal:logout', () => {
+    if (socket) { socket.disconnect(); socket = null; }
+    lobbyId = null; mySymbol = null; gameActive = false;
+    token = null; refreshToken = null; myUserId = null; myUsername = null;
+    document.getElementById('code-in').value = '';
+    show('auth');
+    setStatus('Abgemeldet', 'warn');
+  });
+  function switchTab(mode) {
+    authMode = mode;
+    document.getElementById('tab-login').classList.toggle('active', mode === 'login');
+    document.getElementById('tab-reg').classList.toggle('active', mode === 'reg');
+    document.getElementById('btn-auth').textContent = mode === 'login' ? 'Anmelden' : 'Registrieren';
+    document.getElementById('auth-pass').autocomplete = mode === 'login' ? 'current-password' : 'new-password';
+    document.getElementById('auth-err').textContent = '';
+  }
+
+  // ── Auth ─────────────────────────────────────────────────────────────────
+  async function doAuth() {
+    const username = document.getElementById('auth-user').value.trim();
+    const password = document.getElementById('auth-pass').value;
+    const errEl = document.getElementById('auth-err');
+    errEl.textContent = '';
+    if (!username || !password) { errEl.textContent = 'Benutzername und Passwort erforderlich.'; return; }
+
+    const endpoint = authMode === 'login' ? '/auth/login' : '/auth/register';
+    document.getElementById('btn-auth').disabled = true;
+    try {
+      const r = await fetch(ETHERNAL + endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password }),
+      });
+      const d = await r.json();
+      if (!r.ok) {
+        errEl.textContent = d.error ?? (authMode === 'login' ? 'Anmeldung fehlgeschlagen.' : 'Registrierung fehlgeschlagen.');
+        return;
+      }
+      token = d.accessToken;
+      refreshToken = d.refreshToken;
+      myUserId = d.user.id;
+      myUsername = d.user.username;
+      // In sessionStorage ablegen → Hub-Seite kann Logout anbieten
+      sessionStorage.setItem('ec_token',   token);
+      sessionStorage.setItem('ec_refresh', refreshToken);
+      sessionStorage.setItem('ec_user',    myUsername);
+      sessionStorage.setItem('ec_userId',  myUserId);
+      window.EthernalPanel?.setContext({ gameTitle: 'TicTacToe' });
+      setStatus('Verbinde...');
+      connectSocket();    } catch (e) {
+      errEl.textContent = 'Verbindungsfehler: ' + e.message;
+    } finally {
+      document.getElementById('btn-auth').disabled = false;
+    }
+  }
+
+  async function logout() {
+    if (socket) { socket.disconnect(); socket = null; }
+    if (refreshToken) {
+      try {
+        await fetch(ETHERNAL + '/auth/logout', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+          body: JSON.stringify({ refreshToken }),
+        });
+      } catch (_) {}
+    }
+    token = null; refreshToken = null; myUserId = null; myUsername = null;
+    sessionStorage.removeItem('ec_token');
+    sessionStorage.removeItem('ec_refresh');
+    sessionStorage.removeItem('ec_user');
+    sessionStorage.removeItem('ec_userId');
+    lobbyId = null; mySymbol = null; gameActive = false;
+    window.EthernalPanel?.setLobby(null);
+    window.EthernalPanel?.clearActions();
+    document.getElementById('auth-user').value = '';
+    document.getElementById('auth-pass').value = '';
+    document.getElementById('auth-err').textContent = '';
+    document.getElementById('code-in').value = '';
+    setStatus('Abgemeldet', 'warn');
+    show('auth');
+  }
+
+  // ── Socket ───────────────────────────────────────────────────────────────
+  function connectSocket() {
+    socket = io(ETHERNAL, { auth: { token: 'Bearer ' + token } });
+
+    socket.on('connect', () => {
+      setStatus('Bereit ✓', 'ok');
+      show('lobby');
+    });
+    socket.on('disconnect',    () => setStatus('Verbindung getrennt', 'warn'));
+    socket.on('connect_error', async e => {
+      if (e.message === 'INVALID_TOKEN' && refreshToken) {
+        // Access-Token abgelaufen – versuche mit Refresh-Token zu erneuern
+        try {
+          const resp = await fetch(ETHERNAL + '/auth/refresh', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ refreshToken }),
+          });
+          if (resp.ok) {
+            const d = await resp.json();
+            token = d.accessToken;
+            refreshToken = d.refreshToken;
+            sessionStorage.setItem('ec_token',   token);
+            sessionStorage.setItem('ec_refresh', refreshToken);
+            socket.auth = { token: 'Bearer ' + token };
+            socket.connect();
+            return;
+          }
+        } catch (_) {}
+        // Refresh fehlgeschlagen → Sitzung löschen, neu anmelden
+        token = null; refreshToken = null; myUserId = null; myUsername = null;
+        sessionStorage.removeItem('ec_token');
+        sessionStorage.removeItem('ec_refresh');
+        sessionStorage.removeItem('ec_user');
+        sessionStorage.removeItem('ec_userId');
+        setStatus('Sitzung abgelaufen – bitte erneut anmelden', 'warn');
+        show('auth');
+      } else if (e.message === 'ALREADY_CONNECTED') {
+        setStatus('Bereits auf einem anderen Gerät angemeldet', 'err');
+        show('auth');
+      } else {
+        setStatus('Verbindungsfehler: ' + e.message, 'err');
+      }
+    });
+    socket.on('error',         m => setStatus(m, 'err'));
+
+    socket.on('lobbyCreated', lobby => {
+      lobbyId = lobby.id;
+      document.getElementById('invite-code').textContent = lobby.inviteCode ?? '???';
+      window.EthernalPanel?.setLobby(lobby.id);
+      show('wait');
+    });
+
+    socket.on('lobbyUpdated', lobby => {
+      lobbyId = lobby.id;
+      window.EthernalPanel?.setLobby(lobby.id);
+      if (lobby.players.length === 2) startGame(lobby);
+    });
+
+    socket.on('message', ({ type, payload }) => {
+      if (!gameActive) return;
+      if (type === 'move')  handleOpponentMove(payload.cell);
+      if (type === 'reset') resetBoard();
+    });
+
+    socket.on('playerLeft', () => {
+      if (gameActive) { gameActive = false; setStatus('Gegner hat das Spiel verlassen', 'warn'); }
+    });
+  }
+
+  // ── Create / Join ─────────────────────────────────────────────────────────
+  function createGame() {
+    socket.emit('createLobby', { gameId: 'tictactoe', name: 'TicTacToe von ' + myUsername, isPrivate: true });
+  }
+
+  function joinGame() {
+    const code = document.getElementById('code-in').value.trim().toUpperCase();
+    if (code.length !== 6) { setStatus('6-stelligen Code eingeben', 'warn'); return; }
+    socket.emit('joinLobbyByCode', { code });
+  }
+
+  function copyCode() {
+    const code = document.getElementById('invite-code').textContent;
+    navigator.clipboard?.writeText(code)
+      .then(() => setStatus('Code kopiert!', 'ok'))
+      .catch(() => setStatus('Code: ' + code, 'ok'));
+  }
+
+  // ── Start game ────────────────────────────────────────────────────────────
+  function startGame(lobby) {
+    const me = lobby.players.find(p => p.userId === myUserId);
+    mySymbol = me?.isHost ? 'X' : 'O';
+    pNames.X = lobby.players.find(p => p.isHost)?.username  ?? '?';
+    pNames.O = lobby.players.find(p => !p.isHost)?.username ?? '?';
+    document.getElementById('name-x').textContent = pNames.X;
+    document.getElementById('name-o').textContent = pNames.O;
+    resetBoard();
+    show('game');
+    setStatus('Spiel läuft!', 'ok');
+
+    // Spielspezifische Panel-Aktionen registrieren
+    window.EthernalPanel?.clearActions();
+    window.EthernalPanel?.registerAction({
+      id: 'leave',
+      label: 'Spiel verlassen',
+      icon: '🚪',
+      style: 'danger',
+      onClick: leaveGame,
+    });
+  }
+
+  // ── Board ─────────────────────────────────────────────────────────────────
+  function resetBoard() {
+    board = Array(9).fill(null);
+    currentTurn = 'X';
+    gameActive = true;
+    document.getElementById('result-box').style.display = 'none';
+    render([]);
+    updateTurn();
+  }
+
+  function render(winLine) {
+    const el = document.getElementById('board');
+    el.innerHTML = '';
+    const myTurn = gameActive && currentTurn === mySymbol;
+    board.forEach((cell, i) => {
+      const d = document.createElement('div');
+      d.className = 'cell'
+        + (cell ? ' taken ' + cell.toLowerCase() : '')
+        + (!cell && !myTurn ? ' off' : '')
+        + (winLine.includes(i) ? ' win' : '');
+      d.textContent = cell === 'X' ? '✕' : cell === 'O' ? '○' : '';
+      if (!cell && myTurn) d.onclick = () => move(i);
+      el.appendChild(d);
+    });
+  }
+
+  function updateTurn() {
+    if (!gameActive) { document.getElementById('turn').textContent = ''; return; }
+    const mine = currentTurn === mySymbol;
+    const el = document.getElementById('turn');
+    el.textContent = mine ? '⬤ Dein Zug' : '⬤ Gegner ist dran';
+    el.style.color  = mine ? '#6ee7b7' : '#94a3b8';
+    document.getElementById('card-x').classList.toggle('active', currentTurn === 'X');
+    document.getElementById('card-o').classList.toggle('active', currentTurn === 'O');
+  }
+
+  // ── Moves ─────────────────────────────────────────────────────────────────
+  function move(i) {
+    if (!gameActive || board[i] || currentTurn !== mySymbol) return;
+    board[i] = mySymbol;
+    socket.emit('sendToLobby', { type: 'move', payload: { cell: i } });
+    afterMove();
+  }
+
+  function handleOpponentMove(i) {
+    board[i] = mySymbol === 'X' ? 'O' : 'X';
+    afterMove();
+  }
+
+  function afterMove() {
+    const res = winner(board);
+    if (res) {
+      render(res.line);
+      gameActive = false;
+      updateTurn();
+      showResult(res.w);
+    } else {
+      currentTurn = currentTurn === 'X' ? 'O' : 'X';
+      render([]);
+      updateTurn();
+    }
+  }
+
+  function winner(b) {
+    const lines = [[0,1,2],[3,4,5],[6,7,8],[0,3,6],[1,4,7],[2,5,8],[0,4,8],[2,4,6]];
+    for (const line of lines) {
+      const [a,b2,c] = line;
+      if (b[a] && b[a] === b[b2] && b[a] === b[c]) return { w: b[a], line };
+    }
+    if (b.every(c => c)) return { w: 'draw', line: [] };
+    return null;
+  }
+
+  function showResult(w) {
+    const el = document.getElementById('result-box');
+    let title, cls;
+    if      (w === 'draw')     { title = 'Unentschieden! 🤝'; cls = 'draw'; }
+    else if (w === mySymbol)   { title = 'Du gewinnst! 🎉';   cls = 'win';  }
+    else                       { title = 'Gegner gewinnt 😢'; cls = 'lose'; }
+    el.innerHTML = `<div class="rt ${cls}">${title}</div>
+      <button class="btn" style="margin-top:.75rem" onclick="rematch()">Nochmal</button>`;
+    el.style.display = '';
+  }
+
+  function rematch() {
+    resetBoard();
+    socket.emit('sendToLobby', { type: 'reset', payload: {} });
+  }
+
+  // ── Leave ─────────────────────────────────────────────────────────────────
+  function leaveGame() {
+    socket?.emit('leaveLobby');
+    lobbyId = null; mySymbol = null; gameActive = false;
+    window.EthernalPanel?.setLobby(null);
+    window.EthernalPanel?.clearActions();
+    document.getElementById('code-in').value = '';
+    show('lobby');
+    setStatus('Bereit ✓', 'ok');
+  }
+
+  // ── Auto-Login: Sitzung aus sessionStorage wiederherstellen ───────────────
+  // Wenn der User von einem anderen Spiel oder vom Hub zurücknavigiert,
+  // sind seine Credentials bereits in sessionStorage – kein erneuter Login nötig.
+  (function restoreSession() {
+    const t  = sessionStorage.getItem('ec_token');
+    const r  = sessionStorage.getItem('ec_refresh');
+    const u  = sessionStorage.getItem('ec_user');
+    const id = sessionStorage.getItem('ec_userId');
+    if (t && r && u && id) {
+      token = t; refreshToken = r; myUsername = u; myUserId = id;
+      window.EthernalPanel?.setContext({ gameTitle: 'TicTacToe' });
+      setStatus('Verbinde...');
+      connectSocket();
+    } else {
+      setStatus('Bitte anmelden');
+      show('auth');
+    }
+  })();
+  </script>
+</body>
+</html>

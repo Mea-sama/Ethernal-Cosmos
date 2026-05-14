@@ -1,0 +1,13 @@
+{
+  "name": "@ethernal/shared",
+  "version": "1.0.0",
+  "private": true,
+  "main": "dist/types/index.js",
+  "types": "dist/types/index.d.ts",
+  "scripts": {
+    "build": "tsc"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.5"
+  }
+}

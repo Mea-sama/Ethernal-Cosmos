@@ -1,0 +1,185 @@
+{"level":"info","ts":1778516850.4720774,"logger":"http.auto_https","msg":"automatic HTTP->HTTPS redirects are disabled","server_name":"srv0"}
+{"level":"info","ts":1778516850.4720774,"logger":"tls.cache.maintenance","msg":"started background certificate maintenance","cache":"0x23e44f714d80"}
+{"level":"info","ts":1778516850.4720774,"logger":"tls.cache.maintenance","msg":"stopped background certificate maintenance","cache":"0x23e44f714d80"}
+{"level":"info","ts":1778516850.4720774,"logger":"http","msg":"servers shutting down with eternal grace period"}
+{"level":"info","ts":1778516925.230657,"msg":"maxprocs: Leaving GOMAXPROCS=32: CPU quota undefined"}
+{"level":"info","ts":1778516925.230657,"msg":"GOMEMLIMIT is updated","GOMEMLIMIT":61648186982,"previous":9223372036854775807}
+{"level":"info","ts":1778516925.230657,"msg":"using config from file","file":"Caddyfile"}
+{"level":"info","ts":1778516925.230657,"msg":"adapted config to JSON","adapter":"caddyfile"}
+{"level":"warn","ts":1778516925.230657,"msg":"Caddyfile input is not formatted; run 'caddy fmt --overwrite' to fix inconsistencies","adapter":"caddyfile","file":"Caddyfile","line":2}
+{"level":"info","ts":1778516925.230657,"msg":"redirected default logger","from":"stderr","to":"e:\\Ethernal Cosmos\\caddy\\caddy-service.log"}
+{"level":"info","ts":1778516925.2352226,"logger":"admin","msg":"admin endpoint started","address":"localhost:2019","enforce_origin":false,"origins":["//localhost:2019","//[::1]:2019","//127.0.0.1:2019"]}
+{"level":"info","ts":1778516925.2352226,"logger":"tls.cache.maintenance","msg":"started background certificate maintenance","cache":"0x30110cc8f580"}
+{"level":"info","ts":1778516925.2352226,"logger":"http.auto_https","msg":"automatic HTTP->HTTPS redirects are disabled","server_name":"srv0"}
+{"level":"info","ts":1778516925.2352226,"logger":"http","msg":"enabling HTTP/3 listener","addr":":12346"}
+{"level":"info","ts":1778516925.2352226,"logger":"http.log","msg":"server running","name":"srv0","protocols":["h1","h2","h3"]}
+{"level":"info","ts":1778516925.2352226,"logger":"http","msg":"enabling automatic TLS certificate management","domains":["mea-sama.duckdns.org"]}
+{"level":"info","ts":1778516925.2352226,"msg":"autosaved config (load with --resume flag)","file":"C:\\Users\\johan\\AppData\\Roaming\\Caddy\\autosave.json"}
+{"level":"info","ts":1778516925.2352226,"msg":"serving initial configuration"}
+{"level":"info","ts":1778516925.2352226,"logger":"tls","msg":"cleaning storage unit","storage":"FileStorage:e:\\\\Ethernal Cosmos\\\\caddy\\\\data"}
+{"level":"info","ts":1778516925.2352226,"logger":"tls","msg":"finished cleaning storage units"}
+{"level":"info","ts":1778516925.241238,"logger":"tls.obtain","msg":"acquiring lock","identifier":"mea-sama.duckdns.org"}
+{"level":"info","ts":1778516925.241238,"logger":"tls.obtain","msg":"lock acquired","identifier":"mea-sama.duckdns.org"}
+{"level":"info","ts":1778516925.241238,"logger":"tls.obtain","msg":"obtaining certificate","identifier":"mea-sama.duckdns.org"}
+{"level":"info","ts":1778516925.241238,"logger":"http","msg":"creating new account because no account for configured email is known to us","email":"admin@mea-sama.duckdns.org","ca":"https://acme-v02.api.letsencrypt.org/directory","error":"open e:\\Ethernal Cosmos\\caddy\\data\\acme\\acme-v02.api.letsencrypt.org-directory\\users\\admin@mea-sama.duckdns.org\\admin.json: Das System kann den angegebenen Pfad nicht finden."}
+{"level":"info","ts":1778516925.24525,"logger":"http","msg":"ACME account has empty status; registering account with ACME server","contact":["mailto:admin@mea-sama.duckdns.org"],"location":""}
+{"level":"info","ts":1778516925.24604,"logger":"http","msg":"creating new account because no account for configured email is known to us","email":"admin@mea-sama.duckdns.org","ca":"https://acme-v02.api.letsencrypt.org/directory","error":"open e:\\Ethernal Cosmos\\caddy\\data\\acme\\acme-v02.api.letsencrypt.org-directory\\users\\admin@mea-sama.duckdns.org\\admin.json: Das System kann den angegebenen Pfad nicht finden."}
+{"level":"info","ts":1778516926.0463245,"logger":"http","msg":"new ACME account registered","contact":["mailto:admin@mea-sama.duckdns.org"],"status":"valid"}
+{"level":"info","ts":1778516926.0599618,"logger":"http","msg":"waiting on internal rate limiter","identifiers":["mea-sama.duckdns.org"],"ca":"https://acme-v02.api.letsencrypt.org/directory","account":"admin@mea-sama.duckdns.org"}
+{"level":"info","ts":1778516926.0599618,"logger":"http","msg":"done waiting on internal rate limiter","identifiers":["mea-sama.duckdns.org"],"ca":"https://acme-v02.api.letsencrypt.org/directory","account":"admin@mea-sama.duckdns.org"}
+{"level":"info","ts":1778516926.0599618,"logger":"http","msg":"using ACME account","account_id":"https://acme-v02.api.letsencrypt.org/acme/acct/3325027926","account_contact":["mailto:admin@mea-sama.duckdns.org"]}
+{"level":"info","ts":1778516926.3932407,"msg":"trying to solve challenge","identifier":"mea-sama.duckdns.org","challenge_type":"dns-01","ca":"https://acme-v02.api.letsencrypt.org/directory"}
+{"level":"info","ts":1778516955.6378725,"msg":"maxprocs: Leaving GOMAXPROCS=32: CPU quota undefined"}
+{"level":"info","ts":1778516955.6378725,"msg":"GOMEMLIMIT is updated","GOMEMLIMIT":61648186982,"previous":9223372036854775807}
+{"level":"info","ts":1778516955.6378725,"msg":"using config from file","file":"Caddyfile"}
+{"level":"info","ts":1778516955.6378725,"msg":"adapted config to JSON","adapter":"caddyfile"}
+{"level":"warn","ts":1778516955.6378725,"msg":"Caddyfile input is not formatted; run 'caddy fmt --overwrite' to fix inconsistencies","adapter":"caddyfile","file":"Caddyfile","line":2}
+{"level":"info","ts":1778516955.6378725,"msg":"redirected default logger","from":"stderr","to":"e:\\Ethernal Cosmos\\caddy\\caddy-service.log"}
+{"level":"info","ts":1778516955.6427987,"logger":"admin","msg":"admin endpoint started","address":"localhost:2019","enforce_origin":false,"origins":["//localhost:2019","//[::1]:2019","//127.0.0.1:2019"]}
+{"level":"info","ts":1778516955.6427987,"logger":"tls.cache.maintenance","msg":"started background certificate maintenance","cache":"0x12f81b2bcf80"}
+{"level":"info","ts":1778516955.6427987,"logger":"http.auto_https","msg":"automatic HTTP->HTTPS redirects are disabled","server_name":"srv0"}
+{"level":"info","ts":1778516955.6433203,"logger":"http","msg":"enabling HTTP/3 listener","addr":":12346"}
+{"level":"info","ts":1778516955.6433203,"logger":"http.log","msg":"server running","name":"srv0","protocols":["h1","h2","h3"]}
+{"level":"info","ts":1778516955.6433203,"logger":"http","msg":"enabling automatic TLS certificate management","domains":["mea-sama.duckdns.org"]}
+{"level":"info","ts":1778516955.6438491,"msg":"autosaved config (load with --resume flag)","file":"C:\\Users\\johan\\AppData\\Roaming\\Caddy\\autosave.json"}
+{"level":"info","ts":1778516955.6438491,"msg":"serving initial configuration"}
+{"level":"info","ts":1778516955.6448755,"logger":"tls","msg":"storage cleaning happened too recently; skipping for now","storage":"FileStorage:e:\\\\Ethernal Cosmos\\\\caddy\\\\data","instance":"c87109b9-e1b2-4f5d-8fca-15cd26eb2f3e","try_again":1778603355.6448755,"try_again_in":86400}
+{"level":"info","ts":1778516955.6448755,"logger":"tls","msg":"finished cleaning storage units"}
+{"level":"info","ts":1778516955.6526077,"logger":"tls.obtain","msg":"acquiring lock","identifier":"mea-sama.duckdns.org"}
+{"level":"info","ts":1778516955.654001,"logger":"tls.obtain","msg":"lock acquired","identifier":"mea-sama.duckdns.org"}
+{"level":"info","ts":1778516955.654001,"logger":"tls.obtain","msg":"obtaining certificate","identifier":"mea-sama.duckdns.org"}
+{"level":"info","ts":1778516955.6545157,"logger":"http","msg":"waiting on internal rate limiter","identifiers":["mea-sama.duckdns.org"],"ca":"https://acme-v02.api.letsencrypt.org/directory","account":"admin@mea-sama.duckdns.org"}
+{"level":"info","ts":1778516955.6545157,"logger":"http","msg":"done waiting on internal rate limiter","identifiers":["mea-sama.duckdns.org"],"ca":"https://acme-v02.api.letsencrypt.org/directory","account":"admin@mea-sama.duckdns.org"}
+{"level":"info","ts":1778516955.6545157,"logger":"http","msg":"using ACME account","account_id":"https://acme-v02.api.letsencrypt.org/acme/acct/3325027926","account_contact":["mailto:admin@mea-sama.duckdns.org"]}
+{"level":"info","ts":1778516956.5774498,"msg":"trying to solve challenge","identifier":"mea-sama.duckdns.org","challenge_type":"dns-01","ca":"https://acme-v02.api.letsencrypt.org/directory"}
+{"level":"info","ts":1778516964.2314613,"msg":"authorization finalized","identifier":"mea-sama.duckdns.org","authz_status":"valid"}
+{"level":"info","ts":1778516964.2314613,"msg":"validations succeeded; finalizing order","order":"https://acme-v02.api.letsencrypt.org/acme/order/3325027926/509716365626"}
+{"level":"info","ts":1778516965.4492493,"msg":"got renewal info","names":["mea-sama.duckdns.org"],"window_start":1783620898,"window_end":1783776348,"selected_time":1783643648,"recheck_after":1778542855.4492493,"explanation_url":""}
+{"level":"info","ts":1778516965.7417955,"msg":"got renewal info","names":["mea-sama.duckdns.org"],"window_start":1783620898,"window_end":1783776348,"selected_time":1783626985,"recheck_after":1778540824.7417955,"explanation_url":""}
+{"level":"info","ts":1778516965.7417955,"msg":"successfully downloaded available certificate chains","count":2,"first_url":"https://acme-v02.api.letsencrypt.org/acme/cert/06fd2890d0383e8e2b822134fff2099748ad"}
+{"level":"info","ts":1778516965.745994,"logger":"tls.obtain","msg":"certificate obtained successfully","identifier":"mea-sama.duckdns.org","issuer":"acme-v02.api.letsencrypt.org-directory"}
+{"level":"info","ts":1778516965.745994,"logger":"tls.obtain","msg":"releasing lock","identifier":"mea-sama.duckdns.org"}
+{"level":"info","ts":1778517113.9775074,"msg":"maxprocs: Leaving GOMAXPROCS=32: CPU quota undefined"}
+{"level":"info","ts":1778517113.9775074,"msg":"GOMEMLIMIT is updated","GOMEMLIMIT":61648186982,"previous":9223372036854775807}
+{"level":"info","ts":1778517113.9775074,"msg":"using config from file","file":"e:\\Ethernal Cosmos\\caddy\\Caddyfile"}
+{"level":"info","ts":1778517113.9775074,"msg":"adapted config to JSON","adapter":"caddyfile"}
+{"level":"warn","ts":1778517113.9775074,"msg":"Caddyfile input is not formatted; run 'caddy fmt --overwrite' to fix inconsistencies","adapter":"caddyfile","file":"e:\\Ethernal Cosmos\\caddy\\Caddyfile","line":2}
+{"level":"info","ts":1778517113.9775074,"msg":"redirected default logger","from":"stderr","to":"e:\\Ethernal Cosmos\\caddy\\caddy-service.log"}
+{"level":"info","ts":1778517189.203971,"msg":"maxprocs: Leaving GOMAXPROCS=32: CPU quota undefined"}
+{"level":"info","ts":1778517189.203971,"msg":"GOMEMLIMIT is updated","GOMEMLIMIT":61648186982,"previous":9223372036854775807}
+{"level":"info","ts":1778517189.203971,"msg":"using config from file","file":"e:\\Ethernal Cosmos\\caddy\\Caddyfile"}
+{"level":"info","ts":1778517189.203971,"msg":"adapted config to JSON","adapter":"caddyfile"}
+{"level":"warn","ts":1778517189.203971,"msg":"Caddyfile input is not formatted; run 'caddy fmt --overwrite' to fix inconsistencies","adapter":"caddyfile","file":"e:\\Ethernal Cosmos\\caddy\\Caddyfile","line":2}
+{"level":"info","ts":1778517189.203971,"msg":"redirected default logger","from":"stderr","to":"e:\\Ethernal Cosmos\\caddy\\caddy-service.log"}
+{"level":"info","ts":1778517283.6046777,"msg":"maxprocs: Leaving GOMAXPROCS=32: CPU quota undefined"}
+{"level":"info","ts":1778517283.6046777,"msg":"GOMEMLIMIT is updated","GOMEMLIMIT":61648186982,"previous":9223372036854775807}
+{"level":"info","ts":1778517283.6046777,"msg":"using config from file","file":"e:\\Ethernal Cosmos\\caddy\\Caddyfile"}
+{"level":"info","ts":1778517283.6046777,"msg":"adapted config to JSON","adapter":"caddyfile"}
+{"level":"warn","ts":1778517283.6046777,"msg":"Caddyfile input is not formatted; run 'caddy fmt --overwrite' to fix inconsistencies","adapter":"caddyfile","file":"e:\\Ethernal Cosmos\\caddy\\Caddyfile","line":2}
+{"level":"info","ts":1778517283.6046777,"msg":"redirected default logger","from":"stderr","to":"e:\\Ethernal Cosmos\\caddy\\caddy-service.log"}
+{"level":"info","ts":1778517283.6098332,"logger":"admin","msg":"admin endpoint started","address":"localhost:2019","enforce_origin":false,"origins":["//localhost:2019","//[::1]:2019","//127.0.0.1:2019"]}
+{"level":"info","ts":1778517283.6098332,"logger":"tls.cache.maintenance","msg":"started background certificate maintenance","cache":"0x29cb9b68e680"}
+{"level":"info","ts":1778517283.6098332,"logger":"http.auto_https","msg":"automatic HTTP->HTTPS redirects are disabled","server_name":"srv0"}
+{"level":"info","ts":1778517283.610346,"logger":"http","msg":"enabling HTTP/3 listener","addr":":12346"}
+{"level":"info","ts":1778517283.610346,"logger":"http.log","msg":"server running","name":"srv0","protocols":["h1","h2","h3"]}
+{"level":"info","ts":1778517283.610346,"logger":"http","msg":"enabling automatic TLS certificate management","domains":["mea-sama.duckdns.org"]}
+{"level":"info","ts":1778517283.6113713,"msg":"autosaved config (load with --resume flag)","file":"C:\\WINDOWS\\system32\\config\\systemprofile\\AppData\\Roaming\\Caddy\\autosave.json"}
+{"level":"info","ts":1778517283.6113713,"msg":"serving initial configuration"}
+{"level":"info","ts":1778517283.621076,"logger":"tls","msg":"storage cleaning happened too recently; skipping for now","storage":"FileStorage:e:\\\\Ethernal Cosmos\\\\caddy\\\\data","instance":"c87109b9-e1b2-4f5d-8fca-15cd26eb2f3e","try_again":1778603683.621076,"try_again_in":86400}
+{"level":"info","ts":1778517283.6215873,"logger":"tls","msg":"finished cleaning storage units"}
+{"level":"error","ts":1778518257.4182477,"logger":"http.log.error","msg":"dial tcp [::1]:12348: connectex: Es konnte keine Verbindung hergestellt werden, da der Zielcomputer die Verbindung verweigerte.","request":{"remote_ip":"217.234.194.56","remote_port":"64300","client_ip":"217.234.194.56","proto":"HTTP/2.0","method":"GET","host":"mea-sama.duckdns.org:12346","uri":"/","headers":{"Sec-Fetch-User":["?1"],"Accept-Encoding":["gzip, deflate, br, zstd"],"Sec-Ch-Ua":["\"Google Chrome\";v=\"147\", \"Not.A/Brand\";v=\"8\", \"Chromium\";v=\"147\""],"Sec-Ch-Ua-Mobile":["?0"],"Sec-Fetch-Dest":["document"],"Accept-Language":["en-US,en;q=0.9,de-DE;q=0.8,de;q=0.7,ja;q=0.6"],"User-Agent":["Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36"],"Sec-Fetch-Mode":["navigate"],"Priority":["u=0, i"],"Sec-Ch-Ua-Platform":["\"Windows\""],"Upgrade-Insecure-Requests":["1"],"Accept":["text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"],"Sec-Fetch-Site":["none"]},"tls":{"resumed":false,"version":772,"cipher_suite":4865,"proto":"h2","server_name":"mea-sama.duckdns.org","ech":false}},"duration":0.004749,"status":502,"err_id":"e339rfxtu","err_trace":"reverseproxy.statusError (reverseproxy.go:1525)"}
+{"level":"error","ts":1778530774.4964008,"logger":"http.log.error","msg":"dial tcp [::1]:12348: connectex: Es konnte keine Verbindung hergestellt werden, da der Zielcomputer die Verbindung verweigerte.","request":{"remote_ip":"217.234.194.56","remote_port":"60671","client_ip":"217.234.194.56","proto":"HTTP/2.0","method":"GET","host":"mea-sama.duckdns.org:12346","uri":"/tictactoe/","headers":{"Priority":["u=0, i"],"Accept":["text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"],"Sec-Fetch-Site":["same-origin"],"Sec-Ch-Ua":["\"Google Chrome\";v=\"147\", \"Not.A/Brand\";v=\"8\", \"Chromium\";v=\"147\""],"Sec-Ch-Ua-Platform":["\"Windows\""],"If-Modified-Since":["Mon, 11 May 2026 18:44:00 GMT"],"Sec-Fetch-Mode":["navigate"],"Sec-Fetch-User":["?1"],"Sec-Ch-Ua-Mobile":["?0"],"Accept-Language":["en-US,en;q=0.9,de-DE;q=0.8,de;q=0.7,ja;q=0.6"],"Sec-Fetch-Dest":["document"],"Accept-Encoding":["gzip, deflate, br, zstd"],"User-Agent":["Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36"],"Referer":["https://mea-sama.duckdns.org:12346/"],"Cache-Control":["max-age=0"],"Upgrade-Insecure-Requests":["1"],"If-None-Match":["W/\"5377-19e185a6ef0\""]},"tls":{"resumed":true,"version":772,"cipher_suite":4865,"proto":"h2","server_name":"mea-sama.duckdns.org","ech":false}},"duration":0.0064288,"status":502,"err_id":"9e0srnne5","err_trace":"reverseproxy.statusError (reverseproxy.go:1525)"}
+{"level":"warn","ts":1778530828.8212502,"msg":"exiting; byeee!! 👋","signal":"SIGINT"}
+{"level":"info","ts":1778530828.8215163,"logger":"http","msg":"servers shutting down with eternal grace period"}
+{"level":"info","ts":1778530828.8215163,"logger":"admin","msg":"stopped previous server","address":"localhost:2019"}
+{"level":"info","ts":1778530828.8215163,"msg":"shutdown complete","signal":"SIGINT","exit_code":0}
+{"level":"info","ts":1778571120.0594485,"msg":"maxprocs: Leaving GOMAXPROCS=32: CPU quota undefined"}
+{"level":"info","ts":1778571120.0594485,"msg":"GOMEMLIMIT is updated","GOMEMLIMIT":61648186982,"previous":9223372036854775807}
+{"level":"info","ts":1778571120.0594485,"msg":"using config from file","file":"e:\\Ethernal Cosmos\\caddy\\Caddyfile"}
+{"level":"info","ts":1778571120.0594485,"msg":"adapted config to JSON","adapter":"caddyfile"}
+{"level":"warn","ts":1778571120.0594485,"msg":"Caddyfile input is not formatted; run 'caddy fmt --overwrite' to fix inconsistencies","adapter":"caddyfile","file":"e:\\Ethernal Cosmos\\caddy\\Caddyfile","line":2}
+{"level":"info","ts":1778571120.0594485,"msg":"redirected default logger","from":"stderr","to":"e:\\Ethernal Cosmos\\caddy\\caddy-service.log"}
+{"level":"info","ts":1778571120.0850093,"logger":"admin","msg":"admin endpoint started","address":"localhost:2019","enforce_origin":false,"origins":["//localhost:2019","//[::1]:2019","//127.0.0.1:2019"]}
+{"level":"info","ts":1778571120.0855265,"logger":"tls.cache.maintenance","msg":"started background certificate maintenance","cache":"0x2ff693236380"}
+{"level":"info","ts":1778571120.0863128,"logger":"http.auto_https","msg":"automatic HTTP->HTTPS redirects are disabled","server_name":"srv0"}
+{"level":"info","ts":1778571120.0888762,"logger":"http","msg":"enabling HTTP/3 listener","addr":":12346"}
+{"level":"info","ts":1778571120.0905004,"logger":"http.log","msg":"server running","name":"srv0","protocols":["h1","h2","h3"]}
+{"level":"info","ts":1778571120.0910947,"logger":"http","msg":"enabling automatic TLS certificate management","domains":["mea-sama.duckdns.org"]}
+{"level":"info","ts":1778571120.092126,"logger":"tls","msg":"storage cleaning happened too recently; skipping for now","storage":"FileStorage:e:\\\\Ethernal Cosmos\\\\caddy\\\\data","instance":"c87109b9-e1b2-4f5d-8fca-15cd26eb2f3e","try_again":1778657520.092126,"try_again_in":86400}
+{"level":"info","ts":1778571120.092126,"logger":"tls","msg":"finished cleaning storage units"}
+{"level":"info","ts":1778571120.094187,"msg":"autosaved config (load with --resume flag)","file":"C:\\WINDOWS\\system32\\config\\systemprofile\\AppData\\Roaming\\Caddy\\autosave.json"}
+{"level":"info","ts":1778571120.094187,"msg":"serving initial configuration"}
+{"level":"info","ts":1778571122.7289922,"msg":"got renewal info","names":["mea-sama.duckdns.org"],"window_start":1783620898,"window_end":1783776348,"selected_time":1783692300,"recheck_after":1778594563.7289922,"explanation_url":""}
+{"level":"info","ts":1778571122.73069,"logger":"tls","msg":"updated and stored ACME renewal information","identifiers":["mea-sama.duckdns.org"],"cert_hash":"b18109fa24c1d575213fdc8bff4d9f9a7511742acb04a0e0183f8181f6c259b3","ari_unique_id":"jw0TovYuftFQbDMYOF1ZjiNykco.Bv0okNA4Po4rgiE0__IJl0it","cert_expiry":1786289453,"selected_time":1783643648,"next_update":1778594563.7289922,"explanation_url":""}
+{"level":"error","ts":1778573937.3086886,"logger":"http.log.error","msg":"dial tcp [::1]:12348: connectex: Es konnte keine Verbindung hergestellt werden, da der Zielcomputer die Verbindung verweigerte.","request":{"remote_ip":"217.234.194.56","remote_port":"63779","client_ip":"217.234.194.56","proto":"HTTP/2.0","method":"GET","host":"mea-sama.duckdns.org:12346","uri":"/favicon.ico","headers":{"Accept":["image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"],"Accept-Encoding":["gzip, deflate, br, zstd"],"Sec-Ch-Ua-Platform":["\"Android\""],"Sec-Ch-Ua":["\"Chromium\";v=\"148\", \"Google Chrome\";v=\"148\", \"Not/A)Brand\";v=\"99\""],"Sec-Ch-Ua-Mobile":["?1"],"Accept-Language":["en-GB,en;q=0.9,de-DE;q=0.8,de;q=0.7,en-US;q=0.6"],"Sec-Fetch-Site":["same-origin"],"Sec-Fetch-Mode":["no-cors"],"Sec-Fetch-Dest":["image"],"Referer":["https://mea-sama.duckdns.org:12346/tictactoe/"],"Priority":["u=1, i"],"User-Agent":["Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Mobile Safari/537.36"]},"tls":{"resumed":false,"version":772,"cipher_suite":4865,"proto":"h2","server_name":"mea-sama.duckdns.org","ech":false}},"duration":0.0095498,"status":502,"err_id":"v60fudr02","err_trace":"reverseproxy.statusError (reverseproxy.go:1525)"}
+{"level":"error","ts":1778573939.2799757,"logger":"http.log.error","msg":"dial tcp [::1]:12348: connectex: Es konnte keine Verbindung hergestellt werden, da der Zielcomputer die Verbindung verweigerte.","request":{"remote_ip":"217.234.194.56","remote_port":"63779","client_ip":"217.234.194.56","proto":"HTTP/2.0","method":"GET","host":"mea-sama.duckdns.org:12346","uri":"/","headers":{"Sec-Fetch-User":["?1"],"Sec-Ch-Ua":["\"Chromium\";v=\"148\", \"Google Chrome\";v=\"148\", \"Not/A)Brand\";v=\"99\""],"Sec-Fetch-Dest":["document"],"If-None-Match":["W/\"c6f-RvlUXZO3EnWtGR9H2ABoN2WGPpc\""],"Sec-Ch-Ua-Platform":["\"Android\""],"User-Agent":["Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Mobile Safari/537.36"],"Sec-Fetch-Mode":["navigate"],"Accept-Language":["en-GB,en;q=0.9,de-DE;q=0.8,de;q=0.7,en-US;q=0.6"],"Priority":["u=0, i"],"Sec-Ch-Ua-Mobile":["?1"],"Upgrade-Insecure-Requests":["1"],"Accept":["text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"],"Sec-Fetch-Site":["none"],"Accept-Encoding":["gzip, deflate, br, zstd"]},"tls":{"resumed":false,"version":772,"cipher_suite":4865,"proto":"h2","server_name":"mea-sama.duckdns.org","ech":false}},"duration":0.0029346,"status":502,"err_id":"v4yispt60","err_trace":"reverseproxy.statusError (reverseproxy.go:1525)"}
+{"level":"error","ts":1778591471.9930851,"logger":"http.log.error","msg":"dial tcp [::1]:12348: connectex: Es konnte keine Verbindung hergestellt werden, da der Zielcomputer die Verbindung verweigerte.","request":{"remote_ip":"217.234.194.56","remote_port":"64794","client_ip":"217.234.194.56","proto":"HTTP/2.0","method":"GET","host":"mea-sama.duckdns.org:12346","uri":"/socket.io/?EIO=4&transport=polling&t=PuSK1a3","headers":{"Priority":["u=1, i"],"Sec-Fetch-Mode":["cors"],"Sec-Fetch-Dest":["empty"],"Accept-Encoding":["gzip, deflate, br, zstd"],"Sec-Ch-Ua":["\"Google Chrome\";v=\"147\", \"Not.A/Brand\";v=\"8\", \"Chromium\";v=\"147\""],"Sec-Ch-Ua-Mobile":["?0"],"Sec-Fetch-Site":["same-origin"],"Accept-Language":["en-US,en;q=0.9,de-DE;q=0.8,de;q=0.7,ja;q=0.6"],"Referer":["https://mea-sama.duckdns.org:12346/"],"Sec-Ch-Ua-Platform":["\"Windows\""],"User-Agent":["Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36"],"Accept":["*/*"]},"tls":{"resumed":true,"version":772,"cipher_suite":4865,"proto":"h2","server_name":"mea-sama.duckdns.org","ech":false}},"duration":0.0041148,"status":502,"err_id":"6id540a6m","err_trace":"reverseproxy.statusError (reverseproxy.go:1525)"}
+{"level":"error","ts":1778591474.7443142,"logger":"http.log.error","msg":"dial tcp [::1]:12348: connectex: Es konnte keine Verbindung hergestellt werden, da der Zielcomputer die Verbindung verweigerte.","request":{"remote_ip":"217.234.194.56","remote_port":"64794","client_ip":"217.234.194.56","proto":"HTTP/2.0","method":"GET","host":"mea-sama.duckdns.org:12346","uri":"/socket.io/?EIO=4&transport=polling&t=PuSK2Gr","headers":{"User-Agent":["Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36"],"Accept":["*/*"],"Sec-Ch-Ua":["\"Google Chrome\";v=\"147\", \"Not.A/Brand\";v=\"8\", \"Chromium\";v=\"147\""],"Sec-Ch-Ua-Mobile":["?0"],"Accept-Encoding":["gzip, deflate, br, zstd"],"Accept-Language":["en-US,en;q=0.9,de-DE;q=0.8,de;q=0.7,ja;q=0.6"],"Sec-Ch-Ua-Platform":["\"Windows\""],"Sec-Fetch-Site":["same-origin"],"Sec-Fetch-Mode":["cors"],"Sec-Fetch-Dest":["empty"],"Referer":["https://mea-sama.duckdns.org:12346/"],"Priority":["u=1, i"]},"tls":{"resumed":true,"version":772,"cipher_suite":4865,"proto":"h2","server_name":"mea-sama.duckdns.org","ech":false}},"duration":0.0010241,"status":502,"err_id":"na3u6vn4e","err_trace":"reverseproxy.statusError (reverseproxy.go:1525)"}
+{"level":"info","ts":1778595120.0875986,"msg":"got renewal info","names":["mea-sama.duckdns.org"],"window_start":1783620898,"window_end":1783776348,"selected_time":1783744826,"recheck_after":1778619818.0875986,"explanation_url":""}
+{"level":"info","ts":1778595120.0994358,"logger":"tls.cache.maintenance","msg":"updated and stored ACME renewal information","identifiers":["mea-sama.duckdns.org"],"cert_hash":"b18109fa24c1d575213fdc8bff4d9f9a7511742acb04a0e0183f8181f6c259b3","ari_unique_id":"jw0TovYuftFQbDMYOF1ZjiNykco.Bv0okNA4Po4rgiE0__IJl0it","cert_expiry":1786289453,"selected_time":1783643648,"next_update":1778619818.0875986,"explanation_url":""}
+{"level":"warn","ts":1778618064.7269125,"msg":"exiting; byeee!! 👋","signal":"SIGINT"}
+{"level":"info","ts":1778618064.7269125,"logger":"http","msg":"servers shutting down with eternal grace period"}
+{"level":"info","ts":1778618064.7305021,"logger":"admin","msg":"stopped previous server","address":"localhost:2019"}
+{"level":"info","ts":1778618064.7305021,"msg":"shutdown complete","signal":"SIGINT","exit_code":0}
+{"level":"info","ts":1778758974.6256478,"msg":"maxprocs: Leaving GOMAXPROCS=32: CPU quota undefined"}
+{"level":"info","ts":1778758974.626161,"msg":"GOMEMLIMIT is updated","GOMEMLIMIT":61648186982,"previous":9223372036854775807}
+{"level":"info","ts":1778758974.626161,"msg":"using config from file","file":"e:\\Ethernal Cosmos\\caddy\\Caddyfile"}
+{"level":"info","ts":1778758974.626161,"msg":"adapted config to JSON","adapter":"caddyfile"}
+{"level":"warn","ts":1778758974.626161,"msg":"Caddyfile input is not formatted; run 'caddy fmt --overwrite' to fix inconsistencies","adapter":"caddyfile","file":"e:\\Ethernal Cosmos\\caddy\\Caddyfile","line":2}
+{"level":"info","ts":1778758974.626161,"msg":"redirected default logger","from":"stderr","to":"e:\\Ethernal Cosmos\\caddy\\caddy-service.log"}
+{"level":"info","ts":1778758974.647744,"logger":"admin","msg":"admin endpoint started","address":"localhost:2019","enforce_origin":false,"origins":["//127.0.0.1:2019","//localhost:2019","//[::1]:2019"]}
+{"level":"info","ts":1778758974.648284,"logger":"tls.cache.maintenance","msg":"started background certificate maintenance","cache":"0xe6a62452b00"}
+{"level":"info","ts":1778758974.6493092,"logger":"http.auto_https","msg":"automatic HTTP->HTTPS redirects are disabled","server_name":"srv0"}
+{"level":"info","ts":1778758974.6503372,"logger":"http","msg":"enabling HTTP/3 listener","addr":":12346"}
+{"level":"info","ts":1778758974.6523852,"logger":"http.log","msg":"server running","name":"srv0","protocols":["h1","h2","h3"]}
+{"level":"info","ts":1778758974.6523852,"logger":"http","msg":"enabling automatic TLS certificate management","domains":["mea-sama.duckdns.org"]}
+{"level":"info","ts":1778758974.6540985,"logger":"tls","msg":"cleaning storage unit","storage":"FileStorage:e:\\\\Ethernal Cosmos\\\\caddy\\\\data"}
+{"level":"info","ts":1778758974.65566,"logger":"tls","msg":"finished cleaning storage units"}
+{"level":"info","ts":1778758974.6566813,"msg":"autosaved config (load with --resume flag)","file":"C:\\WINDOWS\\system32\\config\\systemprofile\\AppData\\Roaming\\Caddy\\autosave.json"}
+{"level":"info","ts":1778758974.6566813,"msg":"serving initial configuration"}
+{"level":"info","ts":1778758977.2531917,"msg":"got renewal info","names":["mea-sama.duckdns.org"],"window_start":1783620898,"window_end":1783776348,"selected_time":1783639169,"recheck_after":1778781941.2531917,"explanation_url":""}
+{"level":"info","ts":1778758977.2542057,"logger":"tls","msg":"updated and stored ACME renewal information","identifiers":["mea-sama.duckdns.org"],"cert_hash":"b18109fa24c1d575213fdc8bff4d9f9a7511742acb04a0e0183f8181f6c259b3","ari_unique_id":"jw0TovYuftFQbDMYOF1ZjiNykco.Bv0okNA4Po4rgiE0__IJl0it","cert_expiry":1786289453,"selected_time":1783643648,"next_update":1778781941.2531917,"explanation_url":""}
+{"level":"warn","ts":1778771327.442965,"msg":"exiting; byeee!! 👋","signal":"SIGINT"}
+{"level":"info","ts":1778771327.4475884,"logger":"http","msg":"servers shutting down with eternal grace period"}
+{"level":"info","ts":1778771327.451919,"logger":"admin","msg":"stopped previous server","address":"localhost:2019"}
+{"level":"info","ts":1778771327.451919,"msg":"shutdown complete","signal":"SIGINT","exit_code":0}
+{"level":"info","ts":1778771365.2548766,"msg":"maxprocs: Leaving GOMAXPROCS=32: CPU quota undefined"}
+{"level":"info","ts":1778771365.255392,"msg":"GOMEMLIMIT is updated","GOMEMLIMIT":61648186982,"previous":9223372036854775807}
+{"level":"info","ts":1778771365.255392,"msg":"using config from file","file":"e:\\Ethernal Cosmos\\caddy\\Caddyfile"}
+{"level":"info","ts":1778771365.255392,"msg":"adapted config to JSON","adapter":"caddyfile"}
+{"level":"warn","ts":1778771365.255392,"msg":"Caddyfile input is not formatted; run 'caddy fmt --overwrite' to fix inconsistencies","adapter":"caddyfile","file":"e:\\Ethernal Cosmos\\caddy\\Caddyfile","line":2}
+{"level":"info","ts":1778771365.255392,"msg":"redirected default logger","from":"stderr","to":"e:\\Ethernal Cosmos\\caddy\\caddy-service.log"}
+{"level":"info","ts":1778771365.274526,"logger":"admin","msg":"admin endpoint started","address":"localhost:2019","enforce_origin":false,"origins":["//[::1]:2019","//127.0.0.1:2019","//localhost:2019"]}
+{"level":"info","ts":1778771365.2750478,"logger":"tls.cache.maintenance","msg":"started background certificate maintenance","cache":"0x8735a464780"}
+{"level":"info","ts":1778771365.2755616,"logger":"http.auto_https","msg":"automatic HTTP->HTTPS redirects are disabled","server_name":"srv0"}
+{"level":"info","ts":1778771365.2771103,"logger":"http","msg":"enabling HTTP/3 listener","addr":":12346"}
+{"level":"info","ts":1778771365.2791662,"logger":"http.log","msg":"server running","name":"srv0","protocols":["h1","h2","h3"]}
+{"level":"info","ts":1778771365.2791662,"logger":"http","msg":"enabling automatic TLS certificate management","domains":["mea-sama.duckdns.org"]}
+{"level":"info","ts":1778771365.282389,"msg":"autosaved config (load with --resume flag)","file":"C:\\WINDOWS\\system32\\config\\systemprofile\\AppData\\Roaming\\Caddy\\autosave.json"}
+{"level":"info","ts":1778771365.282389,"msg":"serving initial configuration"}
+{"level":"info","ts":1778771365.2849455,"logger":"tls","msg":"storage cleaning happened too recently; skipping for now","storage":"FileStorage:e:\\\\Ethernal Cosmos\\\\caddy\\\\data","instance":"a18662ca-6fc8-4dab-83e2-c36e8e9ca741","try_again":1778857765.2849455,"try_again_in":86400}
+{"level":"info","ts":1778771365.2849455,"logger":"tls","msg":"finished cleaning storage units"}
+{"level":"warn","ts":1778771395.1795647,"msg":"exiting; byeee!! 👋","signal":"SIGINT"}
+{"level":"info","ts":1778771395.1805885,"logger":"http","msg":"servers shutting down with eternal grace period"}
+{"level":"info","ts":1778771395.1811082,"logger":"admin","msg":"stopped previous server","address":"localhost:2019"}
+{"level":"info","ts":1778771395.1811082,"msg":"shutdown complete","signal":"SIGINT","exit_code":0}
+{"level":"info","ts":1778771430.1247838,"msg":"maxprocs: Leaving GOMAXPROCS=32: CPU quota undefined"}
+{"level":"info","ts":1778771430.1252956,"msg":"GOMEMLIMIT is updated","GOMEMLIMIT":61648186982,"previous":9223372036854775807}
+{"level":"info","ts":1778771430.1252956,"msg":"using config from file","file":"e:\\Ethernal Cosmos\\caddy\\Caddyfile"}
+{"level":"info","ts":1778771430.1252956,"msg":"adapted config to JSON","adapter":"caddyfile"}
+{"level":"warn","ts":1778771430.1252956,"msg":"Caddyfile input is not formatted; run 'caddy fmt --overwrite' to fix inconsistencies","adapter":"caddyfile","file":"e:\\Ethernal Cosmos\\caddy\\Caddyfile","line":2}
+{"level":"info","ts":1778771430.1252956,"msg":"redirected default logger","from":"stderr","to":"e:\\Ethernal Cosmos\\caddy\\caddy-service.log"}
+{"level":"info","ts":1778771430.129919,"logger":"admin","msg":"admin endpoint started","address":"localhost:2019","enforce_origin":false,"origins":["//localhost:2019","//[::1]:2019","//127.0.0.1:2019"]}
+{"level":"info","ts":1778771430.1304326,"logger":"tls.cache.maintenance","msg":"started background certificate maintenance","cache":"0x46854b48b00"}
+{"level":"info","ts":1778771430.1309652,"logger":"http.auto_https","msg":"automatic HTTP->HTTPS redirects are disabled","server_name":"srv0"}
+{"level":"info","ts":1778771430.1320016,"logger":"http","msg":"enabling HTTP/3 listener","addr":":12346"}
+{"level":"info","ts":1778771430.134573,"logger":"http.log","msg":"server running","name":"srv0","protocols":["h1","h2","h3"]}
+{"level":"info","ts":1778771430.134573,"logger":"http","msg":"enabling automatic TLS certificate management","domains":["mea-sama.duckdns.org"]}
+{"level":"info","ts":1778771430.13667,"msg":"autosaved config (load with --resume flag)","file":"C:\\WINDOWS\\system32\\config\\systemprofile\\AppData\\Roaming\\Caddy\\autosave.json"}
+{"level":"info","ts":1778771430.13667,"msg":"serving initial configuration"}
+{"level":"info","ts":1778771430.1387286,"logger":"tls","msg":"storage cleaning happened too recently; skipping for now","storage":"FileStorage:e:\\\\Ethernal Cosmos\\\\caddy\\\\data","instance":"a18662ca-6fc8-4dab-83e2-c36e8e9ca741","try_again":1778857830.1387286,"try_again_in":86400}
+{"level":"info","ts":1778771430.1387286,"logger":"tls","msg":"finished cleaning storage units"}
+{"level":"warn","ts":1778771438.6080923,"msg":"exiting; byeee!! 👋","signal":"SIGINT"}
+{"level":"info","ts":1778771438.608615,"logger":"http","msg":"servers shutting down with eternal grace period"}
+{"level":"info","ts":1778771438.6101527,"logger":"admin","msg":"stopped previous server","address":"localhost:2019"}
+{"level":"info","ts":1778771438.6101527,"msg":"shutdown complete","signal":"SIGINT","exit_code":0}

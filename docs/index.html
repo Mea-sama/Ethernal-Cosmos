@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ethernal Cosmos — Documentation</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #0d0d1a;
+      --bg2:       #12122a;
+      --bg3:       #1a1a2e;
+      --border:    #2d2d5a;
+      --accent:    #7c3aed;
+      --accent-lt: #a78bfa;
+      --text:      #e2e8f0;
+      --muted:     #64748b;
+      --code-bg:   #1e1e3a;
+      --sidebar-w: 260px;
+    }
+
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+      font-size: 15px;
+      line-height: 1.65;
+    }
+
+    /* ── Layout ─────────────────────────────────────────── */
+
+    #layout {
+      display: flex;
+      height: 100%;
+    }
+
+    /* ── Sidebar ─────────────────────────────────────────── */
+
+    #sidebar {
+      width: var(--sidebar-w);
+      flex-shrink: 0;
+      background: var(--bg2);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      overflow-y: auto;
+      position: sticky;
+      top: 0;
+      height: 100vh;
+    }
+
+    #sidebar-header {
+      padding: 1.25rem 1.25rem .75rem;
+      border-bottom: 1px solid var(--border);
+    }
+    #sidebar-header a {
+      text-decoration: none;
+      color: inherit;
+    }
+    #sidebar-logo {
+      font-size: 1rem;
+      font-weight: 800;
+      color: var(--accent-lt);
+      letter-spacing: .03em;
+    }
+    #sidebar-sub {
+      font-size: .72rem;
+      color: var(--muted);
+      margin-top: .15rem;
+    }
+
+    #sidebar nav {
+      padding: .75rem 0;
+      flex: 1;
+    }
+
+    .nav-group-label {
+      padding: .4rem 1.25rem .2rem;
+      font-size: .68rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .1em;
+      color: var(--muted);
+    }
+
+    .nav-link {
+      display: flex;
+      align-items: center;
+      gap: .5rem;
+      padding: .45rem 1.25rem;
+      text-decoration: none;
+      color: #94a3b8;
+      font-size: .875rem;
+      border-left: 3px solid transparent;
+      transition: color .15s, background .15s, border-color .15s;
+      cursor: pointer;
+    }
+    .nav-link:hover {
+      color: var(--text);
+      background: var(--bg3);
+    }
+    .nav-link.active {
+      color: var(--accent-lt);
+      border-left-color: var(--accent);
+      background: rgba(124,58,237,.1);
+      font-weight: 600;
+    }
+    .nav-link .icon { font-size: 1rem; flex-shrink: 0; }
+
+    #sidebar-footer {
+      padding: .75rem 1.25rem;
+      border-top: 1px solid var(--border);
+      font-size: .75rem;
+      color: var(--muted);
+    }
+    #sidebar-footer a { color: var(--muted); text-decoration: none; }
+    #sidebar-footer a:hover { color: var(--accent-lt); }
+
+    /* ── Content ─────────────────────────────────────────── */
+
+    #content-wrap {
+      flex: 1;
+      overflow-y: auto;
+      min-width: 0;
+    }
+
+    #content {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 2.5rem 2rem 4rem;
+    }
+
+    #loading, #error-msg {
+      padding: 3rem 2rem;
+      color: var(--muted);
+      font-size: .95rem;
+    }
+    #error-msg { color: #f87171; }
+
+    /* ── Markdown styles ─────────────────────────────────── */
+
+    #content h1 {
+      font-size: 2rem;
+      font-weight: 800;
+      color: var(--accent-lt);
+      margin-bottom: 1rem;
+      padding-bottom: .6rem;
+      border-bottom: 1px solid var(--border);
+      line-height: 1.2;
+    }
+    #content h2 {
+      font-size: 1.35rem;
+      font-weight: 700;
+      color: var(--text);
+      margin: 2.2rem 0 .7rem;
+      padding-bottom: .35rem;
+      border-bottom: 1px solid var(--border);
+    }
+    #content h3 {
+      font-size: 1.05rem;
+      font-weight: 700;
+      color: var(--accent-lt);
+      margin: 1.6rem 0 .45rem;
+    }
+    #content h4 {
+      font-size: .95rem;
+      font-weight: 600;
+      color: #c4b5fd;
+      margin: 1.2rem 0 .35rem;
+    }
+
+    #content p { margin-bottom: .85rem; }
+
+    #content a { color: var(--accent-lt); text-decoration: none; }
+    #content a:hover { text-decoration: underline; }
+
+    #content ul, #content ol {
+      padding-left: 1.5rem;
+      margin-bottom: .85rem;
+    }
+    #content li { margin-bottom: .2rem; }
+
+    #content hr {
+      border: none;
+      border-top: 1px solid var(--border);
+      margin: 2rem 0;
+    }
+
+    #content strong { color: var(--text); font-weight: 700; }
+    #content em { color: #c4b5fd; }
+
+    /* Inline code */
+    #content :not(pre) > code {
+      background: var(--code-bg);
+      color: #c4b5fd;
+      padding: .15em .4em;
+      border-radius: 5px;
+      font-size: .875em;
+      font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+    }
+
+    /* Code blocks */
+    #content pre {
+      background: var(--code-bg) !important;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1.1rem 1.25rem;
+      margin: .6rem 0 1.2rem;
+      overflow-x: auto;
+    }
+    #content pre code {
+      background: transparent !important;
+      padding: 0;
+      color: inherit;
+      font-size: .85em;
+      font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+    }
+
+    /* Tables */
+    #content table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: .5rem 0 1.2rem;
+      font-size: .875rem;
+    }
+    #content th {
+      background: var(--bg3);
+      color: var(--accent-lt);
+      font-weight: 700;
+      text-align: left;
+      padding: .55rem .85rem;
+      border: 1px solid var(--border);
+    }
+    #content td {
+      padding: .5rem .85rem;
+      border: 1px solid var(--border);
+      vertical-align: top;
+    }
+    #content tr:nth-child(even) td { background: rgba(255,255,255,.02); }
+
+    /* Blockquotes */
+    #content blockquote {
+      border-left: 3px solid var(--accent);
+      background: var(--bg3);
+      padding: .7rem 1rem;
+      margin: .5rem 0 1rem;
+      border-radius: 0 8px 8px 0;
+      color: #94a3b8;
+    }
+
+    /* ── Mobile ─────────────────────────────────────────── */
+
+    #menu-toggle {
+      display: none;
+      position: fixed;
+      top: .75rem;
+      left: .75rem;
+      z-index: 200;
+      background: var(--bg3);
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 8px;
+      padding: .4rem .65rem;
+      font-size: 1.1rem;
+      cursor: pointer;
+    }
+
+    @media (max-width: 720px) {
+      #menu-toggle { display: block; }
+      #sidebar {
+        position: fixed;
+        left: 0; top: 0; bottom: 0;
+        z-index: 100;
+        transform: translateX(-100%);
+        transition: transform .22s ease;
+      }
+      #sidebar.open { transform: translateX(0); }
+      #content { padding: 3.5rem 1.25rem 3rem; }
+    }
+  </style>
+</head>
+<body>
+
+<button id="menu-toggle" aria-label="Toggle sidebar" onclick="toggleSidebar()">☰</button>
+
+<div id="layout">
+  <aside id="sidebar">
+    <div id="sidebar-header">
+      <a href="#index">
+        <div id="sidebar-logo">✦ Ethernal Cosmos</div>
+        <div id="sidebar-sub">Developer Documentation</div>
+      </a>
+    </div>
+
+    <nav>
+      <div class="nav-group-label">Getting Started</div>
+      <a class="nav-link" data-page="index" onclick="loadPage('index')">
+        <span class="icon">🏠</span> Overview
+      </a>
+
+      <div class="nav-group-label">Integration</div>
+      <a class="nav-link" data-page="panel-api" onclick="loadPage('panel-api')">
+        <span class="icon">🪟</span> Panel API (Browser)
+      </a>
+      <a class="nav-link" data-page="sdk-nodejs" onclick="loadPage('sdk-nodejs')">
+        <span class="icon">📦</span> Node.js SDK
+      </a>
+      <a class="nav-link" data-page="sdk-csharp" onclick="loadPage('sdk-csharp')">
+        <span class="icon">🎮</span> C# SDK
+      </a>
+
+      <div class="nav-group-label">Reference</div>
+      <a class="nav-link" data-page="rest-api" onclick="loadPage('rest-api')">
+        <span class="icon">🌐</span> REST API
+      </a>
+      <a class="nav-link" data-page="socket-events" onclick="loadPage('socket-events')">
+        <span class="icon">⚡</span> Socket Events
+      </a>
+    </nav>
+
+    <div id="sidebar-footer">
+      <a href="/">← Back to Hub</a>
+    </div>
+  </aside>
+
+  <div id="content-wrap">
+    <div id="content">
+      <div id="loading">Loading…</div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.0/marked.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script>
+  // ── marked config ────────────────────────────────────────────────────────
+
+  marked.use({
+    breaks: false,
+    gfm: true,
+    renderer: {
+      // Intercept links to .md pages — turn into internal nav calls
+      link({ href, title, text }) {
+        if (href && href.endsWith('.md') && !href.startsWith('http')) {
+          const page = href.replace(/\.md$/, '').replace(/^.*\//, '');
+          const titleAttr = title ? ` title="${title}"` : '';
+          return `<a onclick="loadPage('${page}')" href="#${page}"${titleAttr}>${text}</a>`;
+        }
+        const titleAttr = title ? ` title="${title}"` : '';
+        return `<a href="${href || ''}"${titleAttr} target="_blank" rel="noopener noreferrer">${text}</a>`;
+      },
+    },
+  });
+  // highlight.js is applied after HTML insertion (see loadPage)
+
+  // ── Routing ──────────────────────────────────────────────────────────────
+
+  function pageFromHash() {
+    const hash = location.hash.replace(/^#/, '').trim();
+    return hash || 'index';
+  }
+
+  async function loadPage(page) {
+    // Update URL hash without triggering hashchange recursion
+    history.replaceState(null, '', '#' + page);
+    setActiveNav(page);
+    closeSidebar();
+
+    const content = document.getElementById('content');
+    content.innerHTML = '<div id="loading">Loading…</div>';
+
+    try {
+      const res = await fetch('/docs/' + page + '.md', { cache: 'no-cache' });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const md = await res.text();
+      content.innerHTML = marked.parse(md);
+      // Apply syntax highlighting to all code blocks after rendering
+      content.querySelectorAll('pre code').forEach(el => hljs.highlightElement(el));
+      window.scrollTo(0, 0);
+      document.getElementById('content-wrap').scrollTo(0, 0);
+    } catch (err) {
+      content.innerHTML = '<div id="error-msg">Failed to load page: ' + err.message + '</div>';
+    }
+  }
+
+  function setActiveNav(page) {
+    document.querySelectorAll('.nav-link').forEach(el => {
+      el.classList.toggle('active', el.dataset.page === page);
+    });
+  }
+
+  // Handle browser back/forward
+  window.addEventListener('hashchange', () => loadPage(pageFromHash()));
+
+  // ── Sidebar mobile ────────────────────────────────────────────────────────
+
+  function toggleSidebar() {
+    document.getElementById('sidebar').classList.toggle('open');
+  }
+  function closeSidebar() {
+    document.getElementById('sidebar').classList.remove('open');
+  }
+
+  // ── Init ─────────────────────────────────────────────────────────────────
+
+  loadPage(pageFromHash());
+</script>
+</body>
+</html>

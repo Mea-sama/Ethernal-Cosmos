@@ -1,0 +1,25 @@
+{
+    auto_https disable_redirects
+    email admin@mea-sama.duckdns.org
+
+    storage file_system {
+        root "e:\\Ethernal Cosmos\\caddy\\data"
+    }
+
+    log {
+        output file "e:\\Ethernal Cosmos\\caddy\\caddy-service.log" {
+            roll_size 10mb
+            roll_keep 3
+        }
+    }
+}
+
+mea-sama.duckdns.org:12346 {
+    tls {
+        issuer acme {
+            dns duckdns {env.DUCKDNS_TOKEN}
+            resolvers 8.8.8.8 1.1.1.1
+        }
+    }
+    reverse_proxy localhost:12348
+}

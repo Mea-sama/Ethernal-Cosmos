@@ -1,0 +1,19 @@
+{
+	"sans": [
+		"mea-sama.duckdns.org"
+	],
+	"issuer_data": {
+		"url": "https://acme-v02.api.letsencrypt.org/acme/cert/06fd2890d0383e8e2b822134fff2099748ad",
+		"ca": "https://acme-v02.api.letsencrypt.org/directory",
+		"account": "https://acme-v02.api.letsencrypt.org/acme/acct/3325027926",
+		"renewal_info": {
+			"suggestedWindow": {
+				"start": "2026-07-09T18:14:58Z",
+				"end": "2026-07-11T13:25:48Z"
+			},
+			"_uniqueIdentifier": "jw0TovYuftFQbDMYOF1ZjiNykco.Bv0okNA4Po4rgiE0__IJl0it",
+			"_retryAfter": "2026-05-14T20:05:41.2531918+02:00",
+			"_selectedTime": "2026-07-10T00:34:08Z"
+		}
+	}
+}

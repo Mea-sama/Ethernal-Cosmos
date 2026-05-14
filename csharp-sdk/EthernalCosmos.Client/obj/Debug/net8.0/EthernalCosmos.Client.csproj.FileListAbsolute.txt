@@ -1,0 +1,12 @@
+E:\Ethernal Cosmos\csharp-sdk\EthernalCosmos.Client\bin\Debug\net8.0\EthernalCosmos.Client.deps.json
+E:\Ethernal Cosmos\csharp-sdk\EthernalCosmos.Client\bin\Debug\net8.0\EthernalCosmos.Client.dll
+E:\Ethernal Cosmos\csharp-sdk\EthernalCosmos.Client\bin\Debug\net8.0\EthernalCosmos.Client.pdb
+E:\Ethernal Cosmos\csharp-sdk\EthernalCosmos.Client\obj\Debug\net8.0\EthernalCosmos.Client.csproj.AssemblyReference.cache
+E:\Ethernal Cosmos\csharp-sdk\EthernalCosmos.Client\obj\Debug\net8.0\EthernalCosmos.Client.GeneratedMSBuildEditorConfig.editorconfig
+E:\Ethernal Cosmos\csharp-sdk\EthernalCosmos.Client\obj\Debug\net8.0\EthernalCosmos.Client.AssemblyInfoInputs.cache
+E:\Ethernal Cosmos\csharp-sdk\EthernalCosmos.Client\obj\Debug\net8.0\EthernalCosmos.Client.AssemblyInfo.cs
+E:\Ethernal Cosmos\csharp-sdk\EthernalCosmos.Client\obj\Debug\net8.0\EthernalCosmos.Client.csproj.CoreCompileInputs.cache
+E:\Ethernal Cosmos\csharp-sdk\EthernalCosmos.Client\obj\Debug\net8.0\EthernalCosmos.Client.dll
+E:\Ethernal Cosmos\csharp-sdk\EthernalCosmos.Client\obj\Debug\net8.0\refint\EthernalCosmos.Client.dll
+E:\Ethernal Cosmos\csharp-sdk\EthernalCosmos.Client\obj\Debug\net8.0\EthernalCosmos.Client.pdb
+E:\Ethernal Cosmos\csharp-sdk\EthernalCosmos.Client\obj\Debug\net8.0\ref\EthernalCosmos.Client.dll
