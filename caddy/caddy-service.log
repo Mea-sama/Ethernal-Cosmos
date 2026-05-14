@@ -183,3 +183,19 @@
 {"level":"info","ts":1778771438.608615,"logger":"http","msg":"servers shutting down with eternal grace period"}
 {"level":"info","ts":1778771438.6101527,"logger":"admin","msg":"stopped previous server","address":"localhost:2019"}
 {"level":"info","ts":1778771438.6101527,"msg":"shutdown complete","signal":"SIGINT","exit_code":0}
+{"level":"info","ts":1778771475.9589858,"msg":"maxprocs: Leaving GOMAXPROCS=32: CPU quota undefined"}
+{"level":"info","ts":1778771475.9594996,"msg":"GOMEMLIMIT is updated","GOMEMLIMIT":61648186982,"previous":9223372036854775807}
+{"level":"info","ts":1778771475.9594996,"msg":"using config from file","file":"e:\\Ethernal Cosmos\\caddy\\Caddyfile"}
+{"level":"info","ts":1778771475.9594996,"msg":"adapted config to JSON","adapter":"caddyfile"}
+{"level":"warn","ts":1778771475.9594996,"msg":"Caddyfile input is not formatted; run 'caddy fmt --overwrite' to fix inconsistencies","adapter":"caddyfile","file":"e:\\Ethernal Cosmos\\caddy\\Caddyfile","line":2}
+{"level":"info","ts":1778771475.9594996,"msg":"redirected default logger","from":"stderr","to":"e:\\Ethernal Cosmos\\caddy\\caddy-service.log"}
+{"level":"info","ts":1778771475.9807882,"logger":"admin","msg":"admin endpoint started","address":"localhost:2019","enforce_origin":false,"origins":["//127.0.0.1:2019","//localhost:2019","//[::1]:2019"]}
+{"level":"info","ts":1778771475.9813006,"logger":"tls.cache.maintenance","msg":"started background certificate maintenance","cache":"0x2cccfb2d2600"}
+{"level":"info","ts":1778771475.9818122,"logger":"http.auto_https","msg":"automatic HTTP->HTTPS redirects are disabled","server_name":"srv0"}
+{"level":"info","ts":1778771475.9828405,"logger":"http","msg":"enabling HTTP/3 listener","addr":":12346"}
+{"level":"info","ts":1778771475.9854293,"logger":"http.log","msg":"server running","name":"srv0","protocols":["h1","h2","h3"]}
+{"level":"info","ts":1778771475.9854293,"logger":"http","msg":"enabling automatic TLS certificate management","domains":["mea-sama.duckdns.org"]}
+{"level":"info","ts":1778771475.9883065,"msg":"autosaved config (load with --resume flag)","file":"C:\\WINDOWS\\system32\\config\\systemprofile\\AppData\\Roaming\\Caddy\\autosave.json"}
+{"level":"info","ts":1778771475.9883065,"msg":"serving initial configuration"}
+{"level":"info","ts":1778771475.9908738,"logger":"tls","msg":"storage cleaning happened too recently; skipping for now","storage":"FileStorage:e:\\\\Ethernal Cosmos\\\\caddy\\\\data","instance":"a18662ca-6fc8-4dab-83e2-c36e8e9ca741","try_again":1778857875.9908738,"try_again_in":86400}
+{"level":"info","ts":1778771475.9908738,"logger":"tls","msg":"finished cleaning storage units"}

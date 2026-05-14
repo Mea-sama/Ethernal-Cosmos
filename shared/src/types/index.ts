@@ -72,6 +72,9 @@ export interface GameInfo {
   /** Relativer Pfad zum Subprocess-Entry-Script (von server/ aus).
    *  Optional — fehlt er, läuft das Spiel als reines Relay (kein Subprocess). */
   entryScript?: string;
+  /** Externer Link (nur für hosted=false).
+   *  Wird auf der Hub-Startseite als "Zum Spiel"-Button angezeigt und in einem neuen Tab geöffnet. */
+  link?: string;
 }
 
 // ─── IPC: Hub ↔ Game-Subprocess ─────────────────────────────────────────────

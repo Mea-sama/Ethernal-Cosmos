@@ -3,3 +3,4 @@ dist/
 *.db
 .env
 caddy/caddy-service.log
+caddy/update.log
