@@ -413,9 +413,6 @@
         sessionStorage.removeItem('ec_userId');
         setStatus('Sitzung abgelaufen – bitte erneut anmelden', 'warn');
         show('auth');
-      } else if (e.message === 'ALREADY_CONNECTED') {
-        setStatus('Bereits auf einem anderen Gerät angemeldet', 'err');
-        show('auth');
       } else {
         setStatus('Verbindungsfehler: ' + e.message, 'err');
       }

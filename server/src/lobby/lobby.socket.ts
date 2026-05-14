@@ -18,8 +18,8 @@ type AppSocket = Socket<ClientToServerEvents, ServerToClientEvents, Record<strin
 
 // ─── Presence Map ──────────────────────────────────────────────────────────────
 // userId → PresenceUser (in-memory, wird bei connect/disconnect gepflegt)
-const presenceMap = new Map<string, PresenceUser>();
-
+const presenceMap = new Map<string, PresenceUser>();// userId → aktive socket.id für Game-Clients (für Session-Takeover)
+const gameSocketMap = new Map<string, string>();
 // ─── Validierung ─────────────────────────────────────────────────────────────
 
 const CreateLobbySchema = z.object({
@@ -43,16 +43,8 @@ export function registerSocketAuth(io: AppServer): void {
     }
     try {
       const payload = verifyToken(raw.slice(7));
-
       const clientType: 'game' | 'panel' =
         socket.handshake.auth?.clientType === 'panel' ? 'panel' : 'game';
-
-      // Nur Spiel-Clients (nicht das Panel) sind auf eine aktive Sitzung beschränkt.
-      // Das Panel läuft als zweite Verbindung im gleichen Browser-Tab — das ist erlaubt.
-      if (clientType === 'game' && presenceMap.has(payload.userId)) {
-        return next(new Error('ALREADY_CONNECTED'));
-      }
-
       socket.data.userId = payload.userId;
       socket.data.username = payload.username;
       socket.data.clientType = clientType;
@@ -117,9 +109,21 @@ export function registerLobbyHandlers(io: AppServer): void {
     console.log(`[Socket] "${username}" verbunden als ${clientType} (${socket.id})`);
 
     // ── Presence: nur für Spiel-Clients verwalten ──────────────────────────────
-    // Das Panel ist ein zweiter Socket desselben Users im selben Tab — es darf
+    // Das Panel läuft als zweiter Socket desselben Users im selben Tab — es darf
     // die Presence weder überschreiben noch beim Disconnect entfernen.
     if (clientType === 'game') {
+      // Session-Takeover: wenn der User bereits über ein anderes Gerät/Fenster
+      // verbunden ist, den alten Socket trennen bevor der neue übernimmt.
+      // Damit funktionieren F5, Navigation und Gerätewechsel sauber.
+      const oldSocketId = gameSocketMap.get(userId);
+      if (oldSocketId) {
+        const oldSocket = io.sockets.sockets.get(oldSocketId);
+        if (oldSocket) {
+          console.log(`[Socket] Session-Takeover für "${username}" — alter Socket ${oldSocketId} wird getrennt`);
+          oldSocket.disconnect(true);
+        }
+      }
+      gameSocketMap.set(userId, socket.id);
       presenceMap.set(userId, { userId, username });
       socket.broadcast.emit('presence:joined', { userId, username });
     }
@@ -331,9 +335,12 @@ export function registerLobbyHandlers(io: AppServer): void {
       console.log(`[Socket] "${username}" getrennt (${socket.id})`);
 
       if (clientType === 'game') {
-        // Presence entfernen
-        presenceMap.delete(userId);
-        io.emit('presence:left', { userId });
+        // Nur entfernen wenn dieser Socket noch der aktive ist (kein Takeover)
+        if (gameSocketMap.get(userId) === socket.id) {
+          gameSocketMap.delete(userId);
+          presenceMap.delete(userId);
+          io.emit('presence:left', { userId });
+        }
 
         // Laufende Spielinstanz über Disconnect informieren
         const currentLobby = socket.data.currentLobbyId;

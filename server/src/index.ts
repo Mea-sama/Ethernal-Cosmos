@@ -70,7 +70,24 @@ app.get('/', (_req, res) => {
   const games = listGames();
   const gameCards = games.length === 0
     ? `<p class="empty">Noch keine Spiele verfügbar.</p>`
-    : games.map(g => `
+    : games.map(g => {
+        if (!g.hosted) {
+          // Externe Spiele: kein interner Link, stattdessen optionaler externer Button
+          const externalBtn = g.link
+            ? `<a class="play-btn external-btn" href="${g.link}" target="_blank" rel="noopener noreferrer">Zum Spiel ↗</a>`
+            : `<span class="ext-badge">Externer Client</span>`;
+          return `
+      <div class="card external-card">
+        <h2>${g.name}</h2>
+        <p>${g.description}</p>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:1rem;">
+          <span class="badge">Bis zu ${g.maxPlayers} Spieler</span>
+          ${externalBtn}
+        </div>
+      </div>`;
+        }
+        // Gehostete Spiele: normaler interner Link
+        return `
       <a href="/${g.id}/" class="card-link">
         <div class="card">
           <h2>${g.name}</h2>
@@ -80,7 +97,8 @@ app.get('/', (_req, res) => {
             <span class="play-btn">Spielen →</span>
           </div>
         </div>
-      </a>`).join('');
+      </a>`;
+      }).join('');
 
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.send(`<!DOCTYPE html>
@@ -141,6 +159,19 @@ app.get('/', (_req, res) => {
       transition: background .15s;
     }
     .card-link:hover .play-btn { background: #6d28d9; }
+    .external-card { cursor: default; }
+    .external-btn {
+      background: #0f766e; color: #fff; text-decoration: none;
+      border-radius: 8px; padding: .35rem .9rem;
+      font-size: .85rem; font-weight: bold;
+      transition: background .15s;
+    }
+    .external-btn:hover { background: #0d9488; }
+    .ext-badge {
+      background: #1e293b; color: #64748b;
+      border-radius: 8px; padding: .35rem .9rem;
+      font-size: .85rem;
+    }
   </style>
 </head>
 <body>
