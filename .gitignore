@@ -1,6 +1,25 @@
+# Dependencies
 node_modules/
+
+# Build outputs
 dist/
+csharp-sdk/**/bin/
+csharp-sdk/**/obj/
+
+# Database
 *.db
+
+# Environment
 .env
-caddy/caddy-service.log
-caddy/update.log
+
+# Process files
+*.pid
+
+# Caddy — logs, certificates, and runtime data
+caddy/*.log
+caddy/*.log.gz
+caddy/data/
+
+# Visual Studio
+csharp-sdk/**/.vs/
+*.lscache
