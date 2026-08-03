@@ -132,6 +132,12 @@ export interface PresenceUser {
   lobbyStatus?: LobbyStatus;
 }
 
+export interface RelayMessage<TPayload = unknown> {
+  from: string;
+  type: string;
+  payload: TPayload;
+}
+
 // ─── Panel ───────────────────────────────────────────────────────────────────
 
 /**
@@ -240,7 +246,7 @@ export interface ServerToClientEvents {
   playerKicked: (data: { lobbyId: string }) => void;
 
   /** Eingehende Relay-Nachricht von einem anderen Spieler */
-  message: (data: { from: string; type: string; payload: unknown }) => void;
+  message: (data: RelayMessage) => void;
 
   /** Antwort auf getUserData — eigene Daten als Key-Value-Liste */
   userData: (data: { gameId: string; entries: UserDataEntry[] }) => void;

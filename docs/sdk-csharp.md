@@ -150,8 +150,13 @@ public sealed class RelayMessage
     public string  From    { get; init; }   // userId of sender
     public string  Type    { get; init; }
     public object? Payload { get; init; }
+
+    public T? PayloadAs<T>(JsonSerializerOptions? options = null);
+    public bool TryPayloadAs<T>(out T? payload, JsonSerializerOptions? options = null);
 }
 ```
+
+`Payload` contains the JSON-decoded value from the socket message. Use `PayloadAs<T>()` to turn it back into a strongly typed object without manually calling `JsonSerializer.Deserialize(...)` in your own code.
 
 ---
 
@@ -498,7 +503,7 @@ Subscribe to events before calling `LoginAsync` / `RegisterAsync` to avoid missi
 
 | Event | Delegate | Description |
 |-------|----------|-------------|
-| `Message` | `Action<RelayMessage>` | Message from another player; `{ From, Type, Payload }` |
+| `Message` | `Action<RelayMessage>` | Message from another player; `{ From, Type, Payload }`. Use `PayloadAs<T>()` to materialise the payload as a typed object. |
 | `UserData` | `Action<UserDataPayload>` | Response to `GetUserDataAsync`; `{ GameId, Entries }` |
 | `PlayerData` | `Action<PlayerDataPayload>` | Response to `GetPlayerDataAsync`; `{ PlayerId, GameId, Entries }` |
 

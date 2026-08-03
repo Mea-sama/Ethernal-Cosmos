@@ -16,6 +16,96 @@ import type {
 type AppServer = Server<ClientToServerEvents, ServerToClientEvents, Record<string, never>, SocketData>;
 type AppSocket = Socket<ClientToServerEvents, ServerToClientEvents, Record<string, never>, SocketData>;
 
+interface TokenBucket {
+  tokens: number;
+  lastRefill: number;
+}
+
+interface LimitRule {
+  refillPerSecond: number;
+  burst: number;
+}
+
+const SOCKET_LIMITS: Record<string, LimitRule> = {
+  // Control plane
+  createLobby: { refillPerSecond: 0.1, burst: 2 },
+  joinLobby: { refillPerSecond: 0.25, burst: 4 },
+  joinLobbyByCode: { refillPerSecond: 0.25, burst: 4 },
+  kickPlayer: { refillPerSecond: 0.5, burst: 3 },
+  transferHost: { refillPerSecond: 0.5, burst: 3 },
+  listLobbies: { refillPerSecond: 5, burst: 15 },
+  getLobbyInfo: { refillPerSecond: 5, burst: 15 },
+  presenceList: { refillPerSecond: 3, burst: 10 },
+  getUserData: { refillPerSecond: 8, burst: 20 },
+  getPlayerData: { refillPerSecond: 8, burst: 20 },
+
+  // Data plane (high-throughput): designed to sustain 120+ msg/s workloads.
+  sendToLobby: { refillPerSecond: 250, burst: 500 },
+  sendToPlayer: { refillPerSecond: 200, burst: 400 },
+  gameAction: { refillPerSecond: 300, burst: 600 },
+};
+
+const LOBBY_LIMITS: Record<string, LimitRule> = {
+  sendToLobby: { refillPerSecond: 1200, burst: 2400 },
+  gameAction: { refillPerSecond: 1600, burst: 3200 },
+};
+
+const socketBuckets = new Map<string, Map<string, TokenBucket>>();
+const lobbyBuckets = new Map<string, Map<string, TokenBucket>>();
+const lastRateLimitNotice = new Map<string, number>();
+const RATE_NOTICE_COOLDOWN_MS = 2000;
+
+function allowByBucket(
+  bucketMap: Map<string, Map<string, TokenBucket>>,
+  entityId: string,
+  key: string,
+  rule: LimitRule,
+): boolean {
+  const now = Date.now();
+  const entityBuckets = bucketMap.get(entityId) ?? new Map<string, TokenBucket>();
+  const bucket = entityBuckets.get(key) ?? { tokens: rule.burst, lastRefill: now };
+
+  const elapsedSeconds = Math.max(0, (now - bucket.lastRefill) / 1000);
+  bucket.tokens = Math.min(rule.burst, bucket.tokens + elapsedSeconds * rule.refillPerSecond);
+  bucket.lastRefill = now;
+
+  if (bucket.tokens < 1) {
+    entityBuckets.set(key, bucket);
+    bucketMap.set(entityId, entityBuckets);
+    return false;
+  }
+
+  bucket.tokens -= 1;
+  entityBuckets.set(key, bucket);
+  bucketMap.set(entityId, entityBuckets);
+  return true;
+}
+
+function allowSocketEvent(socket: AppSocket, key: keyof typeof SOCKET_LIMITS): boolean {
+  const rule = SOCKET_LIMITS[key];
+  return allowByBucket(socketBuckets, socket.id, key, rule);
+}
+
+function allowLobbyEvent(lobbyId: string, key: keyof typeof LOBBY_LIMITS): boolean {
+  const rule = LOBBY_LIMITS[key];
+  return allowByBucket(lobbyBuckets, lobbyId, key, rule);
+}
+
+function emitRateLimitError(socket: AppSocket, eventName: string): void {
+  const key = `${socket.id}:${eventName}`;
+  const now = Date.now();
+  const last = lastRateLimitNotice.get(key) ?? 0;
+  if (now - last < RATE_NOTICE_COOLDOWN_MS) return;
+  lastRateLimitNotice.set(key, now);
+  socket.emit('error', `Rate limit erreicht (${eventName})`);
+}
+
+function enforceSocketLimit(socket: AppSocket, eventName: keyof typeof SOCKET_LIMITS): boolean {
+  if (allowSocketEvent(socket, eventName)) return true;
+  emitRateLimitError(socket, eventName);
+  return false;
+}
+
 // ─── Presence Map ──────────────────────────────────────────────────────────────
 // userId → PresenceUser (in-memory, wird bei connect/disconnect gepflegt)
 const presenceMap = new Map<string, PresenceUser>();// userId → aktive socket.id für Game-Clients (für Session-Takeover)
@@ -130,17 +220,20 @@ export function registerLobbyHandlers(io: AppServer): void {
 
     // ── presence:list ────────────────────────────────────────────────────────
     socket.on('presence:list', () => {
+      if (!enforceSocketLimit(socket, 'presenceList')) return;
       socket.emit('presence:list', [...presenceMap.values()]);
     });
 
     // ── listLobbies ─────────────────────────────────────────────────────────
     socket.on('listLobbies', (gameId: string) => {
+      if (!enforceSocketLimit(socket, 'listLobbies')) return;
       const lobbies = lobbyManager.listLobbies(gameId);
       socket.emit('lobbyList', lobbies);
     });
 
     // ── createLobby ─────────────────────────────────────────────────────────
     socket.on('createLobby', async (data) => {
+      if (!enforceSocketLimit(socket, 'createLobby')) return;
       const parse = CreateLobbySchema.safeParse(data);
       if (!parse.success) {
         socket.emit('error', 'Ungültige Lobby-Daten');
@@ -179,11 +272,13 @@ export function registerLobbyHandlers(io: AppServer): void {
 
     // ── joinLobby ───────────────────────────────────────────────────────────
     socket.on('joinLobby', ({ lobbyId }) => {
+      if (!enforceSocketLimit(socket, 'joinLobby')) return;
       joinLobbyById(socket, io, userId, username, lobbyId);
     });
 
     // ── joinLobbyByCode ──────────────────────────────────────────────────────
     socket.on('joinLobbyByCode', ({ code }) => {
+      if (!enforceSocketLimit(socket, 'joinLobbyByCode')) return;
       const codeClean = z.string().min(6).max(6).safeParse(code?.trim().toUpperCase());
       if (!codeClean.success) {
         socket.emit('error', 'Ungültiger Einladungscode');
@@ -204,6 +299,7 @@ export function registerLobbyHandlers(io: AppServer): void {
 
     // ── getLobbyInfo ─────────────────────────────────────────────────────────
     socket.on('getLobbyInfo', () => {
+      if (!enforceSocketLimit(socket, 'getLobbyInfo')) return;
       const lobby = lobbyManager.getLobbyByUserId(userId);
       if (!lobby) {
         socket.emit('error', 'Du bist in keiner Lobby');
@@ -214,6 +310,7 @@ export function registerLobbyHandlers(io: AppServer): void {
 
     // ── kickPlayer ───────────────────────────────────────────────────────────
     socket.on('kickPlayer', async ({ playerId }) => {
+      if (!enforceSocketLimit(socket, 'kickPlayer')) return;
       try {
         const lobby = lobbyManager.kickPlayer(userId, playerId);
         // Dem gekickten Spieler Bescheid geben und ihn aus dem Room entfernen
@@ -243,6 +340,7 @@ export function registerLobbyHandlers(io: AppServer): void {
 
     // ── transferHost ─────────────────────────────────────────────────────────
     socket.on('transferHost', ({ playerId }) => {
+      if (!enforceSocketLimit(socket, 'transferHost')) return;
       try {
         const lobby = lobbyManager.transferHost(userId, playerId);
         io.to(lobby.id).emit('lobbyUpdated', lobby);
@@ -262,9 +360,19 @@ export function registerLobbyHandlers(io: AppServer): void {
 
     // ── sendToLobby (Relay) ──────────────────────────────────────────────────
     socket.on('sendToLobby', ({ type, payload }) => {
+      if (!enforceSocketLimit(socket, 'sendToLobby')) return;
       const lobbyId = socket.data.currentLobbyId;
       if (!lobbyId) {
         socket.emit('error', 'Du bist in keiner Lobby');
+        return;
+      }
+      const currentLobby = lobbyManager.getLobbyByUserId(userId);
+      if (!currentLobby || currentLobby.id !== lobbyId) {
+        socket.emit('error', 'Lobby-Kontext ungültig');
+        return;
+      }
+      if (!allowLobbyEvent(lobbyId, 'sendToLobby')) {
+        emitRateLimitError(socket, 'sendToLobby:lobby');
         return;
       }
       // An alle anderen in der Lobby senden (Sender ausgenommen)
@@ -273,13 +381,26 @@ export function registerLobbyHandlers(io: AppServer): void {
 
     // ── sendToPlayer (Relay) ─────────────────────────────────────────────────
     socket.on('sendToPlayer', async ({ playerId, type, payload }) => {
+      if (!enforceSocketLimit(socket, 'sendToPlayer')) return;
       const lobbyId = socket.data.currentLobbyId;
       if (!lobbyId) {
         socket.emit('error', 'Du bist in keiner Lobby');
         return;
       }
-      const allSockets = await io.in(lobbyId).fetchSockets();
-      const target = allSockets.find((s) => s.data.userId === playerId);
+      const senderLobby = lobbyManager.getLobbyByUserId(userId);
+      if (!senderLobby || senderLobby.id !== lobbyId) {
+        socket.emit('error', 'Lobby-Kontext ungültig');
+        return;
+      }
+
+      const targetLobby = lobbyManager.getLobbyByUserId(playerId);
+      if (!targetLobby || targetLobby.id !== lobbyId) {
+        socket.emit('error', 'Spieler nicht in derselben Lobby');
+        return;
+      }
+
+      const targetSocketId = gameSocketMap.get(playerId);
+      const target = targetSocketId ? io.sockets.sockets.get(targetSocketId) : undefined;
       if (!target) {
         socket.emit('error', 'Spieler nicht erreichbar');
         return;
@@ -288,6 +409,7 @@ export function registerLobbyHandlers(io: AppServer): void {
     });
     // ── getUserData ──────────────────────────────────────────────────────────────
     socket.on('getUserData', async (gameId: string) => {
+      if (!enforceSocketLimit(socket, 'getUserData')) return;
       const parse = z.string().min(1).max(32).regex(/^[a-z0-9-]+$/).safeParse(gameId);
       if (!parse.success) {
         socket.emit('error', 'Ungültige Spiel-ID');
@@ -304,6 +426,7 @@ export function registerLobbyHandlers(io: AppServer): void {
 
     // ── getPlayerData ─────────────────────────────────────────────────────────
     socket.on('getPlayerData', async ({ playerId, gameId }) => {
+      if (!enforceSocketLimit(socket, 'getPlayerData')) return;
       const parse = z.string().min(1).max(32).regex(/^[a-z0-9-]+$/).safeParse(gameId);
       if (!parse.success) {
         socket.emit('error', 'Ungültige Spiel-ID');
@@ -322,8 +445,15 @@ export function registerLobbyHandlers(io: AppServer): void {
     });
     // ── gameAction ───────────────────────────────────────────────────────────────
     socket.on('gameAction', (data) => {
+      if (!enforceSocketLimit(socket, 'gameAction')) return;
       const lobbyId = socket.data.currentLobbyId;
       if (!lobbyId || !instanceManager.isRunning(lobbyId)) return;
+      const currentLobby = lobbyManager.getLobbyByUserId(userId);
+      if (!currentLobby || currentLobby.id !== lobbyId) return;
+      if (!allowLobbyEvent(lobbyId, 'gameAction')) {
+        emitRateLimitError(socket, 'gameAction:lobby');
+        return;
+      }
       instanceManager.sendToInstance(lobbyId, {
         type: 'PLAYER_ACTION',
         payload: { userId, action: data.type, data: data.payload },
@@ -333,6 +463,7 @@ export function registerLobbyHandlers(io: AppServer): void {
     // ── disconnect ──────────────────────────────────────────────────────────
     socket.on('disconnect', () => {
       console.log(`[Socket] "${username}" getrennt (${socket.id})`);
+      socketBuckets.delete(socket.id);
 
       if (clientType === 'game') {
         // Nur entfernen wenn dieser Socket noch der aktive ist (kein Takeover)
@@ -419,5 +550,7 @@ function handleLeave(socket: AppSocket, io: AppServer): void {
         io.emit('presence:joined', updated);
       }
     }
+  } else if (dissolved && lobbyId) {
+    lobbyBuckets.delete(lobbyId);
   }
 }

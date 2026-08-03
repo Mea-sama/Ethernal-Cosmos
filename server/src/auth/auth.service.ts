@@ -5,8 +5,8 @@ import { v4 as uuidv4 } from 'uuid';
 import { z } from 'zod';
 import type { AuthPayload, AuthResult, PublicUser } from '@ethernal/shared';
 import { db } from '../db/database';
+import { JWT_SECRET } from '../config/env';
 
-const JWT_SECRET = process.env.JWT_SECRET ?? 'dev-secret-change-in-production';
 const JWT_EXPIRES_IN = '1h';
 const BCRYPT_ROUNDS = 12;
 const REFRESH_TOKEN_EXPIRES_DAYS = 30;

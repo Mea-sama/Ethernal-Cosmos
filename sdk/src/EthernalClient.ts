@@ -8,11 +8,13 @@ import type {
   UserDataEntry,
   DataVisibility,
   PresenceUser,
+  RelayMessage,
 } from '@ethernal/shared';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export type { Lobby, UserDataEntry, DataVisibility, PresenceUser } from '@ethernal/shared';
+export type { RelayMessage } from '@ethernal/shared';
 
 export interface EthernalClientOptions {
   /** Base URL of the Ethernal Cosmos hub server, e.g. "http://localhost:12346" */
@@ -169,6 +171,16 @@ export class EthernalClient extends EventEmitter {
   /** Send a typed message directly to one player in the lobby. */
   sendToPlayer(playerId: string, type: string, payload: unknown): void {
     this.getSocket().emit('sendToPlayer', { playerId, type, payload });
+  }
+
+  /** Subscribe to relay messages with an optional payload type parameter for compile-time typing. */
+  onMessage<TPayload = unknown>(listener: (data: RelayMessage<TPayload>) => void): this {
+    return this.on('message', listener as (data: RelayMessage) => void);
+  }
+
+  /** Subscribe once to the next relay message. */
+  onceMessage<TPayload = unknown>(listener: (data: RelayMessage<TPayload>) => void): this {
+    return this.once('message', listener as (data: RelayMessage) => void);
   }
 
   // ─── Game Actions ─────────────────────────────────────────────────────────
@@ -463,7 +475,7 @@ export class EthernalClient extends EventEmitter {
   on(event: 'gameEvent', listener: (event: { type: string; data: unknown }) => void): this;
   on(event: 'gameOver', listener: (result: unknown) => void): this;
   on(event: 'playerKicked', listener: (data: { lobbyId: string }) => void): this;
-  on(event: 'message', listener: (data: { from: string; type: string; payload: unknown }) => void): this;
+  on(event: 'message', listener: (data: RelayMessage) => void): this;
   on(event: 'userData', listener: (data: { gameId: string; entries: UserDataEntry[] }) => void): this;
   on(event: 'playerData', listener: (data: { playerId: string; gameId: string; entries: UserDataEntry[] }) => void): this;
   on(event: string, listener: (...args: any[]) => void): this {
@@ -483,7 +495,7 @@ export class EthernalClient extends EventEmitter {
   once(event: 'gameEvent', listener: (event: { type: string; data: unknown }) => void): this;
   once(event: 'gameOver', listener: (result: unknown) => void): this;
   once(event: 'playerKicked', listener: (data: { lobbyId: string }) => void): this;
-  once(event: 'message', listener: (data: { from: string; type: string; payload: unknown }) => void): this;
+  once(event: 'message', listener: (data: RelayMessage) => void): this;
   once(event: 'userData', listener: (data: { gameId: string; entries: UserDataEntry[] }) => void): this;
   once(event: 'playerData', listener: (data: { playerId: string; gameId: string; entries: UserDataEntry[] }) => void): this;
   once(event: string, listener: (...args: any[]) => void): this {

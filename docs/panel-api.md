@@ -18,7 +18,7 @@ Add **one script tag** after the socket.io CDN in your HTML:
 
 ```html
 <!-- socket.io must come first -->
-<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+<script src="/assets/socket.io.min.js"></script>
 <script src="/assets/panel.js"></script>
 ```
 
@@ -291,7 +291,7 @@ The event has no `detail` payload.
   <!-- your game UI -->
 
   <!-- 1. Load socket.io, then the panel -->
-  <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+  <script src="/assets/socket.io.min.js"></script>
   <script src="/assets/panel.js"></script>
 
   <script>

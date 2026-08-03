@@ -1,4 +1,4 @@
-import { Router, Request, Response } from 'express';
+import { Router, Request, Response, NextFunction, RequestHandler } from 'express';
 import { rateLimit } from 'express-rate-limit';
 import {
   registerUser,
@@ -8,6 +8,7 @@ import {
   rotateRefreshToken,
   revokeRefreshToken,
 } from './auth.service';
+import { isAuthUsernameWhitelisted, isRefreshTokenWhitelisted } from './rate-limit-whitelist';
 
 const router = Router();
 
@@ -37,8 +38,41 @@ const refreshLimiter = rateLimit({
   message: { error: 'Zu viele Token-Refresh-Anfragen' },
 });
 
+function withWhitelistBypass(
+  limiter: RequestHandler,
+  isWhitelisted: (req: Request) => Promise<boolean>
+): RequestHandler {
+  return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      if (await isWhitelisted(req)) {
+        next();
+        return;
+      }
+    } catch (err) {
+      console.error('[Auth] Fehler beim Prüfen der Rate-Limit-Whitelist:', err);
+    }
+
+    limiter(req, res, next);
+  };
+}
+
+const registerLimiterWithWhitelist = withWhitelistBypass(registerLimiter, async (req) => {
+  const username = typeof req.body?.username === 'string' ? req.body.username : '';
+  return isAuthUsernameWhitelisted(username);
+});
+
+const loginLimiterWithWhitelist = withWhitelistBypass(loginLimiter, async (req) => {
+  const username = typeof req.body?.username === 'string' ? req.body.username : '';
+  return isAuthUsernameWhitelisted(username);
+});
+
+const refreshLimiterWithWhitelist = withWhitelistBypass(refreshLimiter, async (req) => {
+  const refreshToken = typeof req.body?.refreshToken === 'string' ? req.body.refreshToken : '';
+  return isRefreshTokenWhitelisted(refreshToken);
+});
+
 // POST /auth/register
-router.post('/register', registerLimiter, async (req: Request, res: Response): Promise<void> => {
+router.post('/register', registerLimiterWithWhitelist, async (req: Request, res: Response): Promise<void> => {
   const parse = RegisterSchema.safeParse(req.body);
   if (!parse.success) {
     const messages = Object.values(parse.error.flatten().fieldErrors)
@@ -63,7 +97,7 @@ router.post('/register', registerLimiter, async (req: Request, res: Response): P
 });
 
 // POST /auth/login
-router.post('/login', loginLimiter, async (req: Request, res: Response): Promise<void> => {
+router.post('/login', loginLimiterWithWhitelist, async (req: Request, res: Response): Promise<void> => {
   const parse = LoginSchema.safeParse(req.body);
   if (!parse.success) {
     res.status(400).json({ error: 'Benutzername und Passwort erforderlich' });
@@ -85,7 +119,7 @@ router.post('/login', loginLimiter, async (req: Request, res: Response): Promise
 });
 
 // POST /auth/refresh
-router.post('/refresh', refreshLimiter, async (req: Request, res: Response): Promise<void> => {
+router.post('/refresh', refreshLimiterWithWhitelist, async (req: Request, res: Response): Promise<void> => {
   const { refreshToken } = req.body as { refreshToken?: unknown };
   if (typeof refreshToken !== 'string' || !refreshToken) {
     res.status(400).json({ error: 'refreshToken erforderlich' });

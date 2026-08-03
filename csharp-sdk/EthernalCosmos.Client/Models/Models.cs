@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace EthernalCosmos.Client.Models;
@@ -69,6 +70,41 @@ public sealed class RelayMessage
     [JsonPropertyName("from")]    public string  From    { get; init; } = "";
     [JsonPropertyName("type")]    public string  Type    { get; init; } = "";
     [JsonPropertyName("payload")] public object? Payload { get; init; }
+
+    public T? PayloadAs<T>(JsonSerializerOptions? options = null)
+    {
+        if (Payload is null)
+        {
+            return default;
+        }
+
+        if (Payload is T typed)
+        {
+            return typed;
+        }
+
+        if (Payload is JsonElement element)
+        {
+            return element.Deserialize<T>(options);
+        }
+
+        var json = JsonSerializer.Serialize(Payload, options);
+        return JsonSerializer.Deserialize<T>(json, options);
+    }
+
+    public bool TryPayloadAs<T>(out T? payload, JsonSerializerOptions? options = null)
+    {
+        try
+        {
+            payload = PayloadAs<T>(options);
+            return true;
+        }
+        catch
+        {
+            payload = default;
+            return false;
+        }
+    }
 }
 
 public sealed class UserDataPayload

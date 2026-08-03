@@ -134,6 +134,16 @@ interface PresenceUser {
 }
 ```
 
+### `RelayMessage<TPayload = unknown>`
+
+```ts
+interface RelayMessage<TPayload = unknown> {
+  from:    string;   // userId of sender
+  type:    string;
+  payload: TPayload;
+}
+```
+
 ---
 
 ## Constructor
@@ -285,6 +295,7 @@ Transfers the host role to another player in the lobby.
 ## Relay Methods
 
 Used to send messages between players through the Hub. The Hub relays without interpreting the payload.
+Incoming relay payloads are already JSON-decoded by Socket.IO, so you usually only need TypeScript typing on the receiver side.
 
 ### `sendToLobby(type, payload)`
 
@@ -312,6 +323,22 @@ sendToPlayer(playerId: string, type: string, payload: unknown): void
 Sends a message to a single player in the lobby. Recipient receives a `message` event.
 
 `type` and `payload` follow the same conventions as `sendToLobby` — arbitrary strings and JSON values defined by your game.
+
+### `onMessage(listener)`
+
+```ts
+onMessage<TPayload = unknown>(listener: (data: RelayMessage<TPayload>) => void): this
+```
+
+Convenience helper for the `message` event.
+
+### `onceMessage(listener)`
+
+```ts
+onceMessage<TPayload = unknown>(listener: (data: RelayMessage<TPayload>) => void): this
+```
+
+Same as `onMessage()`, but only for the next incoming relay message.
 
 ---
 
@@ -491,7 +518,7 @@ const top10 = await client.getLeaderboard('chess', 'wins', { limit: 10 });
 
 | Event | Payload | Description |
 |-------|---------|-------------|
-| `message` | `{ type: string; payload: unknown; from: string }` | Message from another player via relay |
+| `message` | `RelayMessage<TPayload = unknown>` | Message from another player via relay. Use `onMessage<T>()` if you want a typed payload on the receiver side. |
 
 ### User Data Events
 

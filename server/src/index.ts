@@ -2,6 +2,7 @@ import 'dotenv/config';
 import express from 'express';
 import { createServer } from 'http';
 import path from 'path';
+import fs from 'fs';
 import { Server } from 'socket.io';
 import cors from 'cors';
 import compression from 'compression';
@@ -15,19 +16,86 @@ import { authRouter } from './auth/auth.router';
 import { userDataRouter, playerDataRouter, leaderboardRouter } from './user-data/userdata.router';
 import { registerSocketAuth, registerLobbyHandlers, registerIpcRouting } from './lobby/lobby.socket';
 import { listGames } from './games/game.registry';
+import { ALLOWED_ORIGINS, HOST, IS_PRODUCTION, PORT, isAllowedOrigin } from './config/env';
+
+const socketIoClientCandidates = [
+  path.resolve(__dirname, '../../node_modules/socket.io/client-dist'),
+  path.resolve(__dirname, '../node_modules/socket.io/client-dist'),
+];
+const socketIoClientDir = socketIoClientCandidates.find((candidate) => fs.existsSync(candidate));
+
+if (!socketIoClientDir) {
+  throw new Error('[Startup] Konnte socket.io client-dist nicht finden. Bitte Abhängigkeiten installieren.');
+}
 
 // Intern: Node.js lauscht nur auf localhost. Caddy übernimmt TLS extern auf :12346.
-const PORT = parseInt(process.env.PORT ?? '12348', 10);
-const HOST = process.env.HOST ?? '127.0.0.1';
 
 const app = express();
 const httpServer = createServer(app);
 
 // ─── Middleware ──────────────────────────────────────────────────────────────
 
-app.use(cors());
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, (character) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;',
+  })[character] as string);
+}
+
+function safeExternalLink(value: string | undefined): string | null {
+  if (!value) return null;
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+      return parsed.toString();
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+const corsOptions = {
+  origin(origin: string | undefined, callback: (err: Error | null, success?: boolean) => void): void {
+    if (isAllowedOrigin(origin)) {
+      callback(null, true);
+      return;
+    }
+
+    callback(new Error(`Origin nicht erlaubt: ${origin ?? 'unknown'}`));
+  },
+};
+
+app.use(cors(corsOptions));
 app.use(compression());
 app.use(express.json());
+app.use((req, res, next) => {
+  res.setHeader(
+    'Content-Security-Policy',
+    [
+      "default-src 'self'",
+      "script-src 'self'",
+      "style-src 'self'",
+      "img-src 'self' data:",
+      "connect-src 'self' ws: wss:",
+      "font-src 'self'",
+      "object-src 'none'",
+      "base-uri 'none'",
+      "frame-ancestors 'self'",
+      "form-action 'self'",
+    ].join('; ')
+  );
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  if (IS_PRODUCTION) {
+    res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  }
+  next();
+});
 
 // ─── Socket.io ──────────────────────────────────────────────────────────────
 
@@ -35,7 +103,7 @@ const io = new Server<ClientToServerEvents, ServerToClientEvents, Record<string,
   httpServer,
   {
     cors: {
-      origin: '*', // TODO: auf bekannte Origins einschränken, wenn HTTPS eingerichtet ist
+      origin: ALLOWED_ORIGINS,
       methods: ['GET', 'POST'],
     },
     // Schneller Heartbeat: Disconnect wird spätestens nach ~7s erkannt statt ~45s
@@ -52,6 +120,7 @@ registerLobbyHandlers(io);
 
 // ─── REST Routes ─────────────────────────────────────────────────────────────
 
+app.use('/assets', express.static(socketIoClientDir));
 // Statische Assets + Spiele-Clients + Docs (vor REST-Routen)
 app.use('/assets',   express.static(path.join(__dirname, '../../server/public')));
 app.use('/tictactoe', express.static(path.join(__dirname, '../../games/tictactoe')));
@@ -71,16 +140,21 @@ app.get('/', (_req, res) => {
   const gameCards = games.length === 0
     ? `<p class="empty">Noch keine Spiele verfügbar.</p>`
     : games.map(g => {
+        const safeName = escapeHtml(g.name);
+        const safeDescription = escapeHtml(g.description);
+        const safeGameId = encodeURIComponent(g.id);
+        const safeLink = safeExternalLink(g.link);
+
         if (!g.hosted) {
           // Externe Spiele: kein interner Link, stattdessen optionaler externer Button
-          const externalBtn = g.link
-            ? `<a class="play-btn external-btn" href="${g.link}" target="_blank" rel="noopener noreferrer">Zum Spiel ↗</a>`
+          const externalBtn = safeLink
+            ? `<a class="play-btn external-btn" href="${safeLink}" target="_blank" rel="noopener noreferrer">Zum Spiel ↗</a>`
             : `<span class="ext-badge">Externer Client</span>`;
           return `
       <div class="card external-card">
-        <h2>${g.name}</h2>
-        <p>${g.description}</p>
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:1rem;">
+        <h2>${safeName}</h2>
+        <p>${safeDescription}</p>
+          <div class="card-meta">
           <span class="badge">Bis zu ${g.maxPlayers} Spieler</span>
           ${externalBtn}
         </div>
@@ -88,11 +162,11 @@ app.get('/', (_req, res) => {
         }
         // Gehostete Spiele: normaler interner Link
         return `
-      <a href="/${g.id}/" class="card-link">
+      <a href="/${safeGameId}/" class="card-link">
         <div class="card">
-          <h2>${g.name}</h2>
-          <p>${g.description}</p>
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-top:1rem;">
+          <h2>${safeName}</h2>
+          <p>${safeDescription}</p>
+          <div class="card-meta">
             <span class="badge">Bis zu ${g.maxPlayers} Spieler</span>
             <span class="play-btn">Spielen →</span>
           </div>
@@ -107,72 +181,7 @@ app.get('/', (_req, res) => {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Ethernal Cosmos</title>
-  <style>
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
-      font-family: system-ui, sans-serif;
-      background: #0d0d1a;
-      color: #e0e0f0;
-      min-height: 100vh;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      padding: 3rem 1rem;
-    }
-    header { text-align: center; margin-bottom: 3rem; }
-    header h1 { font-size: 2.5rem; letter-spacing: .1em; color: #a78bfa; }
-    header p  { margin-top: .5rem; color: #94a3b8; }
-    .status {
-      display: inline-flex; align-items: center; gap: .5rem;
-      background: #1e1e3a; border: 1px solid #2d2d5a;
-      border-radius: 999px; padding: .35rem 1rem;
-      font-size: .85rem; color: #6ee7b7; margin-top: 1rem;
-    }
-    .dot { width: 8px; height: 8px; border-radius: 50%; background: #6ee7b7;
-           animation: pulse 2s infinite; }
-    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
-    h2.section { font-size: 1.1rem; color: #94a3b8; margin-bottom: 1.5rem;
-                 text-transform: uppercase; letter-spacing: .12em; }
-    .grid { display: grid; gap: 1.5rem;
-            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-            width: 100%; max-width: 900px; }
-    .card {
-      background: #1a1a2e; border: 1px solid #2d2d5a;
-      border-radius: 12px; padding: 1.5rem;
-      transition: border-color .2s;
-    }
-    .card:hover { border-color: #7c3aed; }
-    .card h2 { font-size: 1.25rem; color: #c4b5fd; margin-bottom: .5rem; }
-    .card p  { color: #94a3b8; font-size: .9rem; line-height: 1.5; }
-    .badge {
-      display: inline-block; margin-top: 1rem;
-      background: #2d1b69; color: #a78bfa;
-      border-radius: 999px; padding: .2rem .75rem; font-size: .8rem;
-    }
-    .empty { color: #475569; font-style: italic; }
-    .card-link { text-decoration: none; display: block; }
-    .card-link .card { cursor: pointer; }
-    .play-btn {
-      background: #7c3aed; color: #fff;
-      border-radius: 8px; padding: .35rem .9rem;
-      font-size: .85rem; font-weight: bold;
-      transition: background .15s;
-    }
-    .card-link:hover .play-btn { background: #6d28d9; }
-    .external-card { cursor: default; }
-    .external-btn {
-      background: #0f766e; color: #fff; text-decoration: none;
-      border-radius: 8px; padding: .35rem .9rem;
-      font-size: .85rem; font-weight: bold;
-      transition: background .15s;
-    }
-    .external-btn:hover { background: #0d9488; }
-    .ext-badge {
-      background: #1e293b; color: #64748b;
-      border-radius: 8px; padding: .35rem .9rem;
-      font-size: .85rem;
-    }
-  </style>
+  <link rel="stylesheet" href="/assets/hub.css">
 </head>
 <body>
   <header>
@@ -182,7 +191,7 @@ app.get('/', (_req, res) => {
   </header>
   <h2 class="section">Verfügbare Spiele</h2>
   <div class="grid">${gameCards}</div>
-  <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+  <script src="/assets/socket.io.min.js"></script>
   <script src="/assets/panel.js"></script>
 </body>
 </html>`);

@@ -34,263 +34,12 @@
   // ── Shadow DOM Root ───────────────────────────────────────────────────────
   const host = document.createElement('div');
   host.id = 'ethernal-panel-host';
-  host.style.cssText = 'position:fixed;top:0;right:0;z-index:2147483647;pointer-events:none;';
   document.body.appendChild(host);
 
   const shadow = host.attachShadow({ mode: 'open' });
 
   shadow.innerHTML = `
-    <style>
-      *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
-      :host { font-family: system-ui, -apple-system, sans-serif; }
-
-      #toggle-btn {
-        position: fixed;
-        top: 14px;
-        right: 16px;
-        width: 38px;
-        height: 38px;
-        background: #1a1a2e;
-        border: 1px solid #4c1d95;
-        border-radius: 10px;
-        color: #a78bfa;
-        font-size: 1.1rem;
-        cursor: pointer;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        pointer-events: all;
-        transition: background .15s, border-color .15s;
-        box-shadow: 0 2px 12px #0008;
-        z-index: 2147483646;
-      }
-      #toggle-btn:hover { background: #2d1b69; border-color: #7c3aed; }
-
-      #panel {
-        position: fixed;
-        top: 0;
-        right: 0;
-        width: 300px;
-        height: 100vh;
-        background: #0d0d1a;
-        border-left: 1px solid #2d2d5a;
-        display: flex;
-        flex-direction: column;
-        pointer-events: all;
-        transform: translateX(100%);
-        transition: transform .25s cubic-bezier(.4,0,.2,1);
-        box-shadow: -4px 0 24px #0009;
-        overflow: hidden;
-      }
-      #panel.open { transform: translateX(0); }
-
-      .panel-header {
-        padding: 1rem 1rem .75rem;
-        border-bottom: 1px solid #1e1e3a;
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        flex-shrink: 0;
-      }
-      .panel-header .brand { color: #a78bfa; font-size: .95rem; font-weight: 700; letter-spacing: .05em; }
-      .panel-header .game-name { font-size: .7rem; color: #64748b; margin-top: .1rem; }
-      .close-btn {
-        background: transparent;
-        border: none;
-        color: #475569;
-        font-size: 1.1rem;
-        cursor: pointer;
-        padding: .2rem .4rem;
-        border-radius: 6px;
-        transition: color .15s, background .15s;
-        line-height: 1;
-        margin-top: -2px;
-      }
-      .close-btn:hover { color: #e0e0f0; background: #1e1e3a; }
-
-      .panel-body {
-        flex: 1;
-        overflow-y: auto;
-        overflow-x: hidden;
-        display: flex;
-        flex-direction: column;
-        gap: 0;
-      }
-      .panel-body::-webkit-scrollbar { width: 4px; }
-      .panel-body::-webkit-scrollbar-track { background: transparent; }
-      .panel-body::-webkit-scrollbar-thumb { background: #2d2d5a; border-radius: 99px; }
-
-      .section {
-        padding: .85rem 1rem;
-        border-bottom: 1px solid #1a1a2e;
-      }
-      .section-title {
-        font-size: .65rem;
-        text-transform: uppercase;
-        letter-spacing: .12em;
-        color: #475569;
-        margin-bottom: .6rem;
-      }
-
-      /* Auth section */
-      .auth-info { display: flex; align-items: center; justify-content: space-between; gap: .5rem; }
-      .auth-info .uname { font-size: .9rem; color: #c4b5fd; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .btn-sm {
-        background: transparent;
-        border: 1px solid #4c1d95;
-        color: #94a3b8;
-        border-radius: 7px;
-        padding: .3rem .7rem;
-        font-size: .78rem;
-        cursor: pointer;
-        white-space: nowrap;
-        transition: all .15s;
-        flex-shrink: 0;
-      }
-      .btn-sm:hover { background: #1e1e3a; }
-      .btn-sm.danger:hover { color: #f87171; border-color: #7f1d1d; background: #1e1e3a; }
-      .btn-sm.primary { background: #7c3aed; border-color: #7c3aed; color: #fff; }
-      .btn-sm.primary:hover { background: #6d28d9; }
-      .not-logged-in { font-size: .85rem; color: #64748b; }
-      .not-logged-in a { color: #a78bfa; text-decoration: none; }
-      .not-logged-in a:hover { text-decoration: underline; }
-
-      /* Navigation */
-      .nav-link {
-        display: flex;
-        align-items: center;
-        gap: .6rem;
-        color: #94a3b8;
-        text-decoration: none;
-        font-size: .875rem;
-        padding: .4rem .5rem;
-        border-radius: 8px;
-        transition: background .12s, color .12s;
-      }
-      .nav-link:hover { background: #1a1a2e; color: #e0e0f0; }
-      .nav-link .icon { width: 18px; text-align: center; font-size: 1rem; flex-shrink: 0; }
-
-      /* Presence */
-      .presence-list { display: flex; flex-direction: column; gap: .35rem; }
-      .presence-item {
-        display: flex;
-        align-items: center;
-        gap: .6rem;
-        padding: .3rem .4rem;
-        border-radius: 8px;
-        transition: background .12s;
-      }
-      .presence-item:hover { background: #1a1a2e; }
-      .avatar {
-        width: 28px;
-        height: 28px;
-        border-radius: 50%;
-        background: #2d1b69;
-        color: #a78bfa;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        font-size: .75rem;
-        font-weight: 700;
-        flex-shrink: 0;
-      }
-      .presence-info { min-width: 0; flex: 1; }
-      .presence-name { font-size: .82rem; color: #e0e0f0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-      .presence-status { font-size: .68rem; color: #475569; }
-      .presence-status.in-lobby  { color: #93c5fd; }
-      .presence-status.in-game   { color: #6ee7b7; }
-      .presence-status.extern    { color: #f9a8d4; }
-      .join-btn {
-        flex-shrink: 0;
-        font-size: .65rem;
-        padding: .18rem .45rem;
-        border-radius: 6px;
-        border: 1px solid #3b82f6;
-        background: transparent;
-        color: #93c5fd;
-        cursor: pointer;
-        transition: background .12s, color .12s;
-        white-space: nowrap;
-      }
-      .join-btn:hover { background: #1e3a5f; color: #bfdbfe; }
-      .empty-hint { font-size: .8rem; color: #475569; font-style: italic; }
-
-      /* Toast */
-      #ec-toast {
-        position: fixed;
-        bottom: 1.5rem;
-        left: 50%;
-        transform: translateX(-50%) translateY(2rem);
-        background: #1e1e3a;
-        border: 1px solid #4c1d95;
-        color: #e0e0f0;
-        font-size: .82rem;
-        padding: .45rem 1rem;
-        border-radius: 8px;
-        opacity: 0;
-        transition: opacity .2s, transform .2s;
-        pointer-events: none;
-        z-index: 2147483648;
-        max-width: 220px;
-        text-align: center;
-      }
-      #ec-toast.show {
-        opacity: 1;
-        transform: translateX(-50%) translateY(0);
-      }
-
-      /* Lobby */
-      .lobby-title { font-size: .82rem; color: #c4b5fd; font-weight: 600; margin-bottom: .5rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-      .lobby-players { display: flex; flex-direction: column; gap: .3rem; }
-      .lobby-player {
-        display: flex;
-        align-items: center;
-        gap: .5rem;
-        font-size: .82rem;
-        color: #94a3b8;
-        padding: .2rem 0;
-      }
-      .lobby-player .host-badge {
-        font-size: .65rem;
-        background: #2d1b69;
-        color: #a78bfa;
-        border-radius: 4px;
-        padding: .1rem .35rem;
-        flex-shrink: 0;
-      }
-
-      /* Game Actions */
-      .actions-list { display: flex; flex-direction: column; gap: .5rem; }
-      .action-btn {
-        width: 100%;
-        background: #1a1a2e;
-        border: 1px solid #2d2d5a;
-        color: #e0e0f0;
-        border-radius: 9px;
-        padding: .6rem 1rem;
-        font-size: .85rem;
-        cursor: pointer;
-        text-align: left;
-        display: flex;
-        align-items: center;
-        gap: .6rem;
-        transition: background .12s, border-color .15s;
-      }
-      .action-btn:hover { background: #21213d; border-color: #4c1d95; }
-      .action-btn.danger { border-color: #4c1d1d; }
-      .action-btn.danger:hover { background: #1e1010; border-color: #7f1d1d; color: #f87171; }
-
-      /* Footer */
-      .panel-footer {
-        padding: .6rem 1rem;
-        border-top: 1px solid #1a1a2e;
-        font-size: .7rem;
-        color: #2d2d5a;
-        text-align: center;
-        flex-shrink: 0;
-      }
-    </style>
+    <link rel="stylesheet" href="/assets/panel.css">
 
     <button id="toggle-btn" title="Ethernal Panel öffnen">☰</button>
 
@@ -319,13 +68,13 @@
         </div>
 
         <!-- Lobby -->
-        <div class="section" id="section-lobby" style="display:none">
+        <div class="section hidden" id="section-lobby">
           <div class="section-title">Aktuelle Lobby</div>
           <div id="lobby-content"></div>
         </div>
 
         <!-- Game Actions -->
-        <div class="section" id="section-actions" style="display:none">
+        <div class="section hidden" id="section-actions">
           <div class="section-title">Spieloptionen</div>
           <div class="actions-list" id="actions-list"></div>
         </div>
@@ -470,17 +219,17 @@
   // ── Lobby Rendering ────────────────────────────────────────────────────────
   function renderLobby() {
     if (!currentLobby) {
-      sectionLobby.style.display = 'none';
+      sectionLobby.classList.add('hidden');
       return;
     }
-    sectionLobby.style.display = '';
+    sectionLobby.classList.remove('hidden');
     const players = currentLobby.players ?? [];
     lobbyContent.innerHTML = `
       <div class="lobby-title">${escHtml(currentLobby.name ?? 'Lobby')}</div>
       <div class="lobby-players">
         ${players.map(p => `
           <div class="lobby-player">
-            <div class="avatar" style="width:22px;height:22px;font-size:.6rem">${escHtml(p.username.slice(0,2).toUpperCase())}</div>
+            <div class="avatar avatar-sm">${escHtml(p.username.slice(0,2).toUpperCase())}</div>
             ${escHtml(p.username)}
             ${p.isHost ? '<span class="host-badge">Host</span>' : ''}
           </div>`).join('')}
@@ -490,10 +239,10 @@
   // ── Actions Rendering ──────────────────────────────────────────────────────
   function renderActions() {
     if (registeredActions.length === 0) {
-      sectionActions.style.display = 'none';
+      sectionActions.classList.add('hidden');
       return;
     }
-    sectionActions.style.display = '';
+    sectionActions.classList.remove('hidden');
     actionsList.innerHTML = registeredActions.map(a =>
       `<button class="action-btn${a.style === 'danger' ? ' danger' : ''}" data-id="${escHtml(a.id)}">
         ${a.icon ? `<span>${escHtml(a.icon)}</span>` : ''}
