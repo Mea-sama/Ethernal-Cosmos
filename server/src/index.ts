@@ -17,6 +17,7 @@ import { userDataRouter, playerDataRouter, leaderboardRouter } from './user-data
 import { registerSocketAuth, registerLobbyHandlers, registerIpcRouting } from './lobby/lobby.socket';
 import { listGames } from './games/game.registry';
 import { ALLOWED_ORIGINS, HOST, IS_PRODUCTION, PORT, isAllowedOrigin } from './config/env';
+import { serverLimits } from './config/limits';
 
 const socketIoClientCandidates = [
   path.resolve(__dirname, '../../node_modules/socket.io/client-dist'),
@@ -213,6 +214,9 @@ async function start(): Promise<void> {
   await initDatabase();
   httpServer.listen(PORT, HOST, () => {
     console.log(`[Server] Ethernal Cosmos Hub läuft auf ${HOST}:${PORT} (intern — HTTPS via Caddy auf :12346)`);
+    console.log(
+      `[Limits] binary.maxPayloadBytes=${serverLimits.binary.maxPayloadBytes}, auth.login=${serverLimits.authRateLimits.login.max}/${serverLimits.authRateLimits.login.windowMs}ms`
+    );
   });
 }
 

@@ -5,6 +5,7 @@ import { lobbyManager } from './lobby.manager';
 import { getGame } from '../games/game.registry';
 import { instanceManager } from '../games/instance.manager';
 import { bulkSet, getAllOwn, getVisibleData } from '../user-data/userdata.service';
+import { serverLimits } from '../config/limits';
 import type {
   ClientToServerEvents,
   ServerToClientEvents,
@@ -26,34 +27,14 @@ interface LimitRule {
   burst: number;
 }
 
-const SOCKET_LIMITS: Record<string, LimitRule> = {
-  // Control plane
-  createLobby: { refillPerSecond: 0.1, burst: 2 },
-  joinLobby: { refillPerSecond: 0.25, burst: 4 },
-  joinLobbyByCode: { refillPerSecond: 0.25, burst: 4 },
-  kickPlayer: { refillPerSecond: 0.5, burst: 3 },
-  transferHost: { refillPerSecond: 0.5, burst: 3 },
-  listLobbies: { refillPerSecond: 5, burst: 15 },
-  getLobbyInfo: { refillPerSecond: 5, burst: 15 },
-  presenceList: { refillPerSecond: 3, burst: 10 },
-  getUserData: { refillPerSecond: 8, burst: 20 },
-  getPlayerData: { refillPerSecond: 8, burst: 20 },
-
-  // Data plane (high-throughput): designed to sustain 120+ msg/s workloads.
-  sendToLobby: { refillPerSecond: 250, burst: 500 },
-  sendToPlayer: { refillPerSecond: 200, burst: 400 },
-  gameAction: { refillPerSecond: 300, burst: 600 },
-};
-
-const LOBBY_LIMITS: Record<string, LimitRule> = {
-  sendToLobby: { refillPerSecond: 1200, burst: 2400 },
-  gameAction: { refillPerSecond: 1600, burst: 3200 },
-};
+const SOCKET_LIMITS: Record<string, LimitRule> = serverLimits.socketLimits;
+const LOBBY_LIMITS: Record<string, LimitRule> = serverLimits.lobbyLimits;
+const MAX_BINARY_PAYLOAD_BYTES = serverLimits.binary.maxPayloadBytes;
 
 const socketBuckets = new Map<string, Map<string, TokenBucket>>();
 const lobbyBuckets = new Map<string, Map<string, TokenBucket>>();
 const lastRateLimitNotice = new Map<string, number>();
-const RATE_NOTICE_COOLDOWN_MS = 2000;
+const RATE_NOTICE_COOLDOWN_MS = serverLimits.rateLimitNoticeCooldownMs;
 
 function allowByBucket(
   bucketMap: Map<string, Map<string, TokenBucket>>,
@@ -104,6 +85,44 @@ function enforceSocketLimit(socket: AppSocket, eventName: keyof typeof SOCKET_LI
   if (allowSocketEvent(socket, eventName)) return true;
   emitRateLimitError(socket, eventName);
   return false;
+}
+
+function asBinaryPayload(payload: unknown): Uint8Array | null {
+  if (payload instanceof Uint8Array) return payload;
+  if (payload instanceof ArrayBuffer) return new Uint8Array(payload);
+  if (typeof payload === 'string') {
+    try {
+      return Buffer.from(payload, 'base64');
+    } catch {
+      return null;
+    }
+  }
+  if (ArrayBuffer.isView(payload)) {
+    return new Uint8Array(payload.buffer, payload.byteOffset, payload.byteLength);
+  }
+  return null;
+}
+
+function validateBinaryRelayInput(
+  socket: AppSocket,
+  data: { typeCode: number; payload: unknown },
+): { typeCode: number; payload: Uint8Array } | null {
+  if (!Number.isInteger(data.typeCode) || data.typeCode < 0 || data.typeCode > 65535) {
+    socket.emit('error', 'Ungültiger Binary-Typcode');
+    return null;
+  }
+
+  const payload = asBinaryPayload(data.payload);
+  if (!payload) {
+    socket.emit('error', 'Ungültige Binary-Payload');
+    return null;
+  }
+  if (payload.byteLength > MAX_BINARY_PAYLOAD_BYTES) {
+    socket.emit('error', `Binary-Payload zu groß (max ${MAX_BINARY_PAYLOAD_BYTES} Bytes)`);
+    return null;
+  }
+
+  return { typeCode: data.typeCode, payload };
 }
 
 // ─── Presence Map ──────────────────────────────────────────────────────────────
@@ -379,6 +398,34 @@ export function registerLobbyHandlers(io: AppServer): void {
       socket.to(lobbyId).emit('message', { from: userId, type, payload });
     });
 
+    // ── sendToLobbyBinary (Relay) ───────────────────────────────────────────
+    socket.on('sendToLobbyBinary', ({ typeCode, payload }) => {
+      if (!enforceSocketLimit(socket, 'sendToLobbyBinary')) return;
+      const lobbyId = socket.data.currentLobbyId;
+      if (!lobbyId) {
+        socket.emit('error', 'Du bist in keiner Lobby');
+        return;
+      }
+      const currentLobby = lobbyManager.getLobbyByUserId(userId);
+      if (!currentLobby || currentLobby.id !== lobbyId) {
+        socket.emit('error', 'Lobby-Kontext ungültig');
+        return;
+      }
+      if (!allowLobbyEvent(lobbyId, 'sendToLobbyBinary')) {
+        emitRateLimitError(socket, 'sendToLobbyBinary:lobby');
+        return;
+      }
+
+      const binaryData = validateBinaryRelayInput(socket, { typeCode, payload });
+      if (!binaryData) return;
+
+      socket.to(lobbyId).emit('messageBinary', {
+        from: userId,
+        typeCode: binaryData.typeCode,
+        payload: binaryData.payload,
+      });
+    });
+
     // ── sendToPlayer (Relay) ─────────────────────────────────────────────────
     socket.on('sendToPlayer', async ({ playerId, type, payload }) => {
       if (!enforceSocketLimit(socket, 'sendToPlayer')) return;
@@ -406,6 +453,43 @@ export function registerLobbyHandlers(io: AppServer): void {
         return;
       }
       target.emit('message', { from: userId, type, payload });
+    });
+
+    // ── sendToPlayerBinary (Relay) ──────────────────────────────────────────
+    socket.on('sendToPlayerBinary', async ({ playerId, typeCode, payload }) => {
+      if (!enforceSocketLimit(socket, 'sendToPlayerBinary')) return;
+      const lobbyId = socket.data.currentLobbyId;
+      if (!lobbyId) {
+        socket.emit('error', 'Du bist in keiner Lobby');
+        return;
+      }
+      const senderLobby = lobbyManager.getLobbyByUserId(userId);
+      if (!senderLobby || senderLobby.id !== lobbyId) {
+        socket.emit('error', 'Lobby-Kontext ungültig');
+        return;
+      }
+
+      const targetLobby = lobbyManager.getLobbyByUserId(playerId);
+      if (!targetLobby || targetLobby.id !== lobbyId) {
+        socket.emit('error', 'Spieler nicht in derselben Lobby');
+        return;
+      }
+
+      const targetSocketId = gameSocketMap.get(playerId);
+      const target = targetSocketId ? io.sockets.sockets.get(targetSocketId) : undefined;
+      if (!target) {
+        socket.emit('error', 'Spieler nicht erreichbar');
+        return;
+      }
+
+      const binaryData = validateBinaryRelayInput(socket, { typeCode, payload });
+      if (!binaryData) return;
+
+      target.emit('messageBinary', {
+        from: userId,
+        typeCode: binaryData.typeCode,
+        payload: binaryData.payload,
+      });
     });
     // ── getUserData ──────────────────────────────────────────────────────────────
     socket.on('getUserData', async (gameId: string) => {

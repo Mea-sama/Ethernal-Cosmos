@@ -9,33 +9,34 @@ import {
   revokeRefreshToken,
 } from './auth.service';
 import { isAuthUsernameWhitelisted, isRefreshTokenWhitelisted } from './rate-limit-whitelist';
+import { serverLimits } from '../config/limits';
 
 const router = Router();
 
 // ─── Rate Limiter ───────────────────────────────────────────────────────────────
 
 const loginLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 Minuten
-  max: 10,
+  windowMs: serverLimits.authRateLimits.login.windowMs,
+  max: serverLimits.authRateLimits.login.max,
   standardHeaders: 'draft-7',
   legacyHeaders: false,
-  message: { error: 'Zu viele Login-Versuche, bitte in 15 Minuten erneut versuchen' },
+  message: { error: serverLimits.authRateLimits.login.message },
 });
 
 const registerLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000, // 1 Stunde
-  max: 5,
+  windowMs: serverLimits.authRateLimits.register.windowMs,
+  max: serverLimits.authRateLimits.register.max,
   standardHeaders: 'draft-7',
   legacyHeaders: false,
-  message: { error: 'Zu viele Registrierungsversuche, bitte später erneut versuchen' },
+  message: { error: serverLimits.authRateLimits.register.message },
 });
 
 const refreshLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 Minuten
-  max: 30,
+  windowMs: serverLimits.authRateLimits.refresh.windowMs,
+  max: serverLimits.authRateLimits.refresh.max,
   standardHeaders: 'draft-7',
   legacyHeaders: false,
-  message: { error: 'Zu viele Token-Refresh-Anfragen' },
+  message: { error: serverLimits.authRateLimits.refresh.message },
 });
 
 function withWhitelistBypass(

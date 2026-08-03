@@ -9,12 +9,15 @@ import type {
   DataVisibility,
   PresenceUser,
   RelayMessage,
+  RelayBinaryMessage,
 } from '@ethernal/shared';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export type { Lobby, UserDataEntry, DataVisibility, PresenceUser } from '@ethernal/shared';
-export type { RelayMessage } from '@ethernal/shared';
+export type { RelayMessage, RelayBinaryMessage } from '@ethernal/shared';
+
+export type BinaryPayload = Uint8Array | ArrayBuffer;
 
 export interface EthernalClientOptions {
   /** Base URL of the Ethernal Cosmos hub server, e.g. "http://localhost:12346" */
@@ -173,6 +176,18 @@ export class EthernalClient extends EventEmitter {
     this.getSocket().emit('sendToPlayer', { playerId, type, payload });
   }
 
+  /** Broadcast a binary message to all other players in the lobby. */
+  sendToLobbyBinary(typeCode: number, payload: BinaryPayload): void {
+    const bytes = payload instanceof Uint8Array ? payload : new Uint8Array(payload);
+    this.getSocket().emit('sendToLobbyBinary', { typeCode, payload: bytes });
+  }
+
+  /** Send a binary message directly to one player in the lobby. */
+  sendToPlayerBinary(playerId: string, typeCode: number, payload: BinaryPayload): void {
+    const bytes = payload instanceof Uint8Array ? payload : new Uint8Array(payload);
+    this.getSocket().emit('sendToPlayerBinary', { playerId, typeCode, payload: bytes });
+  }
+
   /** Subscribe to relay messages with an optional payload type parameter for compile-time typing. */
   onMessage<TPayload = unknown>(listener: (data: RelayMessage<TPayload>) => void): this {
     return this.on('message', listener as (data: RelayMessage) => void);
@@ -181,6 +196,16 @@ export class EthernalClient extends EventEmitter {
   /** Subscribe once to the next relay message. */
   onceMessage<TPayload = unknown>(listener: (data: RelayMessage<TPayload>) => void): this {
     return this.once('message', listener as (data: RelayMessage) => void);
+  }
+
+  /** Subscribe to incoming binary relay messages. */
+  onBinaryMessage(listener: (data: RelayBinaryMessage) => void): this {
+    return this.on('messageBinary', listener as (data: RelayBinaryMessage) => void);
+  }
+
+  /** Subscribe once to the next incoming binary relay message. */
+  onceBinaryMessage(listener: (data: RelayBinaryMessage) => void): this {
+    return this.once('messageBinary', listener as (data: RelayBinaryMessage) => void);
   }
 
   // ─── Game Actions ─────────────────────────────────────────────────────────
@@ -339,6 +364,7 @@ export class EthernalClient extends EventEmitter {
     forward('gameOver');
     forward('playerKicked');
     forward('message');
+    forward('messageBinary');
     forward('userData');
     forward('playerData');
     forward('presence:joined');
@@ -476,6 +502,7 @@ export class EthernalClient extends EventEmitter {
   on(event: 'gameOver', listener: (result: unknown) => void): this;
   on(event: 'playerKicked', listener: (data: { lobbyId: string }) => void): this;
   on(event: 'message', listener: (data: RelayMessage) => void): this;
+  on(event: 'messageBinary', listener: (data: RelayBinaryMessage) => void): this;
   on(event: 'userData', listener: (data: { gameId: string; entries: UserDataEntry[] }) => void): this;
   on(event: 'playerData', listener: (data: { playerId: string; gameId: string; entries: UserDataEntry[] }) => void): this;
   on(event: string, listener: (...args: any[]) => void): this {
@@ -496,6 +523,7 @@ export class EthernalClient extends EventEmitter {
   once(event: 'gameOver', listener: (result: unknown) => void): this;
   once(event: 'playerKicked', listener: (data: { lobbyId: string }) => void): this;
   once(event: 'message', listener: (data: RelayMessage) => void): this;
+  once(event: 'messageBinary', listener: (data: RelayBinaryMessage) => void): this;
   once(event: 'userData', listener: (data: { gameId: string; entries: UserDataEntry[] }) => void): this;
   once(event: 'playerData', listener: (data: { playerId: string; gameId: string; entries: UserDataEntry[] }) => void): this;
   once(event: string, listener: (...args: any[]) => void): this {

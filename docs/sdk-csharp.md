@@ -158,6 +158,17 @@ public sealed class RelayMessage
 
 `Payload` contains the JSON-decoded value from the socket message. Use `PayloadAs<T>()` to turn it back into a strongly typed object without manually calling `JsonSerializer.Deserialize(...)` in your own code.
 
+### `RelayBinaryMessage`
+
+```csharp
+public sealed class RelayBinaryMessage
+{
+    public string From { get; init; }
+    public int    TypeCode { get; init; }   // 0..65535
+    public byte[] Payload { get; init; }
+}
+```
+
 ---
 
 ## Constructor
@@ -326,6 +337,30 @@ Task SendToPlayerAsync(string playerId, string type, object? payload = null)
 Sends a direct message to one player. Recipient receives the `Message` event.
 
 `Type` and `Payload` follow the same conventions as `SendToLobbyAsync` — arbitrary strings and JSON values defined by your game.
+
+---
+
+### `SendToLobbyBinaryAsync`
+
+```csharp
+Task SendToLobbyBinaryAsync(int typeCode, byte[] payload)
+```
+
+Broadcasts binary data to all other players in the lobby. Recipients receive `MessageBinary`.
+
+---
+
+### `SendToPlayerBinaryAsync`
+
+```csharp
+Task SendToPlayerBinaryAsync(string playerId, int typeCode, byte[] payload)
+```
+
+Sends binary data to one player in the lobby. Recipient receives `MessageBinary`.
+
+Note:
+- The current C# SDK transport sends binary payloads as base64 inside the socket event envelope for broad compatibility.
+- The Hub decodes this back to bytes before relaying.
 
 ---
 
@@ -504,6 +539,7 @@ Subscribe to events before calling `LoginAsync` / `RegisterAsync` to avoid missi
 | Event | Delegate | Description |
 |-------|----------|-------------|
 | `Message` | `Action<RelayMessage>` | Message from another player; `{ From, Type, Payload }`. Use `PayloadAs<T>()` to materialise the payload as a typed object. |
+| `MessageBinary` | `Action<RelayBinaryMessage>` | Binary message from another player; `{ From, TypeCode, Payload }`. Use for packed high-frequency game data. |
 | `UserData` | `Action<UserDataPayload>` | Response to `GetUserDataAsync`; `{ GameId, Entries }` |
 | `PlayerData` | `Action<PlayerDataPayload>` | Response to `GetPlayerDataAsync`; `{ PlayerId, GameId, Entries }` |
 

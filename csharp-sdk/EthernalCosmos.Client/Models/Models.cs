@@ -40,7 +40,7 @@ public sealed class UserDataEntry
 
 public sealed class PublicUser
 {
-    [JsonPropertyName("userId")]   public string UserId   { get; init; } = "";
+    [JsonPropertyName("id")]       public string UserId   { get; init; } = "";
     [JsonPropertyName("username")] public string Username { get; init; } = "";
 }
 
@@ -105,6 +105,13 @@ public sealed class RelayMessage
             return false;
         }
     }
+}
+
+public sealed class RelayBinaryMessage
+{
+    [JsonPropertyName("from")]     public string From     { get; init; } = "";
+    [JsonPropertyName("typeCode")] public int    TypeCode { get; init; }
+    [JsonPropertyName("payload")]  public byte[] Payload  { get; init; } = [];
 }
 
 public sealed class UserDataPayload

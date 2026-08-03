@@ -144,6 +144,22 @@ interface RelayMessage<TPayload = unknown> {
 }
 ```
 
+### `RelayBinaryMessage`
+
+```ts
+interface RelayBinaryMessage {
+  from:     string;      // userId of sender
+  typeCode: number;      // 0..65535
+  payload:  Uint8Array;
+}
+```
+
+### `BinaryPayload`
+
+```ts
+type BinaryPayload = Uint8Array | ArrayBuffer;
+```
+
 ---
 
 ## Constructor
@@ -342,6 +358,44 @@ Same as `onMessage()`, but only for the next incoming relay message.
 
 ---
 
+### `sendToLobbyBinary(typeCode, payload)`
+
+```ts
+sendToLobbyBinary(typeCode: number, payload: BinaryPayload): void
+```
+
+Broadcasts a binary payload to all other players in the lobby. Recipients receive `messageBinary`.
+
+---
+
+### `sendToPlayerBinary(playerId, typeCode, payload)`
+
+```ts
+sendToPlayerBinary(playerId: string, typeCode: number, payload: BinaryPayload): void
+```
+
+Sends a binary payload to one player in the lobby. Recipient receives `messageBinary`.
+
+---
+
+### `onBinaryMessage(listener)`
+
+```ts
+onBinaryMessage(listener: (data: RelayBinaryMessage) => void): this
+```
+
+Convenience helper for the `messageBinary` event.
+
+### `onceBinaryMessage(listener)`
+
+```ts
+onceBinaryMessage(listener: (data: RelayBinaryMessage) => void): this
+```
+
+Same as `onBinaryMessage()`, but only for the next incoming binary relay message.
+
+---
+
 ### `sendGameAction(type, payload)`
 
 ```ts
@@ -519,6 +573,7 @@ const top10 = await client.getLeaderboard('chess', 'wins', { limit: 10 });
 | Event | Payload | Description |
 |-------|---------|-------------|
 | `message` | `RelayMessage<TPayload = unknown>` | Message from another player via relay. Use `onMessage<T>()` if you want a typed payload on the receiver side. |
+| `messageBinary` | `RelayBinaryMessage` | Binary message from another player via relay. Use for packed high-frequency data paths. |
 
 ### User Data Events
 

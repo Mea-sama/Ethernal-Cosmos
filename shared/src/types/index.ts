@@ -138,6 +138,12 @@ export interface RelayMessage<TPayload = unknown> {
   payload: TPayload;
 }
 
+export interface RelayBinaryMessage<TPayload = Uint8Array> {
+  from: string;
+  typeCode: number;
+  payload: TPayload;
+}
+
 // ─── Panel ───────────────────────────────────────────────────────────────────
 
 /**
@@ -197,8 +203,14 @@ export interface ClientToServerEvents {
   /** Nachricht an alle anderen Spieler in der Lobby senden (Relay) */
   sendToLobby: (data: { type: string; payload: unknown }) => void;
 
+  /** Binäre Nachricht an alle anderen Spieler in der Lobby senden (Relay) */
+  sendToLobbyBinary: (data: { typeCode: number; payload: Uint8Array }) => void;
+
   /** Nachricht direkt an einen einzelnen Spieler senden (Relay) */
   sendToPlayer: (data: { playerId: string; type: string; payload: unknown }) => void;
+
+  /** Binäre Nachricht direkt an einen einzelnen Spieler senden (Relay) */
+  sendToPlayerBinary: (data: { playerId: string; typeCode: number; payload: Uint8Array }) => void;
 
   /** User-Daten für ein Spiel abrufen (Alternative zu REST GET /userdata/:gameId) */
   getUserData: (gameId: string) => void;
@@ -247,6 +259,9 @@ export interface ServerToClientEvents {
 
   /** Eingehende Relay-Nachricht von einem anderen Spieler */
   message: (data: RelayMessage) => void;
+
+  /** Eingehende binäre Relay-Nachricht von einem anderen Spieler */
+  messageBinary: (data: RelayBinaryMessage) => void;
 
   /** Antwort auf getUserData — eigene Daten als Key-Value-Liste */
   userData: (data: { gameId: string; entries: UserDataEntry[] }) => void;

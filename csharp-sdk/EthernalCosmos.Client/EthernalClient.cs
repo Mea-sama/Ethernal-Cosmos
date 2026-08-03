@@ -50,6 +50,7 @@ public sealed class EthernalClient : IAsyncDisposable
     public event Action<JsonElement>?           GameOver;
     public event Action<PlayerKickedData>?      PlayerKicked;
     public event Action<RelayMessage>?          Message;
+    public event Action<RelayBinaryMessage>?    MessageBinary;
     public event Action<UserDataPayload>?       UserData;
     public event Action<PlayerDataPayload>?     PlayerData;
 
@@ -183,6 +184,33 @@ public sealed class EthernalClient : IAsyncDisposable
     /// <summary>Send a typed message directly to one player in the lobby.</summary>
     public Task SendToPlayerAsync(string playerId, string type, object? payload = null) =>
         GetSocket().EmitAsync("sendToPlayer", new { playerId, type, payload });
+
+    /// <summary>
+    /// Broadcast a binary message to all other players in the lobby.
+    /// </summary>
+    public Task SendToLobbyBinaryAsync(int typeCode, byte[] payload)
+    {
+        if (payload is null) throw new ArgumentNullException(nameof(payload));
+        return GetSocket().EmitAsync("sendToLobbyBinary", new
+        {
+            typeCode,
+            payload = Convert.ToBase64String(payload),
+        });
+    }
+
+    /// <summary>
+    /// Send a binary message directly to one player in the lobby.
+    /// </summary>
+    public Task SendToPlayerBinaryAsync(string playerId, int typeCode, byte[] payload)
+    {
+        if (payload is null) throw new ArgumentNullException(nameof(payload));
+        return GetSocket().EmitAsync("sendToPlayerBinary", new
+        {
+            playerId,
+            typeCode,
+            payload = Convert.ToBase64String(payload),
+        });
+    }
 
     // ─── Game Actions ─────────────────────────────────────────────────────────
 
@@ -324,8 +352,16 @@ public sealed class EthernalClient : IAsyncDisposable
         RegisterRaw(socket, "gameOver",     d => GameOver?.Invoke(d));
         RegisterEvent<PlayerKickedData>(socket, "playerKicked", d => PlayerKicked?.Invoke(d));
         RegisterEvent<RelayMessage>(socket,     "message",       d => Message?.Invoke(d));
+        RegisterBinaryEvent(socket,             "messageBinary", d => MessageBinary?.Invoke(d));
         RegisterEvent<UserDataPayload>(socket,  "userData",      d => UserData?.Invoke(d));
         RegisterEvent<PlayerDataPayload>(socket,"playerData",    d => PlayerData?.Invoke(d));
+
+        // Server-seitige Fehlermeldungen auch für fire-and-forget Events (z. B. Relay) sichtbar machen.
+        socket.On("error", response =>
+        {
+            try { ServerError?.Invoke(response.GetValue<string>(0)); }
+            catch { /* ignore malformed errors */ }
+        });
 
         // Presence
         RegisterEvent<PresenceUser>(socket,   "presence:joined", d => PresenceJoined?.Invoke(d));
@@ -387,6 +423,61 @@ public sealed class EthernalClient : IAsyncDisposable
             }
             try { handler(response.GetValue<JsonElement>(0)); }
             catch { /* ignore */ }
+        });
+    }
+
+    private void RegisterBinaryEvent(SocketIOClient.SocketIO socket, string eventName, Action<RelayBinaryMessage> handler)
+    {
+        socket.On(eventName, response =>
+        {
+            lock (_pendingLock)
+            {
+                if (_pending.TryGetValue(eventName, out var q) && q.Count > 0)
+                {
+                    q.Dequeue().TrySetResult(response);
+                    return;
+                }
+            }
+
+            try
+            {
+                // Preferred path: let the SocketIOClient serializer materialize the event payload.
+                var typed = response.GetValue<RelayBinaryMessage>(0);
+                if (typed is not null)
+                {
+                    handler(typed);
+                    return;
+                }
+
+                // Compatibility path: parse manually from JsonElement.
+                var root = response.GetValue<JsonElement>(0);
+                var from = root.GetProperty("from").GetString() ?? "";
+                var typeCode = root.GetProperty("typeCode").GetInt32();
+                var payloadNode = root.GetProperty("payload");
+
+                byte[] payload;
+                if (payloadNode.ValueKind == JsonValueKind.String)
+                {
+                    payload = Convert.FromBase64String(payloadNode.GetString() ?? "");
+                }
+                else if (
+                    payloadNode.ValueKind == JsonValueKind.Object
+                    && payloadNode.TryGetProperty("data", out var dataArray)
+                    && dataArray.ValueKind == JsonValueKind.Array)
+                {
+                    payload = dataArray.EnumerateArray().Select(v => (byte)v.GetInt32()).ToArray();
+                }
+                else
+                {
+                    payload = payloadNode.Deserialize<byte[]>() ?? [];
+                }
+
+                handler(new RelayBinaryMessage { From = from, TypeCode = typeCode, Payload = payload });
+            }
+            catch (Exception ex)
+            {
+                ServerError?.Invoke($"Binary event parse failed ({eventName}): {ex.Message}");
+            }
         });
     }
 

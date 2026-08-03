@@ -132,6 +132,12 @@ socket.emit('transferHost', { playerId: string });
 
 ### Relay
 
+Relay is split into two lanes:
+- JSON lane: `sendToLobby` / `sendToPlayer` -> `message`
+- Binary lane: `sendToLobbyBinary` / `sendToPlayerBinary` -> `messageBinary`
+
+Use the binary lane for high-frequency game data (packed state/input frames).
+
 #### `sendToLobby`
 
 ```ts
@@ -156,6 +162,37 @@ socket.emit('sendToPlayer', {
 ```
 
 Sends a direct message to one player. Recipient receives a `message` event.
+
+---
+
+#### `sendToLobbyBinary`
+
+```ts
+socket.emit('sendToLobbyBinary', {
+  typeCode: number;      // Integer 0..65535
+  payload:  Uint8Array;  // Binary payload
+});
+```
+
+Broadcasts binary data to all other players in the lobby. Recipients receive `messageBinary`.
+
+Notes:
+- `payload` hard cap is currently 1000 bytes by default (server-side validation, configurable via `server/config/limits.json`).
+- For interop, base64 strings are also accepted as payload input and decoded server-side.
+
+---
+
+#### `sendToPlayerBinary`
+
+```ts
+socket.emit('sendToPlayerBinary', {
+  playerId: string;
+  typeCode: number;      // Integer 0..65535
+  payload:  Uint8Array;  // Binary payload
+});
+```
+
+Sends binary data to one player. Recipient receives `messageBinary`.
 
 ---
 
@@ -345,6 +382,20 @@ socket.on('message', (data: {
 ```
 
 Received when another player sends a relay message via `sendToLobby` or `sendToPlayer`.
+
+---
+
+#### `messageBinary`
+
+```ts
+socket.on('messageBinary', (data: {
+  typeCode: number;
+  payload: Uint8Array;
+  from:    string;   // userId of sender
+}) => { ... });
+```
+
+Received when another player sends a binary relay message via `sendToLobbyBinary` or `sendToPlayerBinary`.
 
 ---
 

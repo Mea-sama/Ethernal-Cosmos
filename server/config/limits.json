@@ -1,0 +1,45 @@
+{
+  "binary": {
+    "maxPayloadBytes": 1000
+  },
+  "rateLimitNoticeCooldownMs": 2000,
+  "socketLimits": {
+    "createLobby": { "refillPerSecond": 0.1, "burst": 2 },
+    "joinLobby": { "refillPerSecond": 0.25, "burst": 4 },
+    "joinLobbyByCode": { "refillPerSecond": 0.25, "burst": 4 },
+    "kickPlayer": { "refillPerSecond": 0.5, "burst": 3 },
+    "transferHost": { "refillPerSecond": 0.5, "burst": 3 },
+    "listLobbies": { "refillPerSecond": 5, "burst": 15 },
+    "getLobbyInfo": { "refillPerSecond": 5, "burst": 15 },
+    "presenceList": { "refillPerSecond": 3, "burst": 10 },
+    "getUserData": { "refillPerSecond": 8, "burst": 20 },
+    "getPlayerData": { "refillPerSecond": 8, "burst": 20 },
+    "sendToLobby": { "refillPerSecond": 250, "burst": 500 },
+    "sendToLobbyBinary": { "refillPerSecond": 250, "burst": 500 },
+    "sendToPlayer": { "refillPerSecond": 200, "burst": 400 },
+    "sendToPlayerBinary": { "refillPerSecond": 200, "burst": 400 },
+    "gameAction": { "refillPerSecond": 300, "burst": 600 }
+  },
+  "lobbyLimits": {
+    "sendToLobby": { "refillPerSecond": 1200, "burst": 2400 },
+    "sendToLobbyBinary": { "refillPerSecond": 1200, "burst": 2400 },
+    "gameAction": { "refillPerSecond": 1600, "burst": 3200 }
+  },
+  "authRateLimits": {
+    "login": {
+      "windowMs": 900000,
+      "max": 10,
+      "message": "Zu viele Login-Versuche, bitte in 15 Minuten erneut versuchen"
+    },
+    "register": {
+      "windowMs": 3600000,
+      "max": 5,
+      "message": "Zu viele Registrierungsversuche, bitte später erneut versuchen"
+    },
+    "refresh": {
+      "windowMs": 900000,
+      "max": 30,
+      "message": "Zu viele Token-Refresh-Anfragen"
+    }
+  }
+}
