@@ -58,11 +58,18 @@
       <div class="card host-only" id="setup-host-panel">
         <h2>Spiel-Einstellungen</h2>
         <div class="field-row">
+          <label class="checkbox-row"><input type="radio" name="game-mode" id="mode-classic" value="classic" checked> Classic (Poker)</label>
+          <label class="checkbox-row"><input type="radio" name="game-mode" id="mode-party" value="party"> Party (gleichzeitig, bis 40 Spieler)</label>
+        </div>
+        <div class="field-row" id="classic-only-settings">
           <div class="field"><label>Start-Chips</label><input id="cfg-chips" type="number" value="1000"></div>
           <div class="field"><label>Small Blind</label><input id="cfg-sb" type="number" value="25"></div>
           <div class="field"><label>Big Blind</label><input id="cfg-bb" type="number" value="50"></div>
         </div>
-        <label class="checkbox-row"><input id="cfg-joker" type="checkbox"> Joker aktivieren</label>
+        <div class="field-row hidden" id="party-only-settings">
+          <div class="field"><label>Start-Chips</label><input id="cfg-chips-party" type="number" value="1000"></div>
+        </div>
+        <label class="checkbox-row" id="joker-toggle-row"><input id="cfg-joker" type="checkbox"> Joker aktivieren</label>
 
         <h3>Fragen</h3>
         <div class="field-row">
@@ -179,6 +186,41 @@
             <button class="btn btn-green" id="btn-raise">Raise</button>
             <button class="btn btn-gold" id="btn-allin">All-In</button>
           </div>
+        </div>
+      </div>
+
+      <!-- Party mode view (everyone, including host, plays simultaneously) -->
+      <div id="view-party" class="hidden">
+        <div class="card">
+          <div id="party-bet-display"></div>
+          <div id="party-countdown"></div>
+        </div>
+        <div class="card">
+          <h2>Frage</h2>
+          <div id="party-question"></div>
+          <div id="party-answer-box"></div>
+        </div>
+        <div class="card" id="party-bet-controls">
+          <h2>Dein Einsatz</h2>
+          <div class="field-row" id="party-collecting-controls">
+            <input class="raise-input" id="party-bet-input" type="number">
+            <button class="btn" id="btn-party-set-bet">Einsatz setzen</button>
+          </div>
+          <div class="field-row hidden" id="party-hint-controls">
+            <button class="btn btn-green" id="btn-party-raise">Erhöhen (+50%)</button>
+            <button class="btn" id="btn-party-check">Check</button>
+          </div>
+        </div>
+        <div class="card hidden" id="party-results-card">
+          <h2>🏆 Rangliste</h2>
+          <div id="party-leaderboard"></div>
+          <h3>Rundenergebnis</h3>
+          <div id="party-results"></div>
+          <button class="btn btn-gold" id="btn-party-ready">Bereit</button>
+        </div>
+        <div class="card">
+          <h2>Andere Spieler</h2>
+          <div id="party-others"></div>
         </div>
       </div>
 

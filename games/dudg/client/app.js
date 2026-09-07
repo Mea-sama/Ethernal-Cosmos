@@ -102,6 +102,34 @@ function authHeaders() {
   return { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' };
 }
 
+async function refreshAccessToken() {
+  if (!refreshToken) return false;
+  try {
+    const res = await fetch(ETHERNAL + '/auth/refresh', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refreshToken }),
+    });
+    if (!res.ok) return false;
+    const data = await res.json();
+    token = data.accessToken;
+    refreshToken = data.refreshToken ?? refreshToken;
+    sessionStorage.setItem('ec_token', token);
+    sessionStorage.setItem('ec_refresh', refreshToken);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** fetch() wrapper that transparently retries once after a token refresh on 401. */
+async function authedFetch(url, options = {}) {
+  const doFetch = () => fetch(url, { ...options, headers: { ...(options.headers ?? {}), Authorization: 'Bearer ' + token } });
+  let res = await doFetch();
+  if (res.status === 401 && (await refreshAccessToken())) res = await doFetch();
+  return res;
+}
+
 // ─── Socket connection ───────────────────────────────────────────────────────
 
 function connectSocket() {
@@ -115,11 +143,20 @@ function connectSocket() {
     loadQuestionIndex();
   });
 
-  socket.on('connect_error', (error) => {
+  socket.on('connect_error', async (error) => {
+    if (error.message === 'INVALID_TOKEN' && refreshToken && (await refreshAccessToken())) {
+      socket.auth.token = 'Bearer ' + token;
+      socket.connect();
+      return;
+    }
     setStatus('Verbindungsfehler: ' + error.message, 'err');
   });
 
-  socket.on('error', (message) => setStatus(message, 'err'));
+  socket.on('error', (message) => {
+    // Benign initial-state check (no lobby yet) — not a real error, don't clobber the status.
+    if (message === 'Du bist in keiner Lobby') return;
+    setStatus(message, 'err');
+  });
 
   socket.on('lobbyCreated', (lobby) => applyLobby(lobby));
   socket.on('lobbyInfo', (lobby) => applyLobby(lobby));
@@ -143,6 +180,8 @@ function connectSocket() {
   });
 
   socket.on('playerKicked', () => {
+    lobbyId = null;
+    latestState = null;
     setStatus('Du wurdest aus der Lobby entfernt', 'warn');
     show('sLobby');
   });
@@ -157,9 +196,23 @@ function applyLobby(lobby) {
   els.setupHostPanel.classList.toggle('hidden', !isHost);
   window.EthernalPanel?.setLobby(lobby.id);
   setupPanelActions();
+  updateConnectionStatus();
   const inSetup = !latestState || latestState.phase === 'setup';
   if (lobby.status !== 'closed' && inSetup) show('sSetup');
   else if (lobby.status !== 'closed') show('sGame');
+}
+
+/** Keeps the top-left status reflecting real connection/lobby/phase state instead of stale errors. */
+function updateConnectionStatus() {
+  if (!socket?.connected) { setStatus('Nicht verbunden', 'err'); return; }
+  if (!lobbyId) { setStatus('Verbunden — keine Lobby', 'ok'); return; }
+  const code = els.inviteCode?.textContent ?? '------';
+  const phase = latestState?.phase;
+  if (phase && phase !== 'setup') {
+    setStatus(`Lobby ${code} — Phase: ${PHASE_LABELS[phase] ?? phase}`, 'ok');
+  } else {
+    setStatus(`Lobby-Code: ${code}`, 'ok');
+  }
 }
 
 function setupPanelActions() {
@@ -218,11 +271,15 @@ let questionSearch = '';
 
 async function loadQuestionIndex() {
   try {
-    const res = await fetch(ETHERNAL + '/dudg/api/questions', { headers: authHeaders() });
+    const res = await authedFetch(ETHERNAL + '/dudg/api/questions');
+    if (!res.ok) {
+      setStatus(`Fragenliste konnte nicht geladen werden (${res.status})`, 'err');
+      return;
+    }
     availableQuestions = await res.json();
     renderLabelCards();
-  } catch {
-    // ignore — host can retry via the refresh button
+  } catch (err) {
+    setStatus('Fragenliste konnte nicht geladen werden: ' + err.message, 'err');
   }
 }
 
@@ -248,6 +305,7 @@ function renderLabelCards() {
       if (search && visible.length === 0) return '';
       const allIn = questions.every((q) => currentPool.includes(q.filename));
       const someIn = !allIn && questions.some((q) => currentPool.includes(q.filename));
+      const selectedCount = questions.filter((q) => currentPool.includes(q.filename)).length;
       const expanded = expandedLabels.has(label) || !!search;
       const rows = expanded
         ? visible
@@ -259,7 +317,7 @@ function renderLabelCards() {
         : '';
       return `<div class="label-card">` +
         `<div class="label-card-header">` +
-        `<label class="checkbox-row"><input type="checkbox" class="label-cb" data-label="${escapeHtml(label)}" ${allIn ? 'checked' : ''} ${someIn ? 'data-indeterminate="1"' : ''}> <strong>${escapeHtml(label)}</strong> (${questions.length})</label>` +
+        `<label class="checkbox-row"><input type="checkbox" class="label-cb" data-label="${escapeHtml(label)}" ${allIn ? 'checked' : ''} ${someIn ? 'data-indeterminate="1"' : ''}> <strong>${escapeHtml(label)}</strong> (${selectedCount}/${questions.length})</label>` +
         `<button class="btn" data-expand="${escapeHtml(label)}">${expanded ? '▲ einklappen' : '▼ anzeigen'}</button>` +
         `</div>` +
         `<div class="label-card-body">${rows}</div>` +
@@ -291,7 +349,7 @@ function renderLabelCards() {
 }
 
 function renderPoolPreview() {
-  els.poolPreview.innerHTML = '<strong>Ausgewählt:</strong> ' + (currentPool.length === 0 ? '(keine)' : currentPool.map((f) => escapeHtml(titleFor(f))).join(', '));
+  els.poolPreview.innerHTML = `<strong>${currentPool.length}</strong> Frage(n) ausgewählt`;
   const options = currentPool.map((f) => `<option value="${escapeHtml(f)}">${escapeHtml(titleFor(f))}</option>`).join('');
   els.firstQuestion.innerHTML = options;
   els.nextQuestion.innerHTML = options;
@@ -337,7 +395,7 @@ async function submitCustomQuestion() {
     body = { mode: 'raw', filename: els.cqFilename.value.trim() || file.name.replace(/\.md$/, ''), rawMarkdown, labels };
   }
   try {
-    const res = await fetch(ETHERNAL + '/dudg/api/questions', { method: 'POST', headers: authHeaders(), body: JSON.stringify(body) });
+    const res = await authedFetch(ETHERNAL + '/dudg/api/questions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     const data = await res.json();
     if (!res.ok) { els.cqErr.textContent = data.error?.message ?? JSON.stringify(data.error) ?? 'Fehler beim Speichern.'; return; }
     els.dlgCustomQuestion.close();
@@ -359,16 +417,20 @@ const PHASE_LABELS = {
   setup: 'Setup', collecting: 'Antworten sammeln', bid1: 'Wette 1', hint1: 'Hinweis 1',
   bid2: 'Wette 2', hint2: 'Hinweis 2', bid3: 'Wette 3', answer: 'Antwort', bid4: 'Wette 4',
   reveal: 'Auflösung', payout: 'Auszahlung', gameover: 'Spiel beendet',
+  partyCollecting: 'Antworten & Einsatz', partyHint1: 'Hinweis 1', partyHint2: 'Hinweis 2',
+  partyReveal: 'Ergebnis', partyPayout: 'Auszahlung',
 };
 
 function render() {
   if (!latestState) return;
   els.phaseTrack.textContent = 'Phase: ' + (PHASE_LABELS[latestState.phase] ?? latestState.phase);
   updateRoleUi();
+  updateConnectionStatus();
 
   const role = latestState.role;
   els.viewHost.classList.toggle('hidden', role !== 'host');
   els.viewContestant.classList.toggle('hidden', role !== 'contestant');
+  els.viewParty.classList.toggle('hidden', role !== 'party');
   els.viewSpectator.classList.toggle('hidden', role !== 'spectator');
 
   if (role === 'host') {
@@ -377,6 +439,8 @@ function render() {
     renderHost();
   } else if (role === 'contestant') {
     renderContestant();
+  } else if (role === 'party') {
+    renderParty();
   } else if (role === 'spectator') {
     renderSpectator();
   }
@@ -393,7 +457,7 @@ function renderQuestionHtml(q, wrapperId) {
 
 function renderHost() {
   const s = latestState;
-  els.hostQuestion.innerHTML = renderQuestionHtml(s.currentQuestion);
+  els.hostQuestion.innerHTML = `<div class="pot-display">🏆 Pot: ${s.pot}</div>` + renderQuestionHtml(s.currentQuestion);
   els.hostPlayers.innerHTML = (s.players ?? [])
     .map((p) => `<div class="player-row ${p.userId === s.currentBettorId ? 'active-turn' : ''} ${p.folded ? 'folded' : ''} ${p.eliminated ? 'eliminated' : ''}">` +
       `<span>${p.connected ? '🟢' : '🔴'} ${escapeHtml(p.username)}</span>` +
@@ -423,15 +487,20 @@ function renderHost() {
 
 function renderContestant() {
   const s = latestState;
-  els.contestantBar.innerHTML = `💰 ${s.chips} &nbsp; | &nbsp; Pot: ${s.pot} &nbsp; | &nbsp; Einsatz: ${s.currentBet} &nbsp; | &nbsp; SB/BB: ${s.sbAmount}/${s.bbAmount}`;
+  els.contestantBar.innerHTML = `<div class="pot-display">🏆 Pot: ${s.pot}</div>` +
+    `💰 ${s.chips} &nbsp; | &nbsp; Einsatz: ${s.currentBet} &nbsp; | &nbsp; SB/BB: ${s.sbAmount}/${s.bbAmount}`;
   els.contestantQuestion.innerHTML = renderQuestionHtml(s.question);
 
   if (s.phase === 'collecting' && !s.answerLocked && !s.eliminated) {
     els.contestantAnswerBox.innerHTML = s.question?.questionType === 'options'
       ? (s.question.options ?? []).map((o) => `<button class="btn option-btn" data-opt="${o.letter}">${o.letter}: ${o.html}</button>`).join('')
-      : `<input id="answer-input" type="text" value="${escapeHtml(s.answer ?? '')}"><button class="btn btn-gold" id="btn-submit-answer">Antwort senden</button>`;
+      : `<input id="answer-input" type="text" inputmode="decimal" value="${escapeHtml(s.answer ?? '')}"><button class="btn btn-gold" id="btn-submit-answer">Antwort senden</button>`;
     els.contestantAnswerBox.querySelectorAll('[data-opt]').forEach((btn) => {
       btn.addEventListener('click', () => sendAction('submitAnswer', { answer: btn.dataset.opt }));
+    });
+    const answerInput = document.getElementById('answer-input');
+    answerInput?.addEventListener('input', () => {
+      answerInput.value = answerInput.value.replace(/[^0-9,.\-]/g, '');
     });
     document.getElementById('btn-submit-answer')?.addEventListener('click', () => {
       sendAction('submitAnswer', { answer: document.getElementById('answer-input').value });
@@ -447,18 +516,108 @@ function renderContestant() {
 
   const canBet = s.isCurrentBettor && s.phase.startsWith('bid');
   els.bettingControls.classList.toggle('hidden', !canBet);
+  els.bettingControls.closest('.card').classList.toggle('hidden', s.mode === 'party');
+  els.btnCall.textContent = `Call (${s.toCall ?? 0})`;
   els.contestantTurnMsg.textContent = s.eliminated ? 'Du bist ausgeschieden.' : canBet ? 'Du bist am Zug!' : s.phase.startsWith('bid') ? 'Warte auf andere Spieler...' : '';
 }
 
 function renderSpectator() {
   const s = latestState;
-  els.displayQuestion.innerHTML = renderQuestionHtml(s.question);
+  els.displayQuestion.innerHTML = `<div class="pot-display">🏆 Pot: ${s.pot}</div>` + renderQuestionHtml(s.question);
   els.displayPlayers.innerHTML = (s.players ?? [])
     .map((p) => `<div class="player-row ${p.folded ? 'folded' : ''} ${p.eliminated ? 'eliminated' : ''}">` +
       `<span>${escapeHtml(p.username)}</span><span>💰 ${p.chips}</span><span>Bet: ${p.currentBet}</span>` +
       (p.answer !== null ? `<span>Antwort: ${escapeHtml(String(p.answer))}</span>` : '') + `</div>`)
-    .join('') + `<p>Pot: ${s.pot}</p>`;
+    .join('');
 }
+
+// ─── Party mode rendering ─────────────────────────────────────────────────
+
+function renderParty() {
+  const s = latestState;
+  els.partyBetDisplay.innerHTML = `<div class="pot-display">💰 ${s.chips} &nbsp; | &nbsp; Dein Einsatz: ${s.partyBet}</div>`;
+  els.partyQuestion.innerHTML = renderQuestionHtml(s.question);
+  updatePartyCountdown();
+
+  const collecting = s.phase === 'partyCollecting';
+  const hinting = s.phase === 'partyHint1' || s.phase === 'partyHint2';
+  const revealing = s.phase === 'partyReveal' || s.phase === 'partyPayout';
+
+  els.partyResultsCard.classList.toggle('hidden', !revealing);
+  els.partyBetControls.classList.toggle('hidden', revealing || s.eliminated);
+  els.partyCollectingControls.classList.toggle('hidden', !collecting);
+  els.partyHintControls.classList.toggle('hidden', !hinting);
+
+  if (collecting && !s.eliminated) {
+    els.partyAnswerBox.innerHTML = s.question?.questionType === 'options'
+      ? (s.question.options ?? []).map((o) => `<button class="btn option-btn" data-opt="${o.letter}">${o.letter}: ${o.html}</button>`).join('')
+      : `<input id="party-answer-input" type="text" inputmode="decimal" value="${escapeHtml(s.answer ?? '')}"><button class="btn btn-gold" id="btn-party-submit-answer">Antwort speichern</button>`;
+    els.partyAnswerBox.querySelectorAll('[data-opt]').forEach((btn) => {
+      btn.addEventListener('click', () => sendAction('submitPartyAnswer', { answer: btn.dataset.opt }));
+    });
+    const input = document.getElementById('party-answer-input');
+    input?.addEventListener('input', () => { input.value = input.value.replace(/[^0-9,.\-]/g, ''); });
+    document.getElementById('btn-party-submit-answer')?.addEventListener('click', () => {
+      sendAction('submitPartyAnswer', { answer: document.getElementById('party-answer-input').value });
+    });
+    els.partyBetInput.value = s.partyBet;
+    els.partyBetInput.min = s.minAnte;
+  } else {
+    els.partyAnswerBox.innerHTML = `<p>Deine Antwort: <strong>${escapeHtml(s.answer || '(keine)')}</strong></p>`;
+  }
+
+  if (revealing) {
+    renderPartyLeaderboard(s);
+    els.partyResults.innerHTML = (s.partyResults ?? [])
+      .map((r) => `<div class="player-row"><span>#${r.rank} ${escapeHtml(r.username)}</span>` +
+        `<span>${r.exact ? '✅ exakt' : r.distance === null || !Number.isFinite(r.distance) ? '-' : 'Abstand: ' + r.distance}</span>` +
+        `<span>Einsatz: ${r.betBefore}</span><span>${r.percent.toFixed(0)}%</span><span>Gewinn: ${r.prize}</span></div>`)
+      .join('');
+    els.btnPartyReady.disabled = s.ready;
+    els.btnPartyReady.textContent = s.ready ? 'Warte auf andere...' : 'Bereit';
+  }
+
+  els.partyOthers.innerHTML = (s.others ?? [])
+    .map((o) => `<div class="player-row"><span>${escapeHtml(o.username)}</span><span>${o.answered ? '✅' : '⏳'}</span><span>💰 ${o.chips}</span></div>`)
+    .join('');
+
+  if (s.winnerId) setStatus(`Spiel beendet! Gewinner: ${s.winnerUsername}`, 'ok');
+}
+
+/** Leaderboard: top 10 by chips, always including the viewer's own row (with a "…" gap if outside top 10). */
+function renderPartyLeaderboard(s) {
+  const board = s.partyLeaderboard ?? [];
+  const top = board.slice(0, 10);
+  const mine = board.find((r) => r.userId === s.userId);
+  const rows = [...top];
+  if (mine && !top.some((r) => r.userId === s.userId)) {
+    rows.push({ gap: true });
+    rows.push(mine);
+  }
+  els.partyLeaderboard.innerHTML = rows
+    .map((r) => {
+      if (r.gap) return `<div class="player-row leaderboard-gap">⋯</div>`;
+      const arrow = r.rankDelta > 0 ? `▲${r.rankDelta}` : r.rankDelta < 0 ? `▼${-r.rankDelta}` : '–';
+      const arrowClass = r.rankDelta > 0 ? 'rank-up' : r.rankDelta < 0 ? 'rank-down' : 'rank-same';
+      const netClass = r.net > 0 ? 'rank-up' : r.net < 0 ? 'rank-down' : '';
+      const isMe = r.userId === s.userId ? 'active-turn' : '';
+      return `<div class="player-row ${isMe}"><span>#${r.rank} ${escapeHtml(r.username)}</span>` +
+        `<span class="${arrowClass}">${arrow}</span>` +
+        `<span>💰 ${r.chips}</span>` +
+        `<span class="${netClass}">${r.net >= 0 ? '+' : ''}${r.net}</span></div>`;
+    })
+    .join('');
+}
+
+function updatePartyCountdown() {
+  if (!latestState || latestState.role !== 'party' || !latestState.partyPhaseEndsAt) {
+    if (els.partyCountdown) els.partyCountdown.textContent = '';
+    return;
+  }
+  const remaining = Math.max(0, Math.round((latestState.partyPhaseEndsAt - Date.now()) / 1000));
+  els.partyCountdown.textContent = `⏱ ${remaining}s`;
+}
+setInterval(updatePartyCountdown, 1000);
 
 function escapeHtml(str) {
   return String(str).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -478,8 +637,8 @@ els.btnJoin.addEventListener('click', () => {
   if (code) socket.emit('joinLobbyByCode', { code });
 });
 
-els.btnLeaveSetup.addEventListener('click', () => { socket.emit('leaveLobby'); show('sLobby'); });
-els.btnLeaveGame.addEventListener('click', () => { socket.emit('leaveLobby'); show('sLobby'); });
+els.btnLeaveSetup.addEventListener('click', () => { socket.emit('leaveLobby'); lobbyId = null; latestState = null; updateConnectionStatus(); show('sLobby'); });
+els.btnLeaveGame.addEventListener('click', () => { socket.emit('leaveLobby'); lobbyId = null; latestState = null; updateConnectionStatus(); show('sLobby'); });
 
 els.btnRoleToggle.addEventListener('click', () => {
   const wantsSpectator = latestState?.role !== 'spectator';
@@ -494,15 +653,38 @@ els.btnCqSubmit.addEventListener('click', submitCustomQuestion);
 els.cqTabForm.addEventListener('click', () => { cqMode = 'form'; els.cqTabForm.classList.add('active'); els.cqTabRaw.classList.remove('active'); els.cqForm.classList.remove('hidden'); els.cqRaw.classList.add('hidden'); });
 els.cqTabRaw.addEventListener('click', () => { cqMode = 'raw'; els.cqTabRaw.classList.add('active'); els.cqTabForm.classList.remove('active'); els.cqRaw.classList.remove('hidden'); els.cqForm.classList.add('hidden'); });
 
+els.modeClassic.addEventListener('change', () => {
+  if (els.modeClassic.checked) {
+    sendAction('setMode', { mode: 'classic' });
+    els.classicOnlySettings.classList.remove('hidden');
+    els.partyOnlySettings.classList.add('hidden');
+    els.jokerToggleRow.classList.remove('hidden');
+  }
+});
+els.modeParty.addEventListener('change', () => {
+  if (els.modeParty.checked) {
+    sendAction('setMode', { mode: 'party' });
+    els.classicOnlySettings.classList.add('hidden');
+    els.partyOnlySettings.classList.remove('hidden');
+    els.jokerToggleRow.classList.add('hidden');
+  }
+});
+
 els.btnStartGame.addEventListener('click', () => {
+  const isParty = els.modeParty.checked;
   sendAction('startGame', {
     questionFile: els.firstQuestion.value,
-    startingChips: Number(els.cfgChips.value) || 1000,
+    startingChips: Number(isParty ? els.cfgChipsParty.value : els.cfgChips.value) || 1000,
     sbAmount: Number(els.cfgSb.value) || 25,
     bbAmount: Number(els.cfgBb.value) || 50,
     jokerEnabled: els.cfgJoker.checked,
   });
 });
+
+els.btnPartySetBet.addEventListener('click', () => sendAction('setPartyBet', { amount: Number(els.partyBetInput.value) }));
+els.btnPartyRaise.addEventListener('click', () => sendAction('raisePartyBet'));
+els.btnPartyCheck.addEventListener('click', () => sendAction('checkPartyBet'));
+els.btnPartyReady.addEventListener('click', () => sendAction('markPartyReady'));
 
 els.btnLockAnswers.addEventListener('click', () => sendAction('lockAnswers'));
 els.btnAdvancePhase.addEventListener('click', () => sendAction('advancePhase'));

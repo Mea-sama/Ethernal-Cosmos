@@ -1,5 +1,5 @@
 import type { IpcGameToHub, IpcHubToGame } from '@ethernal/shared';
-import { DudgEngine, CONTESTANT_GRACE_MS, HOST_GRACE_MS } from './game-engine';
+import { DudgEngine, CONTESTANT_GRACE_MS, HOST_GRACE_MS, PARTY_COLLECTING_MS, PARTY_HINT_MS } from './game-engine';
 
 // ─── Env ─────────────────────────────────────────────────────────────────────
 
@@ -29,7 +29,8 @@ function send(msg: IpcGameToHub): void {
 function sendStateToUser(userId: string): void {
   const m = engine.state.members[userId];
   let state: unknown;
-  if (userId === engine.state.hostId) state = engine.hostSnapshot();
+  if (engine.state.mode === 'party' && m?.role === 'contestant') state = engine.partySnapshot(userId);
+  else if (userId === engine.state.hostId) state = engine.hostSnapshot();
   else if (m?.role === 'contestant') state = engine.contestantSnapshot(userId);
   else state = engine.spectatorSnapshot();
   send({ type: 'GAME_STATE_FOR_USER', payload: { userId, state } });
@@ -96,9 +97,53 @@ function checkTurnTimers(): void {
   }
 }
 
+// ─── Party mode: timer-capped phases with early-advance on all-acted ────────
+
+let partyTimer: NodeJS.Timeout | null = null;
+
+function clearPartyTimer(): void {
+  if (partyTimer) {
+    clearTimeout(partyTimer);
+    partyTimer = null;
+  }
+}
+
+/** Arms the hard-cap timer for the current timer-capped party phase, if any. */
+function armPartyTimer(): void {
+  clearPartyTimer();
+  const phase = engine.state.phase;
+  const ms = phase === 'partyCollecting' ? PARTY_COLLECTING_MS : phase === 'partyHint1' || phase === 'partyHint2' ? PARTY_HINT_MS : null;
+  if (ms === null) return; // partyReveal/partyPayout have no timer — gated by "Ready" instead
+  partyTimer = setTimeout(() => {
+    engine.advancePartyPhase();
+    onPartyPhaseChanged();
+  }, ms);
+}
+
+/** Re-arms the timer (or checks game-over) after any phase transition, then broadcasts. */
+function onPartyPhaseChanged(): void {
+  armPartyTimer();
+  if (engine.state.phase === 'gameover') {
+    clearPartyTimer();
+    send({ type: 'GAME_OVER', payload: { winnerId: engine.state.winnerId } });
+  }
+  broadcastAll();
+}
+
+/** Called after any party action that might complete the current phase early. */
+function checkPartyEarlyAdvance(): void {
+  if (!engine.state.phase.startsWith('party')) return;
+  if (engine.state.phase === 'partyReveal' || engine.state.phase === 'partyPayout') return;
+  if (engine.isPartyPhaseComplete()) {
+    engine.advancePartyPhase();
+    onPartyPhaseChanged();
+  }
+}
+
 // ─── Action dispatch ─────────────────────────────────────────────────────────
 
 const HOST_ONLY_ACTIONS = new Set([
+  'setMode',
   'addQuestion',
   'addQuestionsByLabel',
   'removeQuestion',
@@ -120,6 +165,9 @@ const HOST_ONLY_ACTIONS = new Set([
   'playAudio',
 ]);
 
+/** Once a Party Mode game has started, the host loses every control except the emergency reset. */
+const PARTY_MID_GAME_HOST_EXCEPTIONS = new Set(['resetGame']);
+
 function handleAction(userId: string, action: string, data: unknown): void {
   const d = (data ?? {}) as Record<string, unknown>;
 
@@ -127,10 +175,22 @@ function handleAction(userId: string, action: string, data: unknown): void {
     log(`Rejected host-only action "${action}" from non-host ${userId}`);
     return;
   }
+  if (
+    HOST_ONLY_ACTIONS.has(action) &&
+    engine.state.mode === 'party' &&
+    engine.state.phase !== 'setup' &&
+    !PARTY_MID_GAME_HOST_EXCEPTIONS.has(action)
+  ) {
+    log(`Rejected classic host action "${action}" — host has no control panel in an active Party Mode game.`);
+    return;
+  }
 
   switch (action) {
     case 'setRole':
       engine.setRole(userId, d.role as 'contestant' | 'spectator');
+      break;
+    case 'setMode':
+      engine.setMode(userId, d.mode === 'party' ? 'party' : 'classic');
       break;
     case 'addQuestion':
       engine.addQuestion(String(d.filename));
@@ -148,15 +208,41 @@ function handleAction(userId: string, action: string, data: unknown): void {
       // Pool is derived live from disk on every read — nothing to do but re-broadcast.
       break;
     case 'startGame':
-      engine.startGame({
-        questionFile: String(d.questionFile),
-        startingChips: Number(d.startingChips) || 1000,
-        sbAmount: Number(d.sbAmount) || 25,
-        bbAmount: Number(d.bbAmount) || 50,
-        jokerEnabled: Boolean(d.jokerEnabled),
-      });
+      if (engine.state.mode === 'party') {
+        engine.startPartyGame({
+          questionFile: String(d.questionFile),
+          startingChips: Number(d.startingChips) || 1000,
+        });
+        armPartyTimer();
+      } else {
+        engine.startGame({
+          questionFile: String(d.questionFile),
+          startingChips: Number(d.startingChips) || 1000,
+          sbAmount: Number(d.sbAmount) || 25,
+          bbAmount: Number(d.bbAmount) || 50,
+          jokerEnabled: Boolean(d.jokerEnabled),
+        });
+      }
       break;
-    case 'lockAnswers':
+    case 'submitPartyAnswer':
+      engine.submitPartyAnswer(userId, String(d.answer));
+      checkPartyEarlyAdvance();
+      break;
+    case 'setPartyBet':
+      engine.setPartyBet(userId, Number(d.amount));
+      break;
+    case 'raisePartyBet':
+      engine.raisePartyBet(userId);
+      checkPartyEarlyAdvance();
+      break;
+    case 'checkPartyBet':
+      engine.checkPartyBet(userId);
+      checkPartyEarlyAdvance();
+      break;
+    case 'markPartyReady':
+      engine.markPartyReady(userId);
+      if (engine.state.phase === 'partyCollecting' || engine.state.phase === 'gameover') onPartyPhaseChanged();
+      break;    case 'lockAnswers':
       engine.lockAnswers();
       break;
     case 'advancePhase':

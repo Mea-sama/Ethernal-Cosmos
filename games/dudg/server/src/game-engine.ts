@@ -1,12 +1,34 @@
-import type { EngineState, Member, Phase, Question, Role, SessionConfig } from './types';
-import { PHASES } from './types';
+import type { EngineState, Member, Mode, PartyResultRow, Phase, Question, Role, SessionConfig } from './types';
+import { PHASES, PARTY_PHASES } from './types';
 import { loadQuestionByFilename, listQuestionMeta } from './questions';
 
-const MAX_CONTESTANTS = 7;
+const MAX_CONTESTANTS_CLASSIC = 7;
+const MAX_CONTESTANTS_PARTY = 40;
 /** Contestant reconnect grace — only while it's their turn. */
 export const CONTESTANT_GRACE_MS = 2 * 60 * 1000;
 /** Host reconnect grace — unconditional. */
 export const HOST_GRACE_MS = 2 * 60 * 1000;
+
+// ─── Party mode constants ───────────────────────────────────────────────────────
+/** Max duration of the answer+ante collecting phase — ends early once everyone has answered. */
+export const PARTY_COLLECTING_MS = 60_000;
+/** Max duration of each hint phase — ends early once everyone has raised or checked. */
+export const PARTY_HINT_MS = 30_000;
+const PARTY_ANTE_PCT = 0.05;
+const PARTY_RAISE_PCT = 0.5;
+const PARTY_RAISE_MIN = 25;
+/** Payout curve endpoints: [rank-1 %, last-upper-half-rank %] and, for the exact curve, the lower half too. */
+const PARTY_NEAR_UPPER = [200, 125] as const;
+const PARTY_EXACT_UPPER = [250, 150] as const;
+const PARTY_EXACT_LOWER = [100, 50] as const;
+
+export function parseNumericAnswer(raw: string): number | null {
+  if (typeof raw !== 'string') return null;
+  const normalized = raw.trim().replace(',', '.');
+  if (normalized === '') return null;
+  const n = Number(normalized);
+  return Number.isFinite(n) ? n : null;
+}
 
 function freshMember(userId: string, username: string, role: Role): Member {
   return {
@@ -24,6 +46,11 @@ function freshMember(userId: string, username: string, role: Role): Member {
     currentBet: 0,
     jokerUsed: false,
     left: false,
+    answeredAt: null,
+    partyBet: 0,
+    partyActed: false,
+    ready: false,
+    prevLeaderboardRank: null,
   };
 }
 
@@ -50,6 +77,10 @@ function defaultState(hostId: string, hostUsername: string): EngineState {
     jokerActiveUserId: null,
     jokerAnswer: null,
     jokerNote: null,
+    mode: 'classic',
+    partyPhaseEndsAt: null,
+    partyResults: null,
+    partyLeaderboard: null,
   };
 }
 
@@ -64,8 +95,23 @@ export class DudgEngine {
 
   // ─── Membership / roles ────────────────────────────────────────────────────
 
+  private maxContestants(): number {
+    return this.state.mode === 'party' ? MAX_CONTESTANTS_PARTY : MAX_CONTESTANTS_CLASSIC;
+  }
+
   private contestantCount(): number {
-    return Object.values(this.state.members).filter((m) => m.role === 'contestant' && m.userId !== this.state.hostId && !m.left).length;
+    const excludeHost = this.state.mode !== 'party';
+    return Object.values(this.state.members).filter(
+      (m) => m.role === 'contestant' && !m.left && !(excludeHost && m.userId === this.state.hostId)
+    ).length;
+  }
+
+  /** Host-only, setup phase only: switches between Classic (poker) and Party (simultaneous) mode. */
+  setMode(userId: string, mode: Mode): { ok: boolean; error?: string } {
+    if (userId !== this.state.hostId) return { ok: false, error: 'NOT_HOST' };
+    if (this.state.phase !== 'setup') return { ok: false, error: 'ALREADY_STARTED' };
+    this.state.mode = mode;
+    return { ok: true };
   }
 
   /** Called on PLAYER_JOIN (initial spawn roster + reconnects + brand-new joiners). */
@@ -81,7 +127,10 @@ export class DudgEngine {
       return;
     }
     // Brand-new userId never seen in this lobby before.
-    if (this.state.phase === 'setup' && this.contestantCount() < MAX_CONTESTANTS) {
+    if (this.state.mode === 'party') {
+      // Party mode: everyone who joins plays, up to the cap; overflow falls back to spectating.
+      this.state.members[userId] = freshMember(userId, username, this.contestantCount() < this.maxContestants() ? 'contestant' : 'spectator');
+    } else if (this.state.phase === 'setup' && this.contestantCount() < this.maxContestants()) {
       this.state.members[userId] = freshMember(userId, username, 'contestant');
     } else {
       // Active game (or setup already full) — unknown joiners always become spectators.
@@ -120,12 +169,13 @@ export class DudgEngine {
   }
 
   setRole(userId: string, role: Role): { ok: boolean; error?: string } {
+    if (this.state.mode === 'party') return { ok: false, error: 'NOT_AVAILABLE_IN_PARTY_MODE' };
     if (userId === this.state.hostId) return { ok: false, error: 'HOST_HAS_NO_ROLE' };
     const m = this.state.members[userId];
     if (!m) return { ok: false, error: 'NOT_FOUND' };
     if (role === m.role) return { ok: true };
     if (role === 'contestant') {
-      if (this.contestantCount() >= MAX_CONTESTANTS) return { ok: false, error: 'CONTESTANTS_FULL' };
+      if (this.contestantCount() >= this.maxContestants()) return { ok: false, error: 'CONTESTANTS_FULL' };
       if (this.state.phase !== 'setup') return { ok: false, error: 'GAME_ALREADY_STARTED' };
       m.role = 'contestant';
       return { ok: true };
@@ -283,6 +333,239 @@ export class DudgEngine {
       this.state.members[m.userId] = freshMember(m.userId, m.username, 'spectator');
       this.state.members[m.userId].connected = m.connected;
     }
+  }
+
+  // ─── Party mode ─────────────────────────────────────────────────────────
+
+  startPartyGame(opts: { questionFile: string; startingChips: number }): { ok: boolean; error?: string } {
+    if (this.state.phase !== 'setup') return { ok: false, error: 'ALREADY_STARTED' };
+    if (this.state.mode !== 'party') return { ok: false, error: 'NOT_PARTY_MODE' };
+    if (!this.state.questionPool.includes(opts.questionFile)) return { ok: false, error: 'QUESTION_NOT_IN_POOL' };
+    if (this.contestantCount() < 2) return { ok: false, error: 'NOT_ENOUGH_CONTESTANTS' };
+
+    this.state.sessionConfig = { startingChips: opts.startingChips, sbAmount: 0, bbAmount: 0, jokerEnabled: false };
+
+    const players = Object.values(this.state.members).filter((m) => m.role === 'contestant' && !m.left);
+    players.forEach((m, i) => {
+      m.seatIndex = i;
+      m.chips = opts.startingChips;
+      m.eliminated = false;
+    });
+    this.state.seatOrder = players.map((m) => m.userId);
+    this.state.poolLocked = true;
+    this.beginPartyCollecting(opts.questionFile);
+    return { ok: true };
+  }
+
+  /** Picks the given (first round) or a random unused question from the pool and starts collecting. */
+  private beginPartyCollecting(forceFilename?: string): void {
+    const seat = this.seatMembers();
+    seat.forEach((m) => {
+      if (m.chips <= 0) m.eliminated = true;
+    });
+    const active = seat.filter((m) => !m.eliminated);
+    if (active.length <= 1) {
+      this.state.winnerId = active[0]?.userId ?? null;
+      this.state.phase = 'gameover';
+      return;
+    }
+
+    let filename = forceFilename;
+    if (!filename) {
+      const unused = this.state.questionPool.filter((f) => !this.state.usedQuestions.includes(f));
+      if (unused.length === 0) {
+        this.state.winnerId = null; // no clear single winner — pool exhausted
+        this.state.phase = 'gameover';
+        return;
+      }
+      filename = unused[Math.floor(Math.random() * unused.length)];
+    }
+
+    this.state.currentQuestion = loadQuestionByFilename(filename);
+    if (!this.state.usedQuestions.includes(filename)) this.state.usedQuestions.push(filename);
+    this.state.revealedHints = [];
+    this.state.answerRevealed = false;
+    this.state.partyResults = null;
+
+    active.forEach((m) => {
+      m.answer = '';
+      m.answeredAt = null;
+      m.partyActed = false;
+      m.ready = false;
+      m.partyBet = Math.max(1, Math.round(m.chips * PARTY_ANTE_PCT));
+    });
+
+    this.state.phase = 'partyCollecting';
+    this.state.partyPhaseEndsAt = Date.now() + PARTY_COLLECTING_MS;
+  }
+
+  private activePartyMembers(): Member[] {
+    return this.seatMembers().filter((m) => !m.eliminated);
+  }
+
+  submitPartyAnswer(userId: string, answer: string): { ok: boolean; error?: string } {
+    if (this.state.phase !== 'partyCollecting') return { ok: false, error: 'WRONG_PHASE' };
+    const m = this.state.members[userId];
+    if (!m || m.eliminated) return { ok: false, error: 'NOT_ACTIVE' };
+    m.answer = answer;
+    if (m.answeredAt === null) m.answeredAt = Date.now();
+    return { ok: true };
+  }
+
+  /** Collecting phase: freely set your own bet to any value between the mandatory ante and your chips. */
+  setPartyBet(userId: string, amount: number): { ok: boolean; error?: string } {
+    if (this.state.phase !== 'partyCollecting') return { ok: false, error: 'WRONG_PHASE' };
+    const m = this.state.members[userId];
+    if (!m || m.eliminated) return { ok: false, error: 'NOT_ACTIVE' };
+    const minAnte = Math.max(1, Math.round(m.chips * PARTY_ANTE_PCT));
+    if (!Number.isFinite(amount) || amount < minAnte || amount > m.chips) return { ok: false, error: 'INVALID_AMOUNT' };
+    m.partyBet = Math.round(amount);
+    return { ok: true };
+  }
+
+  /** Hint phases: raise your own bet by +50% (minimum +25), capped at your chips (effectively all-in). */
+  raisePartyBet(userId: string): { ok: boolean; error?: string } {
+    if (this.state.phase !== 'partyHint1' && this.state.phase !== 'partyHint2') return { ok: false, error: 'WRONG_PHASE' };
+    const m = this.state.members[userId];
+    if (!m || m.eliminated) return { ok: false, error: 'NOT_ACTIVE' };
+    const increase = Math.max(Math.round(m.partyBet * PARTY_RAISE_PCT), PARTY_RAISE_MIN);
+    m.partyBet = Math.min(m.chips, m.partyBet + increase);
+    m.partyActed = true;
+    return { ok: true };
+  }
+
+  checkPartyBet(userId: string): { ok: boolean; error?: string } {
+    if (this.state.phase !== 'partyHint1' && this.state.phase !== 'partyHint2') return { ok: false, error: 'WRONG_PHASE' };
+    const m = this.state.members[userId];
+    if (!m || m.eliminated) return { ok: false, error: 'NOT_ACTIVE' };
+    m.partyActed = true;
+    return { ok: true };
+  }
+
+  /** True once every active player has done their part for the current timer-capped phase — allows early advance. */
+  isPartyPhaseComplete(): boolean {
+    const active = this.activePartyMembers();
+    if (active.length === 0) return true;
+    if (this.state.phase === 'partyCollecting') return active.every((m) => m.answer !== '');
+    if (this.state.phase === 'partyHint1' || this.state.phase === 'partyHint2') return active.every((m) => m.partyActed);
+    return false;
+  }
+
+  /** Advances collecting→hint1→hint2→reveal — called by the subprocess's timer/early-advance check. */
+  advancePartyPhase(): void {
+    if (this.state.phase === 'partyCollecting') {
+      this.state.revealedHints = ['hint1'];
+      this.activePartyMembers().forEach((m) => (m.partyActed = false));
+      this.state.phase = 'partyHint1';
+      this.state.partyPhaseEndsAt = Date.now() + PARTY_HINT_MS;
+    } else if (this.state.phase === 'partyHint1') {
+      this.state.revealedHints = ['hint1', 'hint2'];
+      this.activePartyMembers().forEach((m) => (m.partyActed = false));
+      this.state.phase = 'partyHint2';
+      this.state.partyPhaseEndsAt = Date.now() + PARTY_HINT_MS;
+    } else if (this.state.phase === 'partyHint2') {
+      this.computePartyReveal();
+    }
+  }
+
+  private static roundTo25(amount: number): number {
+    return Math.round(amount / 25) * 25;
+  }
+
+  /** Numeric distance to the correct answer (0 = exact); options questions use their rank position. */
+  private partyDistance(m: Member): { distance: number; exact: boolean } {
+    const q = this.state.currentQuestion;
+    if (!q || m.answer === '') return { distance: Infinity, exact: false };
+    if (q.questionType === 'options') {
+      const idx = q.optionRank ? q.optionRank.indexOf(m.answer.trim().toUpperCase()) : -1;
+      if (idx === -1) return { distance: Infinity, exact: false };
+      return { distance: idx, exact: idx === 0 };
+    }
+    const parsed = parseNumericAnswer(m.answer);
+    const correct = q.answer !== null ? parseNumericAnswer(q.answer) : null;
+    if (parsed === null || correct === null) return { distance: Infinity, exact: false };
+    const distance = Math.abs(parsed - correct);
+    return { distance, exact: Math.round(distance * 10_000) === 0 };
+  }
+
+  /** Linear interpolation between a curve's [first, last] % across `halfSize` upper/lower-half slots. */
+  private static curvePercent(positionInHalf: number, halfSize: number, curve: readonly [number, number]): number {
+    if (halfSize <= 1) return curve[0];
+    return curve[0] - ((curve[0] - curve[1]) * positionInHalf) / (halfSize - 1);
+  }
+
+  private partyPercent(rank: number, n: number, exact: boolean): number {
+    const upperCount = Math.ceil(n / 2);
+    const lowerCount = n - upperCount;
+    if (rank <= upperCount) {
+      const curve = exact ? PARTY_EXACT_UPPER : PARTY_NEAR_UPPER;
+      return DudgEngine.curvePercent(rank - 1, upperCount, curve);
+    }
+    if (!exact) return 0;
+    return DudgEngine.curvePercent(rank - upperCount - 1, lowerCount, PARTY_EXACT_LOWER);
+  }
+
+  private computePartyReveal(): void {
+    this.state.answerRevealed = true;
+    const active = this.activePartyMembers();
+    const scored = active.map((m) => ({ m, ...this.partyDistance(m) }));
+    scored.sort((a, b) => {
+      if (a.distance !== b.distance) return a.distance - b.distance;
+      return (a.m.answeredAt ?? Infinity) - (b.m.answeredAt ?? Infinity);
+    });
+
+    const results: PartyResultRow[] = scored.map((entry, i) => {
+      const rank = i + 1;
+      const percent = this.partyPercent(rank, scored.length, entry.exact);
+      const prize = DudgEngine.roundTo25(entry.m.partyBet * (percent / 100));
+      entry.m.chips = entry.m.chips - entry.m.partyBet + prize;
+      if (entry.m.chips <= 0) entry.m.eliminated = true;
+      return {
+        userId: entry.m.userId,
+        username: entry.m.username,
+        rank,
+        distance: entry.distance,
+        exact: entry.exact,
+        betBefore: entry.m.partyBet,
+        percent,
+        prize,
+        chipsAfter: entry.m.chips,
+      };
+    });
+
+    this.state.partyResults = results;
+    active.forEach((m) => (m.ready = false));
+    this.state.phase = 'partyReveal';
+    this.state.partyPhaseEndsAt = null;
+
+    // Overall standings (by chips) with this round's rank movement — the main payout-phase view.
+    const standings = [...active].sort((a, b) => b.chips - a.chips);
+    this.state.partyLeaderboard = standings.map((m, i) => {
+      const rank = i + 1;
+      const resultRow = results.find((r) => r.userId === m.userId);
+      const rankDelta = m.prevLeaderboardRank === null ? 0 : m.prevLeaderboardRank - rank;
+      m.prevLeaderboardRank = rank;
+      return {
+        userId: m.userId,
+        username: m.username,
+        chips: m.chips,
+        rank,
+        rankDelta,
+        net: resultRow ? resultRow.prize - resultRow.betBefore : 0,
+      };
+    });
+  }
+
+  /** Reveal/payout has no timer — every active player must click Ready before the next round starts. */
+  markPartyReady(userId: string): { ok: boolean } {
+    if (this.state.phase !== 'partyReveal' && this.state.phase !== 'partyPayout') return { ok: false };
+    const m = this.state.members[userId];
+    if (!m || m.eliminated) return { ok: false };
+    m.ready = true;
+    if (this.activePartyMembers().every((p) => p.ready)) {
+      this.beginPartyCollecting();
+    }
+    return { ok: true };
   }
 
   // ─── Seat helpers ───────────────────────────────────────────────────────────
@@ -594,6 +877,7 @@ export class DudgEngine {
       poolLocked: s.poolLocked,
       usedQuestions: s.usedQuestions,
       currentQuestion: s.currentQuestion,
+      mode: s.mode,
       players: this.seatSummary(s.phase === 'reveal' || s.phase === 'payout' || s.phase === 'gameover'),
       spectators: Object.values(s.members).filter((m) => m.role === 'spectator').map((m) => ({ userId: m.userId, username: m.username, connected: m.connected })),
       jokerActiveUserId: s.jokerActiveUserId,
@@ -610,6 +894,7 @@ export class DudgEngine {
     return {
       role: 'contestant' as const,
       phase: s.phase,
+      mode: s.mode,
       userId: m.userId,
       username: m.username,
       chips: m.chips,
@@ -654,6 +939,38 @@ export class DudgEngine {
       winnerUsername: s.winnerId ? s.members[s.winnerId]?.username : null,
       question: this.questionForNonHost(),
       players: this.seatSummary(s.phase === 'reveal' || s.phase === 'payout' || s.phase === 'gameover'),
+    };
+  }
+
+  /** Party mode's single per-player view — used for every seat member, including the host. */
+  partySnapshot(userId: string) {
+    const s = this.state;
+    const m = s.members[userId];
+    if (!m) return null;
+    const others = this.activePartyMembers()
+      .filter((p) => p.userId !== userId)
+      .map((p) => ({ userId: p.userId, username: p.username, chips: p.chips, answered: p.answer !== '', acted: p.partyActed }));
+    return {
+      role: 'party' as const,
+      phase: s.phase,
+      userId: m.userId,
+      username: m.username,
+      chips: m.chips,
+      eliminated: m.eliminated,
+      answer: m.answer,
+      partyBet: m.partyBet,
+      minAnte: Math.max(1, Math.round(m.chips * 0.05)),
+      partyActed: m.partyActed,
+      ready: m.ready,
+      question: this.questionForNonHost(),
+      revealedHints: s.revealedHints,
+      partyPhaseEndsAt: s.partyPhaseEndsAt,
+      partyResults: s.phase === 'partyReveal' || s.phase === 'partyPayout' ? s.partyResults : null,
+      partyLeaderboard: s.phase === 'partyReveal' || s.phase === 'partyPayout' ? s.partyLeaderboard : null,
+      myLeaderboardRank: m.prevLeaderboardRank,
+      winnerId: s.winnerId,
+      winnerUsername: s.winnerId ? s.members[s.winnerId]?.username : null,
+      others,
     };
   }
 }

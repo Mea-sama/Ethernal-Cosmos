@@ -85,7 +85,28 @@
 .hint { margin-top: 0.5rem; padding: 0.5rem; background: rgba(255,255,255,0.04); border-radius: 6px; }
 .answer-reveal { margin-top: 0.5rem; padding: 0.5rem; background: rgba(39, 174, 96, 0.15); border-radius: 6px; color: var(--green-chip); }
 
+.pot-display {
+  display: inline-block;
+  font-size: 1.5rem;
+  font-weight: bold;
+  color: var(--gold-light);
+  text-shadow: 0 0 10px rgba(200, 162, 39, 0.6);
+  border: 1px solid var(--gold-dim);
+  border-radius: 8px;
+  padding: 0.4rem 1rem;
+  margin-bottom: 0.75rem;
+  background: rgba(200, 162, 39, 0.08);
+}
+
 .option-btn { margin: 0.25rem; }
+
+#party-countdown { font-size: 1.1rem; color: var(--gold-light); font-weight: bold; }
+#party-results .player-row { font-size: 0.95rem; }
+
+.rank-up { color: var(--green-chip); font-weight: bold; }
+.rank-down { color: var(--red-light); font-weight: bold; }
+.rank-same { color: var(--text-muted); }
+.leaderboard-gap { justify-content: center; color: var(--text-muted); }
 
 .raise-input { width: 120px; padding: 0.5rem; border-radius: 6px; border: 1px solid var(--card-border); background: var(--felt-dark); color: var(--text); }
 
