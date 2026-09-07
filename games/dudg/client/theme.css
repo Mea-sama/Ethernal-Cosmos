@@ -1,0 +1,332 @@
+/* ═══════════════════════════════════════════════════════════════
+   DUDG Poker-Quiz — Shared Casino Theme
+   ═══════════════════════════════════════════════════════════════ */
+
+:root {
+  --felt:         #0d3320;
+  --felt-light:   #1a4a30;
+  --felt-dark:    #071a10;
+  --gold:         #c8a227;
+  --gold-light:   #f0cc5a;
+  --gold-dim:     #7a6010;
+  --card-bg:      #1c1c1c;
+  --card-border:  #2e2e2e;
+  --text:         #e8e0cc;
+  --text-muted:   #8a8070;
+  --red:          #c0392b;
+  --red-light:    #e74c3c;
+  --green-chip:   #27ae60;
+  --blue-chip:    #2980b9;
+  --radius:       10px;
+  --shadow:       0 4px 24px rgba(0,0,0,0.5);
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  height: 100%;
+  font-family: 'Georgia', 'Times New Roman', serif;
+  background-color: var(--felt-dark);
+  color: var(--text);
+  overflow-x: hidden;
+}
+
+/* ── Background canvas (particles) ── */
+#bg-canvas {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+}
+
+/* ── Main content above canvas ── */
+.page-wrap {
+  position: relative;
+  z-index: 1;
+  min-height: 100vh;
+  padding: 1.5rem;
+}
+
+/* ── Felt texture overlay ── */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  background:
+    repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0,0,0,0.03) 2px,
+      rgba(0,0,0,0.03) 4px
+    ),
+    repeating-linear-gradient(
+      90deg,
+      transparent,
+      transparent 2px,
+      rgba(0,0,0,0.03) 2px,
+      rgba(0,0,0,0.03) 4px
+    ),
+    radial-gradient(ellipse at 50% 30%, var(--felt-light) 0%, var(--felt) 50%, var(--felt-dark) 100%);
+  pointer-events: none;
+}
+
+/* ── Cards / panels ── */
+.card {
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 1.25rem 1.5rem;
+}
+
+.card-gold {
+  border-color: var(--gold-dim);
+  box-shadow: var(--shadow), 0 0 0 1px var(--gold-dim);
+}
+
+/* ── Gold headings ── */
+h1, h2, h3 {
+  color: var(--gold);
+  font-weight: normal;
+  letter-spacing: 0.04em;
+}
+h1 { font-size: 2rem; }
+h2 { font-size: 1.4rem; }
+h3 { font-size: 1.1rem; }
+
+/* ── Buttons ── */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  padding: 0.55rem 1.2rem;
+  border: none;
+  border-radius: 6px;
+  font-family: inherit;
+  font-size: 0.95rem;
+  cursor: pointer;
+  transition: filter 0.15s, transform 0.1s;
+  white-space: nowrap;
+}
+.btn:active { transform: scale(0.97); }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+.btn:hover:not(:disabled) { filter: brightness(1.15); }
+
+.btn-gold   { background: var(--gold);      color: #1a1000; font-weight: bold; }
+.btn-red    { background: var(--red);       color: #fff; }
+.btn-green  { background: var(--green-chip);color: #fff; }
+.btn-blue   { background: var(--blue-chip); color: #fff; }
+.btn-ghost  { background: transparent; border: 1px solid var(--gold-dim); color: var(--gold); }
+.btn-sm     { padding: 0.35rem 0.75rem; font-size: 0.82rem; }
+
+/* ── Inputs ── */
+input[type="text"],
+input[type="number"],
+select,
+textarea {
+  background: #111;
+  border: 1px solid var(--card-border);
+  border-radius: 6px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 1rem;
+  padding: 0.5rem 0.75rem;
+  outline: none;
+  transition: border-color 0.15s;
+  width: 100%;
+}
+input:focus, select:focus, textarea:focus {
+  border-color: var(--gold-dim);
+  box-shadow: 0 0 0 2px rgba(200,162,39,0.15);
+}
+input:disabled, textarea:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+label {
+  display: block;
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  margin-bottom: 0.3rem;
+  letter-spacing: 0.03em;
+}
+
+/* ── Badges ── */
+.badge {
+  display: inline-block;
+  padding: 0.15rem 0.5rem;
+  border-radius: 20px;
+  font-size: 0.72rem;
+  font-weight: bold;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+.badge-dealer { background: var(--gold);       color: #1a1000; }
+.badge-sb     { background: var(--blue-chip);  color: #fff; }
+.badge-bb     { background: var(--red);        color: #fff; }
+.badge-folded { background: #333;              color: var(--text-muted); }
+.badge-allin  { background: var(--green-chip); color: #fff; font-weight: bold; }
+.badge-active { background: var(--green-chip); color: #fff; }
+
+/* ── Chip counter ── */
+.chip-count {
+  font-size: 1.1rem;
+  font-weight: bold;
+  color: var(--gold-light);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Pot display ── */
+.pot-display {
+  text-align: center;
+  font-size: 2.5rem;
+  font-weight: bold;
+  color: var(--gold-light);
+  text-shadow: 0 0 20px rgba(200,162,39,0.4);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Phase label ── */
+.phase-label {
+  text-align: center;
+  font-size: 0.9rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  padding: 0.4rem 1rem;
+  border: 1px solid var(--card-border);
+  border-radius: 20px;
+  display: inline-block;
+}
+.phase-label.active { color: var(--gold); border-color: var(--gold-dim); }
+
+/* ── Hint / Answer reveal box ── */
+.reveal-box {
+  background: linear-gradient(135deg, #1a1a1a, #222);
+  border: 1px solid var(--gold-dim);
+  border-radius: var(--radius);
+  padding: 1rem 1.5rem;
+  margin-top: 0.75rem;
+  opacity: 0;
+  transform: translateY(10px);
+  transition: opacity 0.5s ease, transform 0.5s ease;
+}
+.reveal-box.visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+.reveal-box .reveal-label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--gold-dim);
+  margin-bottom: 0.4rem;
+}
+.reveal-box .reveal-text {
+  font-size: 1.15rem;
+  color: var(--text);
+}
+.reveal-box.answer-box {
+  border-color: var(--gold);
+  box-shadow: 0 0 20px rgba(200,162,39,0.25);
+}
+.reveal-box.answer-box .reveal-text {
+  font-size: 1.4rem;
+  color: var(--gold-light);
+  font-weight: bold;
+}
+
+/* ── Player seat card ── */
+.seat-card {
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius);
+  padding: 0.75rem 1rem;
+  text-align: center;
+  transition: border-color 0.3s, box-shadow 0.3s;
+  min-width: 120px;
+}
+.seat-card.active-bettor {
+  border-color: var(--gold);
+  box-shadow: 0 0 12px rgba(200,162,39,0.35);
+}
+.seat-card.folded {
+  opacity: 0.4;
+  filter: grayscale(0.8);
+}
+.seat-card .seat-name {
+  font-size: 0.95rem;
+  color: var(--text);
+  margin-bottom: 0.4rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.seat-card .seat-chips {
+  font-size: 1rem;
+  color: var(--gold-light);
+  font-variant-numeric: tabular-nums;
+}
+.seat-card .seat-bet {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  margin-top: 0.2rem;
+}
+
+/* ── Scrollbar ── */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: var(--felt-dark); }
+::-webkit-scrollbar-thumb { background: var(--gold-dim); border-radius: 3px; }
+
+/* ── Utility ── */
+.text-muted  { color: var(--text-muted); }
+.text-gold   { color: var(--gold); }
+.text-center { text-align: center; }
+.mt-1 { margin-top: 0.5rem; }
+.mt-2 { margin-top: 1rem; }
+.mt-3 { margin-top: 1.5rem; }
+.mb-1 { margin-bottom: 0.5rem; }
+.mb-2 { margin-bottom: 1rem; }
+.flex { display: flex; }
+.flex-wrap { flex-wrap: wrap; }
+.gap-1 { gap: 0.5rem; }
+.gap-2 { gap: 1rem; }
+.items-center { align-items: center; }
+.justify-between { justify-content: space-between; }
+.grow { flex: 1; }
+.w-full { width: 100%; }
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+.grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; }
+
+/* ── Notification toast ── */
+.toast {
+  position: fixed;
+  bottom: 1.5rem;
+  left: 50%;
+  transform: translateX(-50%) translateY(100px);
+  background: var(--card-bg);
+  border: 1px solid var(--gold-dim);
+  border-radius: var(--radius);
+  padding: 0.75rem 1.5rem;
+  color: var(--text);
+  font-size: 0.9rem;
+  z-index: 999;
+  transition: transform 0.3s ease;
+  pointer-events: none;
+}
+.toast.show { transform: translateX(-50%) translateY(0); }
+
+/* ── Question content (rendered markdown) ── */
+.question-content img    { max-width: 100%; border-radius: 8px; margin: 0.5rem 0; }
+.question-content video  { max-width: 100%; border-radius: 8px; margin: 0.5rem 0; }
+.question-content audio  { width: 100%; margin: 0.5rem 0; }
+.question-content p      { margin-bottom: 0.75rem; line-height: 1.6; }
+.question-content ul, 
+.question-content ol     { padding-left: 1.5rem; margin-bottom: 0.75rem; }
+.question-content h1,
+.question-content h2,
+.question-content h3     { margin-bottom: 0.5rem; }

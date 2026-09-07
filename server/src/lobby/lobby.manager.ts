@@ -41,6 +41,7 @@ export class LobbyManager {
       inviteCode,
       settings,
       hosted,
+      locked: false,
       createdAt: Date.now(),
     };
 
@@ -53,7 +54,7 @@ export class LobbyManager {
 
   // ─── Beitreten ─────────────────────────────────────────────────────────────
 
-  joinLobby(userId: string, username: string, lobbyId: string): Lobby {
+  joinLobby(userId: string, username: string, lobbyId: string, opts: { bypassLock?: boolean } = {}): Lobby {
     if (this.userLobbyIndex.has(userId)) {
       throw new Error('ALREADY_IN_LOBBY');
     }
@@ -61,6 +62,7 @@ export class LobbyManager {
     const lobby = this.lobbies.get(lobbyId);
     if (!lobby) throw new Error('LOBBY_NOT_FOUND');
     if (lobby.status === 'closed') throw new Error('LOBBY_CLOSED');
+    if (lobby.locked && !opts.bypassLock) throw new Error('LOBBY_LOCKED');
     if (lobby.players.length >= lobby.maxPlayers) throw new Error('LOBBY_FULL');
 
     lobby.players.push({ userId, username, isHost: false });
@@ -184,6 +186,18 @@ export class LobbyManager {
     newHost.isHost = true;
     lobby.hostId = newHostId;
     console.log(`[Lobby] Host-Übergabe an "${newHost.username}" in "${lobby.name}"`);
+    return lobby;
+  }
+
+  /**
+   * Host sperrt/entsperrt die Lobby. Bei gesperrter Lobby muss ein Beitritt (auch per
+   * Invite-Code) über eine vom Host angenommene Beitrittsanfrage laufen.
+   */
+  setLocked(requesterId: string, locked: boolean): Lobby {
+    const lobby = this.getLobbyByUserId(requesterId);
+    if (!lobby) throw new Error('NOT_IN_LOBBY');
+    if (lobby.hostId !== requesterId) throw new Error('NOT_HOST');
+    lobby.locked = locked;
     return lobby;
   }
 

@@ -23,6 +23,12 @@ export interface ServerLimits {
     joinLobbyByCode: LimitRule;
     kickPlayer: LimitRule;
     transferHost: LimitRule;
+    lockLobby: LimitRule;
+    unlockLobby: LimitRule;
+    requestJoinLobby: LimitRule;
+    requestJoinLobbyByCode: LimitRule;
+    cancelJoinRequest: LimitRule;
+    respondJoinRequest: LimitRule;
     listLobbies: LimitRule;
     getLobbyInfo: LimitRule;
     presenceList: LimitRule;
@@ -57,6 +63,12 @@ const defaultLimits: ServerLimits = {
     joinLobbyByCode: { refillPerSecond: 0.25, burst: 4 },
     kickPlayer: { refillPerSecond: 0.5, burst: 3 },
     transferHost: { refillPerSecond: 0.5, burst: 3 },
+    lockLobby: { refillPerSecond: 0.5, burst: 3 },
+    unlockLobby: { refillPerSecond: 0.5, burst: 3 },
+    requestJoinLobby: { refillPerSecond: 0.25, burst: 4 },
+    requestJoinLobbyByCode: { refillPerSecond: 0.25, burst: 4 },
+    cancelJoinRequest: { refillPerSecond: 0.5, burst: 4 },
+    respondJoinRequest: { refillPerSecond: 0.5, burst: 6 },
     listLobbies: { refillPerSecond: 5, burst: 15 },
     getLobbyInfo: { refillPerSecond: 5, burst: 15 },
     presenceList: { refillPerSecond: 3, burst: 10 },
@@ -151,6 +163,12 @@ function mergeLimits(base: ServerLimits, override: Partial<ServerLimits>): Serve
       joinLobbyByCode: rule(socketOverrides.joinLobbyByCode, base.socketLimits.joinLobbyByCode),
       kickPlayer: rule(socketOverrides.kickPlayer, base.socketLimits.kickPlayer),
       transferHost: rule(socketOverrides.transferHost, base.socketLimits.transferHost),
+      lockLobby: rule(socketOverrides.lockLobby, base.socketLimits.lockLobby),
+      unlockLobby: rule(socketOverrides.unlockLobby, base.socketLimits.unlockLobby),
+      requestJoinLobby: rule(socketOverrides.requestJoinLobby, base.socketLimits.requestJoinLobby),
+      requestJoinLobbyByCode: rule(socketOverrides.requestJoinLobbyByCode, base.socketLimits.requestJoinLobbyByCode),
+      cancelJoinRequest: rule(socketOverrides.cancelJoinRequest, base.socketLimits.cancelJoinRequest),
+      respondJoinRequest: rule(socketOverrides.respondJoinRequest, base.socketLimits.respondJoinRequest),
       listLobbies: rule(socketOverrides.listLobbies, base.socketLimits.listLobbies),
       getLobbyInfo: rule(socketOverrides.getLobbyInfo, base.socketLimits.getLobbyInfo),
       presenceList: rule(socketOverrides.presenceList, base.socketLimits.presenceList),

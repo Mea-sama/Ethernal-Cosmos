@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>Duell um die Geld — Ethernal Cosmos</title>
+  <link rel="stylesheet" href="/dudg/theme.css">
+  <link rel="stylesheet" href="/dudg/styles.css">
+</head>
+<body>
+  <canvas id="bg-canvas"></canvas>
+  <div class="page-wrap">
+    <h1>🃏 Duell um die Geld</h1>
+    <div id="status">Verbinde...</div>
+
+    <!-- ── Login / Register ── -->
+    <div class="screen card" id="s-auth">
+      <div class="tab-bar">
+        <button id="tab-login" class="btn active">Anmelden</button>
+        <button id="tab-reg" class="btn">Registrieren</button>
+      </div>
+      <div class="field">
+        <label>Benutzername</label>
+        <input id="auth-user" type="text" autocomplete="username" placeholder="dein_name">
+      </div>
+      <div class="field">
+        <label>Passwort</label>
+        <input id="auth-pass" type="password" autocomplete="current-password" placeholder="••••••••">
+      </div>
+      <button class="btn btn-gold" id="btn-auth">Anmelden</button>
+      <p class="small err" id="auth-err"></p>
+    </div>
+
+    <!-- ── Lobby list / create / join ── -->
+    <div class="screen card hidden" id="s-lobby">
+      <h2>Lobby</h2>
+      <button class="btn btn-gold" id="btn-create">Neue Lobby erstellen</button>
+      <div class="divider">oder beitreten</div>
+      <input class="code-input" id="code-in" maxlength="6" placeholder="Code eingeben">
+      <button class="btn" id="btn-join">Beitreten</button>
+      <div id="open-lobby-list"></div>
+    </div>
+
+    <!-- ── Setup (host configures; others wait / toggle role) ── -->
+    <div class="screen hidden" id="s-setup">
+      <div class="card">
+        <h2>Lobby: <span id="setup-lobby-name"></span></h2>
+        <div class="code-box">
+          <div class="label">Einladungscode</div>
+          <div class="code" id="invite-code">------</div>
+        </div>
+        <div id="member-list"></div>
+        <div id="role-indicator"></div>
+        <button class="btn" id="btn-role-toggle"></button>
+        <button class="btn" id="btn-leave-setup">Lobby verlassen</button>
+      </div>
+
+      <div class="card host-only" id="setup-host-panel">
+        <h2>Spiel-Einstellungen</h2>
+        <div class="field-row">
+          <div class="field"><label>Start-Chips</label><input id="cfg-chips" type="number" value="1000"></div>
+          <div class="field"><label>Small Blind</label><input id="cfg-sb" type="number" value="25"></div>
+          <div class="field"><label>Big Blind</label><input id="cfg-bb" type="number" value="50"></div>
+        </div>
+        <label class="checkbox-row"><input id="cfg-joker" type="checkbox"> Joker aktivieren</label>
+
+        <h3>Fragen</h3>
+        <div class="field-row">
+          <button class="btn" id="btn-refresh-questions">🔄 Fragenliste aktualisieren</button>
+          <button class="btn" id="btn-add-custom">➕ Eigene Frage hinzufügen</button>
+        </div>
+        <input class="code-input" id="question-search" placeholder="Fragen durchsuchen...">
+        <div id="label-cards"></div>
+        <div id="pool-preview"></div>
+        <div class="field">
+          <label>Erste Frage</label>
+          <select id="first-question"></select>
+        </div>
+        <button class="btn btn-gold" id="btn-start-game">Spiel starten</button>
+      </div>
+    </div>
+
+    <!-- ── Custom question dialog ── -->
+    <dialog id="dlg-custom-question" class="card">
+      <h2>Eigene Frage</h2>
+      <div class="tab-bar">
+        <button id="cq-tab-form" class="btn active">Formular</button>
+        <button id="cq-tab-raw" class="btn">.md hochladen</button>
+      </div>
+      <div id="cq-form">
+        <div class="field"><label>Frage</label><input id="cq-title" type="text"></div>
+        <div class="field"><label>Moderator-Notiz (optional)</label><textarea id="cq-notes"></textarea></div>
+        <div class="field"><label>Medien (Markdown, optional)</label><input id="cq-media" type="text"></div>
+        <div class="field"><label>Hinweis 1</label><textarea id="cq-hint1"></textarea></div>
+        <div class="field"><label>Hinweis 2</label><textarea id="cq-hint2"></textarea></div>
+        <div class="field"><label>Antwort</label><input id="cq-answer" type="text"></div>
+        <div class="field"><label>Optionen (A: text, optional)</label><textarea id="cq-options"></textarea></div>
+        <div class="field"><label>Rang (z.B. B, A, C, optional)</label><input id="cq-rank" type="text"></div>
+      </div>
+      <div id="cq-raw" class="hidden">
+        <div class="field"><label>Dateiname</label><input id="cq-filename" type="text" placeholder="meine_frage"></div>
+        <div class="field"><label>.md Datei</label><input id="cq-file" type="file" accept=".md"></div>
+      </div>
+      <div class="field"><label>Labels (Komma-getrennt)</label><input id="cq-labels" type="text" placeholder="Basic, Party"></div>
+      <p class="small err" id="cq-err"></p>
+      <div class="field-row">
+        <button class="btn" id="btn-cq-cancel">Abbrechen</button>
+        <button class="btn btn-gold" id="btn-cq-submit">Speichern</button>
+      </div>
+    </dialog>
+
+    <!-- ── Game screen (host / contestant / spectator views) ── -->
+    <div class="screen hidden" id="s-game">
+      <div class="card" id="phase-track"></div>
+
+      <!-- Host view -->
+      <div id="view-host" class="hidden">
+        <div class="card">
+          <h2>Frage</h2>
+          <div id="host-question"></div>
+        </div>
+        <div class="card">
+          <h2>Spieler</h2>
+          <div id="host-players"></div>
+        </div>
+        <div class="card">
+          <h2>Steuerung</h2>
+          <div class="field-row">
+            <button class="btn" id="btn-lock-answers">Antworten sperren</button>
+            <button class="btn btn-gold" id="btn-advance-phase">Nächste Phase ▶</button>
+            <button class="btn" id="btn-skip-turn">Zug überspringen</button>
+          </div>
+          <div class="field-row">
+            <button class="btn" id="btn-play-audio">🔊 Audio abspielen</button>
+          </div>
+          <div class="field-row">
+            <div class="field"><label>SB</label><input id="host-sb" type="number"></div>
+            <div class="field"><label>BB</label><input id="host-bb" type="number"></div>
+            <button class="btn" id="btn-set-sbbb">Setzen</button>
+            <button class="btn" id="btn-advance-dealer">Dealer weiter</button>
+          </div>
+          <div id="joker-panel" class="hidden">
+            <h3>🃏 Joker-Anfrage</h3>
+            <div id="joker-request-info"></div>
+            <div class="field"><label>Antwort für Spieler</label><input id="joker-answer-input" type="text"></div>
+            <div class="field"><label>Notiz (optional)</label><input id="joker-note-input" type="text"></div>
+            <button class="btn btn-gold" id="btn-joker-answer">Joker-Antwort senden</button>
+          </div>
+          <h3>Runde beenden</h3>
+          <div id="payout-panel"></div>
+          <div class="field">
+            <label>Nächste Frage</label>
+            <select id="next-question"></select>
+          </div>
+          <button class="btn btn-gold" id="btn-next-round">Nächste Runde</button>
+          <button class="btn btn-red" id="btn-reset-game">Spiel zurücksetzen</button>
+        </div>
+      </div>
+
+      <!-- Contestant view -->
+      <div id="view-contestant" class="hidden">
+        <div class="card">
+          <div id="contestant-bar"></div>
+        </div>
+        <div class="card">
+          <h2>Frage</h2>
+          <div id="contestant-question"></div>
+          <div id="contestant-answer-box"></div>
+          <button class="btn" id="btn-use-joker">🃏 Joker einsetzen</button>
+          <div id="joker-status"></div>
+        </div>
+        <div class="card">
+          <h2>Wetten</h2>
+          <div id="contestant-turn-msg"></div>
+          <div class="field-row" id="betting-controls">
+            <button class="btn btn-red" id="btn-fold">Fold</button>
+            <button class="btn" id="btn-call">Call</button>
+            <input class="raise-input" id="raise-amount" type="number" placeholder="Betrag">
+            <button class="btn btn-green" id="btn-raise">Raise</button>
+            <button class="btn btn-gold" id="btn-allin">All-In</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Spectator / Display view -->
+      <div id="view-spectator" class="hidden">
+        <div class="card" id="display-question"></div>
+        <div class="card" id="display-players"></div>
+      </div>
+
+      <button class="btn" id="btn-leave-game">Spiel verlassen</button>
+    </div>
+  </div>
+
+  <script src="/assets/socket.io.min.js"></script>
+  <script src="/assets/panel.js"></script>
+  <script src="/dudg/background.js"></script>
+  <script src="/dudg/app.js"></script>
+</body>
+</html>

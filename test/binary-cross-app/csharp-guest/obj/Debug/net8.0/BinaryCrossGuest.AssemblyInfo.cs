@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("BinaryCrossGuest")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+b400865f5f1c7be249a0432ae6539653ed0b917b")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+34760188f85a4c803fa5630123918c6604e53ba9")]
 [assembly: System.Reflection.AssemblyProductAttribute("BinaryCrossGuest")]
 [assembly: System.Reflection.AssemblyTitleAttribute("BinaryCrossGuest")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

@@ -12,6 +12,7 @@ import type {
   SocketData,
   IpcGameToHub,
   PresenceUser,
+  Lobby,
 } from '@ethernal/shared';
 
 type AppServer = Server<ClientToServerEvents, ServerToClientEvents, Record<string, never>, SocketData>;
@@ -129,6 +130,43 @@ function validateBinaryRelayInput(
 // userId → PresenceUser (in-memory, wird bei connect/disconnect gepflegt)
 const presenceMap = new Map<string, PresenceUser>();// userId → aktive socket.id für Game-Clients (für Session-Takeover)
 const gameSocketMap = new Map<string, string>();
+
+// ─── Beitrittsanfragen für gesperrte Lobbys ──────────────────────────────────
+// lobbyId → (requesterId → ausstehende Anfrage mit Auto-Reject-Timer)
+const joinRequests = new Map<string, Map<string, { username: string; timer: NodeJS.Timeout }>>();
+const JOIN_REQUEST_TIMEOUT_MS = 15_000;
+
+function clearJoinRequest(lobbyId: string, requesterId: string): void {
+  const reqs = joinRequests.get(lobbyId);
+  const entry = reqs?.get(requesterId);
+  if (!entry) return;
+  clearTimeout(entry.timer);
+  reqs!.delete(requesterId);
+  if (reqs!.size === 0) joinRequests.delete(lobbyId);
+}
+
+/** Bricht alle offenen Anfragen einer Lobby ab (Host gewechselt oder Lobby geschlossen). */
+function rejectAllJoinRequests(io: AppServer, lobbyId: string, reason: 'host_changed' | 'lobby_closed'): void {
+  const reqs = joinRequests.get(lobbyId);
+  if (!reqs) return;
+  for (const requesterId of [...reqs.keys()]) {
+    clearJoinRequest(lobbyId, requesterId);
+    const reqSocketId = gameSocketMap.get(requesterId);
+    if (reqSocketId) io.to(reqSocketId).emit('joinRequestRejected', { lobbyId, reason });
+  }
+}
+
+/** Entfernt alle offenen Anfragen eines Users (z.B. bei Disconnect) und informiert die jeweiligen Hosts. */
+function withdrawAllRequestsFor(io: AppServer, requesterId: string, reason: 'cancelled' | 'timeout'): void {
+  for (const [lobbyId, reqs] of [...joinRequests.entries()]) {
+    if (!reqs.has(requesterId)) continue;
+    clearJoinRequest(lobbyId, requesterId);
+    const lobby = lobbyManager.getLobby(lobbyId);
+    const hostSocketId = lobby ? gameSocketMap.get(lobby.hostId) : undefined;
+    if (hostSocketId) io.to(hostSocketId).emit('joinRequestWithdrawn', { requesterId, reason });
+  }
+}
+
 // ─── Validierung ─────────────────────────────────────────────────────────────
 
 const CreateLobbySchema = z.object({
@@ -175,6 +213,15 @@ export function registerIpcRouting(io: AppServer): void {
       case 'GAME_STATE':
         io.to(lobbyId).emit('gameState', msg.payload);
         break;
+      case 'GAME_STATE_FOR_USER': {
+        // Sicherheitscheck: wie sendToPlayer — nur an Sockets liefern, die aktuell
+        // noch Mitglied DIESER Lobby sind (verhindert Zustellung nach Lobby-Verlassen/-Wechsel).
+        const targetLobby = lobbyManager.getLobbyByUserId(msg.payload.userId);
+        if (!targetLobby || targetLobby.id !== lobbyId) break;
+        const socketId = gameSocketMap.get(msg.payload.userId);
+        if (socketId) io.to(socketId).emit('gameState', msg.payload.state);
+        break;
+      }
       case 'GAME_EVENT':
         io.to(lobbyId).emit('gameEvent', msg.payload);
         break;
@@ -313,7 +360,7 @@ export function registerLobbyHandlers(io: AppServer): void {
 
     // ── leaveLobby ──────────────────────────────────────────────────────────
     socket.on('leaveLobby', () => {
-      handleLeave(socket, io);
+      handleLeave(socket, io, true);
     });
 
     // ── getLobbyInfo ─────────────────────────────────────────────────────────
@@ -341,6 +388,9 @@ export function registerLobbyHandlers(io: AppServer): void {
             s.data.currentLobbyId = undefined;
             break;
           }
+        }
+        if (instanceManager.isRunning(lobby.id)) {
+          instanceManager.sendToInstance(lobby.id, { type: 'PLAYER_LEAVE', payload: { userId: playerId } });
         }
         io.to(lobby.id).emit('lobbyUpdated', lobby);
       } catch (err: unknown) {
@@ -374,6 +424,112 @@ export function registerLobbyHandlers(io: AppServer): void {
               }[err.message] ?? 'Übertragung fehlgeschlagen')
             : 'Übertragung fehlgeschlagen';
         socket.emit('error', msg);
+      }
+    });
+
+    // ── lockLobby / unlockLobby ───────────────────────────────────────────────
+    socket.on('lockLobby', () => {
+      if (!enforceSocketLimit(socket, 'lockLobby')) return;
+      try {
+        const lobby = lobbyManager.setLocked(userId, true);
+        io.to(lobby.id).emit('lobbyUpdated', lobby);
+      } catch (err: unknown) {
+        socket.emit('error', mapLockError(err));
+      }
+    });
+
+    socket.on('unlockLobby', () => {
+      if (!enforceSocketLimit(socket, 'unlockLobby')) return;
+      try {
+        const lobby = lobbyManager.setLocked(userId, false);
+        io.to(lobby.id).emit('lobbyUpdated', lobby);
+      } catch (err: unknown) {
+        socket.emit('error', mapLockError(err));
+      }
+    });
+
+    // ── requestJoinLobby / requestJoinLobbyByCode ─────────────────────────────
+    socket.on('requestJoinLobby', ({ lobbyId }) => {
+      if (!enforceSocketLimit(socket, 'requestJoinLobby')) return;
+      const lobby = lobbyManager.getLobby(lobbyId);
+      if (!lobby) {
+        socket.emit('error', 'Lobby nicht gefunden');
+        return;
+      }
+      startJoinRequest(io, socket, userId, username, lobby);
+    });
+
+    socket.on('requestJoinLobbyByCode', ({ code }) => {
+      if (!enforceSocketLimit(socket, 'requestJoinLobbyByCode')) return;
+      const codeClean = z.string().min(6).max(6).safeParse(code?.trim().toUpperCase());
+      if (!codeClean.success) {
+        socket.emit('error', 'Ungültiger Einladungscode');
+        return;
+      }
+      const lobby = lobbyManager.getByInviteCode(codeClean.data);
+      if (!lobby) {
+        socket.emit('error', 'Einladungscode nicht gefunden');
+        return;
+      }
+      startJoinRequest(io, socket, userId, username, lobby);
+    });
+
+    // ── cancelJoinRequest ─────────────────────────────────────────────────────
+    socket.on('cancelJoinRequest', ({ lobbyId }) => {
+      if (!enforceSocketLimit(socket, 'cancelJoinRequest')) return;
+      if (!joinRequests.get(lobbyId)?.has(userId)) return;
+      clearJoinRequest(lobbyId, userId);
+      const lobby = lobbyManager.getLobby(lobbyId);
+      const hostSocketId = lobby ? gameSocketMap.get(lobby.hostId) : undefined;
+      if (hostSocketId) io.to(hostSocketId).emit('joinRequestWithdrawn', { requesterId: userId, reason: 'cancelled' });
+    });
+
+    // ── respondJoinRequest (Host) ─────────────────────────────────────────────
+    socket.on('respondJoinRequest', async ({ requesterId, accept }) => {
+      if (!enforceSocketLimit(socket, 'respondJoinRequest')) return;
+      const lobby = lobbyManager.getLobbyByUserId(userId);
+      if (!lobby || lobby.hostId !== userId) {
+        socket.emit('error', 'Nur der Host kann Beitrittsanfragen beantworten');
+        return;
+      }
+      const entry = joinRequests.get(lobby.id)?.get(requesterId);
+      if (!entry) {
+        socket.emit('error', 'Anfrage nicht gefunden oder bereits abgelaufen');
+        return;
+      }
+      clearJoinRequest(lobby.id, requesterId);
+      const reqSocketId = gameSocketMap.get(requesterId);
+
+      if (!accept) {
+        if (reqSocketId) io.to(reqSocketId).emit('joinRequestRejected', { lobbyId: lobby.id, reason: 'declined' });
+        return;
+      }
+
+      try {
+        const updated = lobbyManager.joinLobby(requesterId, entry.username, lobby.id, { bypassLock: true });
+        const reqSocket = reqSocketId ? io.sockets.sockets.get(reqSocketId) : undefined;
+        if (reqSocket) {
+          reqSocket.data.currentLobbyId = updated.id;
+          reqSocket.join(updated.id);
+        }
+        presenceMap.set(requesterId, {
+          userId: requesterId,
+          username: entry.username,
+          lobbyId: updated.id,
+          gameId: updated.gameId,
+          lobbyStatus: updated.status,
+        });
+        io.emit('presence:joined', presenceMap.get(requesterId)!);
+        io.to(updated.id).emit('lobbyUpdated', updated);
+        if (instanceManager.isRunning(updated.id)) {
+          instanceManager.sendToInstance(updated.id, {
+            type: 'PLAYER_JOIN',
+            payload: { userId: requesterId, username: entry.username },
+          });
+        }
+        if (reqSocket) reqSocket.emit('joinRequestAccepted', { lobby: updated });
+      } catch {
+        if (reqSocketId) io.to(reqSocketId).emit('joinRequestRejected', { lobbyId: lobby.id, reason: 'lobby_closed' });
       }
     });
 
@@ -565,7 +721,8 @@ export function registerLobbyHandlers(io: AppServer): void {
             payload: { userId },
           });
         }
-        handleLeave(socket, io);
+        withdrawAllRequestsFor(io, userId, 'cancelled');
+        handleLeave(socket, io, false);
       }
     });
   });
@@ -597,6 +754,7 @@ function joinLobbyById(socket: AppSocket, io: AppServer, userId: string, usernam
             ALREADY_IN_LOBBY: 'Du bist bereits in einer Lobby',
             LOBBY_NOT_FOUND: 'Lobby nicht gefunden',
             LOBBY_CLOSED: 'Lobby ist geschlossen',
+            LOBBY_LOCKED: 'Lobby ist gesperrt — bitte Beitritt anfragen',
             LOBBY_FULL: 'Lobby ist voll',
           }[err.message] ?? 'Beitreten fehlgeschlagen'
         : 'Beitreten fehlgeschlagen';
@@ -606,8 +764,9 @@ function joinLobbyById(socket: AppSocket, io: AppServer, userId: string, usernam
 
 // ─── Hilfsfunktion: Lobby verlassen und alle informieren ─────────────────────
 
-function handleLeave(socket: AppSocket, io: AppServer): void {
+function handleLeave(socket: AppSocket, io: AppServer, isExplicitLeave: boolean): void {
   const { userId, username } = socket.data;
+  const wasHost = lobbyManager.getLobbyByUserId(userId)?.hostId === userId;
   const { lobby, dissolved } = lobbyManager.leaveLobby(userId);
 
   if (!lobby && !dissolved) return; // war in keiner Lobby
@@ -615,6 +774,12 @@ function handleLeave(socket: AppSocket, io: AppServer): void {
   const lobbyId = socket.data.currentLobbyId;
   socket.data.currentLobbyId = undefined;
   if (lobbyId) socket.leave(lobbyId);
+
+  // Subprocess informieren: explizites Verlassen kennt keine Reconnect-Gnadenfrist
+  // (Disconnects senden PLAYER_DISCONNECT bereits an anderer Stelle).
+  if (isExplicitLeave && lobbyId && instanceManager.isRunning(lobbyId)) {
+    instanceManager.sendToInstance(lobbyId, { type: 'PLAYER_LEAVE', payload: { userId } });
+  }
 
   // Presence: Lobby/Game-Kontext des ausgetretenen Users zurücksetzen
   presenceMap.set(userId, { userId, username });
@@ -634,7 +799,73 @@ function handleLeave(socket: AppSocket, io: AppServer): void {
         io.emit('presence:joined', updated);
       }
     }
+
+    // Host gewechselt (war Host, ist es jetzt nicht mehr) → offene Anfragen sind hinfällig
+    if (wasHost && lobby.hostId !== userId) {
+      rejectAllJoinRequests(io, lobby.id, 'host_changed');
+    }
   } else if (dissolved && lobbyId) {
     lobbyBuckets.delete(lobbyId);
+    rejectAllJoinRequests(io, lobbyId, 'lobby_closed');
+  }
+}
+
+// ─── Hilfsfunktion: Lock-Fehler zu Klartext-Meldung ──────────────────────────
+
+function mapLockError(err: unknown): string {
+  return err instanceof Error
+    ? ({
+        NOT_IN_LOBBY: 'Du bist in keiner Lobby',
+        NOT_HOST: 'Nur der Host kann die Lobby sperren/entsperren',
+      }[err.message] ?? 'Aktion fehlgeschlagen')
+    : 'Aktion fehlgeschlagen';
+}
+
+// ─── Hilfsfunktion: Beitrittsanfrage starten (gemeinsam für ID + Invite-Code) ─
+
+function startJoinRequest(io: AppServer, socket: AppSocket, userId: string, username: string, lobby: Lobby): void {
+  if (lobbyManager.getLobbyByUserId(userId)) {
+    socket.emit('error', 'Du bist bereits in einer Lobby');
+    return;
+  }
+  if (lobby.status === 'closed') {
+    socket.emit('error', 'Lobby ist geschlossen');
+    return;
+  }
+  if (lobby.players.length >= lobby.maxPlayers) {
+    socket.emit('error', 'Lobby ist voll');
+    return;
+  }
+
+  // Nicht gesperrt → direkter Beitritt, keine Anfrage nötig
+  if (!lobby.locked) {
+    joinLobbyById(socket, io, userId, username, lobby.id);
+    return;
+  }
+
+  if (joinRequests.get(lobby.id)?.has(userId)) {
+    socket.emit('joinRequestPending', { lobbyId: lobby.id });
+    return;
+  }
+  if (!allowLobbyEvent(lobby.id, 'requestJoinLobby')) {
+    emitRateLimitError(socket, 'requestJoinLobby:lobby');
+    return;
+  }
+
+  const timer = setTimeout(() => {
+    clearJoinRequest(lobby.id, userId);
+    socket.emit('joinRequestRejected', { lobbyId: lobby.id, reason: 'timeout' });
+    const hostSocketId = gameSocketMap.get(lobby.hostId);
+    if (hostSocketId) io.to(hostSocketId).emit('joinRequestWithdrawn', { requesterId: userId, reason: 'timeout' });
+  }, JOIN_REQUEST_TIMEOUT_MS);
+
+  const reqs = joinRequests.get(lobby.id) ?? new Map();
+  reqs.set(userId, { username, timer });
+  joinRequests.set(lobby.id, reqs);
+
+  socket.emit('joinRequestPending', { lobbyId: lobby.id });
+  const hostSocketId = gameSocketMap.get(lobby.hostId);
+  if (hostSocketId) {
+    io.to(hostSocketId).emit('joinRequestReceived', { lobbyId: lobby.id, requesterId: userId, username });
   }
 }

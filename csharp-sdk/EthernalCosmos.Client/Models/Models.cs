@@ -27,6 +27,7 @@ public sealed class Lobby
     [JsonPropertyName("hosted")]     public bool         Hosted     { get; init; }
     [JsonPropertyName("inviteCode")] public string?      InviteCode { get; init; }
     [JsonPropertyName("settings")]   public Dictionary<string, object?> Settings { get; init; } = [];
+    [JsonPropertyName("locked")]     public bool         Locked     { get; init; }
     [JsonPropertyName("createdAt")]  public long         CreatedAt  { get; init; }
 }
 
@@ -130,6 +131,45 @@ public sealed class PlayerDataPayload
 public sealed class PlayerKickedData
 {
     [JsonPropertyName("lobbyId")] public string LobbyId { get; init; } = "";
+}
+
+/// <summary>Reason a join request ended without the requester joining.</summary>
+public enum JoinRequestRejectReason
+{
+    Declined,
+    Timeout,
+    HostChanged,
+    LobbyClosed,
+}
+
+public sealed class JoinRequestReceivedData
+{
+    [JsonPropertyName("lobbyId")]     public string LobbyId     { get; init; } = "";
+    [JsonPropertyName("requesterId")] public string RequesterId { get; init; } = "";
+    [JsonPropertyName("username")]    public string Username    { get; init; } = "";
+}
+
+public sealed class JoinRequestPendingData
+{
+    [JsonPropertyName("lobbyId")] public string LobbyId { get; init; } = "";
+}
+
+public sealed class JoinRequestAcceptedData
+{
+    [JsonPropertyName("lobby")] public Lobby Lobby { get; init; } = new();
+}
+
+public sealed class JoinRequestRejectedData
+{
+    [JsonPropertyName("lobbyId")] public string LobbyId { get; init; } = "";
+    /// <summary>One of: "declined", "timeout", "host_changed", "lobby_closed" — see <see cref="JoinRequestRejectReason"/>.</summary>
+    [JsonPropertyName("reason")]  public string Reason  { get; init; } = "";
+}
+
+public sealed class JoinRequestWithdrawnData
+{
+    [JsonPropertyName("requesterId")] public string RequesterId { get; init; } = "";
+    [JsonPropertyName("reason")]      public string Reason      { get; init; } = "";
 }
 
 public sealed class PresenceUser

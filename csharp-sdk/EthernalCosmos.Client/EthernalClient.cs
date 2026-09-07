@@ -54,6 +54,17 @@ public sealed class EthernalClient : IAsyncDisposable
     public event Action<UserDataPayload>?       UserData;
     public event Action<PlayerDataPayload>?     PlayerData;
 
+    /// <summary>Host: a new join request has arrived for a locked lobby.</summary>
+    public event Action<JoinRequestReceivedData>?  JoinRequestReceived;
+    /// <summary>Requester: confirmation that a join request was sent and is awaiting the host.</summary>
+    public event Action<JoinRequestPendingData>?   JoinRequestPending;
+    /// <summary>Requester: the host accepted — you have already been added to the lobby.</summary>
+    public event Action<JoinRequestAcceptedData>?  JoinRequestAccepted;
+    /// <summary>Requester: the request ended without joining (declined, timed out, host changed, or lobby closed).</summary>
+    public event Action<JoinRequestRejectedData>?  JoinRequestRejected;
+    /// <summary>Host: a pending request was withdrawn (requester cancelled or it timed out).</summary>
+    public event Action<JoinRequestWithdrawnData>? JoinRequestWithdrawn;
+
     // Presence
     /// <summary>A user connected or their presence info changed (lobby joined/left, game started).</summary>
     public event Action<PresenceUser>?          PresenceJoined;
@@ -174,6 +185,31 @@ public sealed class EthernalClient : IAsyncDisposable
     /// <summary>(Host only) Transfer the host role to another player.</summary>
     public Task TransferHostAsync(string playerId) =>
         GetSocket().EmitAsync("transferHost", new { playerId });
+
+    /// <summary>(Host only) Lock the lobby — further joins (including via invite code) require an accepted join request.</summary>
+    public Task LockLobbyAsync() => GetSocket().EmitAsync("lockLobby");
+
+    /// <summary>(Host only) Unlock the lobby — JoinLobbyAsync/JoinLobbyByCodeAsync work directly again.</summary>
+    public Task UnlockLobbyAsync() => GetSocket().EmitAsync("unlockLobby");
+
+    /// <summary>
+    /// Request to join a locked lobby by ID. Resolves once the host accepts (already joined
+    /// server-side) or throws when declined, timed out (~15s), or the host/lobby changes meanwhile.
+    /// </summary>
+    public Task<Lobby> RequestJoinLobbyAsync(string lobbyId) =>
+        JoinRequestAsync("requestJoinLobby", new { lobbyId });
+
+    /// <summary>Request to join a locked lobby using its 6-character invite code. See <see cref="RequestJoinLobbyAsync"/>.</summary>
+    public Task<Lobby> RequestJoinLobbyByCodeAsync(string code) =>
+        JoinRequestAsync("requestJoinLobbyByCode", new { code });
+
+    /// <summary>Withdraw your own pending join request before the host has responded.</summary>
+    public Task CancelJoinRequestAsync(string lobbyId) =>
+        GetSocket().EmitAsync("cancelJoinRequest", new { lobbyId });
+
+    /// <summary>(Host only) Accept or reject a pending join request (see <see cref="JoinRequestReceived"/>).</summary>
+    public Task RespondJoinRequestAsync(string requesterId, bool accept) =>
+        GetSocket().EmitAsync("respondJoinRequest", new { requesterId, accept });
 
     // ─── Relay ────────────────────────────────────────────────────────────────
 
@@ -356,6 +392,12 @@ public sealed class EthernalClient : IAsyncDisposable
         RegisterEvent<UserDataPayload>(socket,  "userData",      d => UserData?.Invoke(d));
         RegisterEvent<PlayerDataPayload>(socket,"playerData",    d => PlayerData?.Invoke(d));
 
+        RegisterEvent<JoinRequestReceivedData>(socket,  "joinRequestReceived",  d => JoinRequestReceived?.Invoke(d));
+        RegisterEvent<JoinRequestPendingData>(socket,   "joinRequestPending",   d => JoinRequestPending?.Invoke(d));
+        RegisterEvent<JoinRequestAcceptedData>(socket,  "joinRequestAccepted",  d => JoinRequestAccepted?.Invoke(d));
+        RegisterEvent<JoinRequestRejectedData>(socket,  "joinRequestRejected",  d => JoinRequestRejected?.Invoke(d));
+        RegisterEvent<JoinRequestWithdrawnData>(socket, "joinRequestWithdrawn", d => JoinRequestWithdrawn?.Invoke(d));
+
         // Server-seitige Fehlermeldungen auch für fire-and-forget Events (z. B. Relay) sichtbar machen.
         socket.On("error", response =>
         {
@@ -487,6 +529,77 @@ public sealed class EthernalClient : IAsyncDisposable
             throw new InvalidOperationException(
                 "Kein aktiver Socket — bitte zuerst LoginAsync() oder RegisterAsync() aufrufen.");
         return _socket;
+    }
+
+    /// <summary>
+    /// Emits a join-request event and resolves/rejects based on the eventual host response
+    /// ("joinRequestAccepted" / "joinRequestRejected"), using a longer timeout than
+    /// <see cref="SocketRequestAsync{T}"/> since the server allows up to ~15s for the host to respond.
+    /// </summary>
+    private Task<Lobby> JoinRequestAsync(string emitEvent, object? data)
+    {
+        var acceptedTcs = new TaskCompletionSource<SocketIOResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var rejectedTcs = new TaskCompletionSource<SocketIOResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var errTcs      = new TaskCompletionSource<SocketIOResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var tcs         = new TaskCompletionSource<Lobby>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var socket      = GetSocket();
+
+        void Enqueue(string key, TaskCompletionSource<SocketIOResponse> waiter)
+        {
+            if (!_pending.TryGetValue(key, out var q)) _pending[key] = q = new Queue<TaskCompletionSource<SocketIOResponse>>();
+            q.Enqueue(waiter);
+        }
+
+        lock (_pendingLock)
+        {
+            Enqueue("joinRequestAccepted", acceptedTcs);
+            Enqueue("joinRequestRejected", rejectedTcs);
+            Enqueue("error", errTcs);
+        }
+
+        var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(16_000));
+        cts.Token.Register(() =>
+        {
+            acceptedTcs.TrySetCanceled();
+            rejectedTcs.TrySetCanceled();
+            errTcs.TrySetCanceled();
+        });
+
+        acceptedTcs.Task.ContinueWith(t =>
+        {
+            if (t.IsCanceled) { tcs.TrySetCanceled(); return; }
+            if (t.IsFaulted)  { tcs.TrySetException(t.Exception!); return; }
+            rejectedTcs.TrySetCanceled();
+            errTcs.TrySetCanceled();
+            try   { tcs.TrySetResult(t.Result.GetValue<JoinRequestAcceptedData>(0).Lobby); }
+            catch (Exception ex) { tcs.TrySetException(ex); }
+        }, TaskScheduler.Default);
+
+        rejectedTcs.Task.ContinueWith(t =>
+        {
+            if (t.IsCanceled || t.IsFaulted) return; // already handled
+            acceptedTcs.TrySetCanceled();
+            errTcs.TrySetCanceled();
+            try   { tcs.TrySetException(new Exception($"Beitrittsanfrage abgelehnt ({t.Result.GetValue<JoinRequestRejectedData>(0).Reason})")); }
+            catch { tcs.TrySetException(new Exception("Beitrittsanfrage abgelehnt")); }
+        }, TaskScheduler.Default);
+
+        errTcs.Task.ContinueWith(t =>
+        {
+            if (t.IsCanceled || t.IsFaulted) return; // already handled
+            acceptedTcs.TrySetCanceled();
+            rejectedTcs.TrySetCanceled();
+            try   { tcs.TrySetException(new Exception(t.Result.GetValue<string>(0))); }
+            catch { tcs.TrySetException(new Exception("Server error")); }
+        }, TaskScheduler.Default);
+
+        var emitTask = data is null ? socket.EmitAsync(emitEvent) : socket.EmitAsync(emitEvent, data);
+        emitTask.ContinueWith(t =>
+        {
+            if (t.IsFaulted) tcs.TrySetException(t.Exception!);
+        }, TaskContinuationOptions.OnlyOnFaulted);
+
+        return tcs.Task;
     }
 
     private Task<T> SocketRequestAsync<T>(

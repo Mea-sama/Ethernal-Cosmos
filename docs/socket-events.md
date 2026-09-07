@@ -130,6 +130,54 @@ socket.emit('transferHost', { playerId: string });
 
 ---
 
+#### `lockLobby` / `unlockLobby` _(host only)_
+
+```ts
+socket.emit('lockLobby');
+socket.emit('unlockLobby');
+```
+
+While locked, `joinLobby`/`joinLobbyByCode` are rejected with `LOBBY_LOCKED` — other players must use
+`requestJoinLobby`/`requestJoinLobbyByCode` instead. Locking never affects players already in the lobby.
+
+---
+
+#### `requestJoinLobby` / `requestJoinLobbyByCode`
+
+```ts
+socket.emit('requestJoinLobby', { lobbyId: string });
+socket.emit('requestJoinLobbyByCode', { code: string });
+```
+
+Requests to join a locked lobby. If the lobby isn't actually locked, this joins immediately (same
+as `joinLobby`). If locked, the server acks with `joinRequestPending` and notifies the host via
+`joinRequestReceived`. The host then calls `respondJoinRequest`. Unanswered requests are
+auto-rejected after ~15 seconds.
+
+---
+
+#### `cancelJoinRequest`
+
+```ts
+socket.emit('cancelJoinRequest', { lobbyId: string });
+```
+
+Withdraws your own pending request. The host is notified via `joinRequestWithdrawn`.
+
+---
+
+#### `respondJoinRequest` _(host only)_
+
+```ts
+socket.emit('respondJoinRequest', { requesterId: string, accept: boolean });
+```
+
+Accepts or rejects a pending request. On accept, the server joins the requester server-side and
+emits `joinRequestAccepted` (with the updated `Lobby`) directly to them, plus the usual
+`lobbyUpdated` to the room. On reject, the requester gets `joinRequestRejected`.
+
+---
+
 ### Relay
 
 Relay is split into two lanes:
@@ -318,6 +366,55 @@ socket.on('playerKicked', (data: { lobbyId: string }) => { ... });
 ```
 
 Emitted to a player who has been kicked by the host.
+
+---
+
+#### `joinRequestReceived` _(to host)_
+
+```ts
+socket.on('joinRequestReceived', (data: { lobbyId: string; requesterId: string; username: string }) => { ... });
+```
+
+---
+
+#### `joinRequestPending` _(to requester)_
+
+```ts
+socket.on('joinRequestPending', (data: { lobbyId: string }) => { ... });
+```
+
+Ack confirming the request was sent and is awaiting the host.
+
+---
+
+#### `joinRequestAccepted` _(to requester)_
+
+```ts
+socket.on('joinRequestAccepted', (data: { lobby: Lobby }) => { ... });
+```
+
+The host accepted — you have already been added to the lobby server-side, no further action needed.
+
+---
+
+#### `joinRequestRejected` _(to requester)_
+
+```ts
+socket.on('joinRequestRejected', (data: {
+  lobbyId: string;
+  reason: 'declined' | 'timeout' | 'host_changed' | 'lobby_closed';
+}) => { ... });
+```
+
+---
+
+#### `joinRequestWithdrawn` _(to host)_
+
+```ts
+socket.on('joinRequestWithdrawn', (data: { requesterId: string; reason: 'cancelled' | 'timeout' }) => { ... });
+```
+
+A pending request disappeared before you responded (requester cancelled, or it timed out).
 
 ---
 

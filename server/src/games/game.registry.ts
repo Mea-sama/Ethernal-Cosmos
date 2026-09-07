@@ -14,6 +14,15 @@ const HOSTED: Omit<GameInfo, 'hosted'>[] = [
     maxPlayers: 2,
     // kein entryScript → reines Relay-Spiel
   },
+  {
+    id: 'dudg',
+    name: 'Duell um die Geld',
+    description: 'Poker-Quiz-Duell: 1 Host + bis zu 7 Kontrahenten, beliebig viele Zuschauer.',
+    // Großzügige Obergrenze — nur Sicherheitsdeckel, da Zuschauer unbegrenzt sind;
+    // die echte 1 Host + 7 Kontrahenten-Grenze setzt der Subprocess selbst durch.
+    maxPlayers: 40,
+    entryScript: 'games/dudg/server/dist/index.js',
+  },
   // Hier kommen zukünftige Spiele rein, z.B.:
   // { id: 'tcg', name: 'Ethernal TCG', description: '...', maxPlayers: 2, entryScript: 'games/tcg/server/dist/index.js' },
 ];

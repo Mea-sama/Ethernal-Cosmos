@@ -54,8 +54,13 @@ export interface Lobby {
   settings: Record<string, unknown>;
   /** true = serverseitig verwaltetes Spiel; false = externe App */
   hosted: boolean;
+  /** true = Beitritt (auch per Invite-Code) erfordert eine vom Host angenommene Beitrittsanfrage */
+  locked: boolean;
   createdAt: number; // unix ms
 }
+
+/** Grund, warum eine Beitrittsanfrage abgelehnt/beendet wurde */
+export type JoinRequestRejectReason = 'declined' | 'timeout' | 'host_changed' | 'lobby_closed';
 
 // ─── Game Registry ───────────────────────────────────────────────────────────
 
@@ -85,6 +90,9 @@ export type IpcHubToGame =
   /** Neuer Spieler hat die Lobby betreten (nach dem initialen Spawn) */
   | { type: 'PLAYER_JOIN'; payload: { userId: string; username: string } }
   | { type: 'PLAYER_DISCONNECT'; payload: { userId: string } }
+  /** Spieler hat die Lobby endgültig verlassen (explizites leaveLobby oder kickPlayer) —
+   *  im Gegensatz zu PLAYER_DISCONNECT gibt es keine Reconnect-Gnadenfrist. */
+  | { type: 'PLAYER_LEAVE'; payload: { userId: string } }
   /** Antwort auf GET_USER_DATA */
   | { type: 'USER_DATA_RESPONSE'; payload: { requestId: string; userId: string; gameId: string; data: Record<string, unknown> } };
 
@@ -92,6 +100,8 @@ export type IpcHubToGame =
 export type IpcGameToHub =
   | { type: 'READY' }
   | { type: 'GAME_STATE'; payload: unknown }
+  /** Wie GAME_STATE, aber nur an den Socket dieses einen Users gesendet (nicht an den ganzen Raum) */
+  | { type: 'GAME_STATE_FOR_USER'; payload: { userId: string; state: unknown } }
   | { type: 'GAME_EVENT'; payload: { type: string; data: unknown } }
   | { type: 'GAME_OVER'; payload: unknown }
   /**
@@ -200,6 +210,24 @@ export interface ClientToServerEvents {
   /** Host: Host-Rolle an anderen Spieler übertragen */
   transferHost: (data: { playerId: string }) => void;
 
+  /** Host: Lobby sperren — Beitritt (auch per Invite-Code) erfordert danach eine Anfrage */
+  lockLobby: () => void;
+
+  /** Host: Lobby wieder entsperren — normaler Beitritt funktioniert wieder direkt */
+  unlockLobby: () => void;
+
+  /** Beitritt zu einer gesperrten Lobby anfragen (per Lobby-ID) */
+  requestJoinLobby: (data: { lobbyId: string }) => void;
+
+  /** Beitritt zu einer gesperrten Lobby anfragen (per Invite-Code) */
+  requestJoinLobbyByCode: (data: { code: string }) => void;
+
+  /** Eigene, noch offene Beitrittsanfrage zurückziehen */
+  cancelJoinRequest: (data: { lobbyId: string }) => void;
+
+  /** Host: eine eingegangene Beitrittsanfrage annehmen oder ablehnen */
+  respondJoinRequest: (data: { requesterId: string; accept: boolean }) => void;
+
   /** Nachricht an alle anderen Spieler in der Lobby senden (Relay) */
   sendToLobby: (data: { type: string; payload: unknown }) => void;
 
@@ -277,6 +305,21 @@ export interface ServerToClientEvents {
 
   /** Antwort auf presence:list — alle aktuell verbundenen User */
   'presence:list': (users: PresenceUser[]) => void;
+
+  /** Host: eine neue Beitrittsanfrage ist eingegangen */
+  joinRequestReceived: (data: { lobbyId: string; requesterId: string; username: string }) => void;
+
+  /** Bestätigung an den Anfragenden: die Anfrage wurde gesendet und wartet auf den Host */
+  joinRequestPending: (data: { lobbyId: string }) => void;
+
+  /** Der Host hat die Anfrage angenommen — Beitritt wurde bereits serverseitig vollzogen */
+  joinRequestAccepted: (data: { lobby: Lobby }) => void;
+
+  /** Die Anfrage wurde beendet, ohne dass beigetreten wurde */
+  joinRequestRejected: (data: { lobbyId: string; reason: JoinRequestRejectReason }) => void;
+
+  /** Host: eine Anfrage wurde zurückgezogen oder ist ausgelaufen, bevor der Host reagiert hat */
+  joinRequestWithdrawn: (data: { requesterId: string; reason: 'cancelled' | 'timeout' }) => void;
 }
 
 /** Interne Socket-Daten pro verbundenem Client */

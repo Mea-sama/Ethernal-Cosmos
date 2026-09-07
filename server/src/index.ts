@@ -14,6 +14,7 @@ import type {
 import { initDatabase } from './db/database';
 import { authRouter } from './auth/auth.router';
 import { userDataRouter, playerDataRouter, leaderboardRouter } from './user-data/userdata.router';
+import { dudgQuestionsRouter } from './games/dudg/dudg-questions.router';
 import { registerSocketAuth, registerLobbyHandlers, registerIpcRouting } from './lobby/lobby.socket';
 import { listGames } from './games/game.registry';
 import { ALLOWED_ORIGINS, HOST, IS_PRODUCTION, PORT, isAllowedOrigin } from './config/env';
@@ -125,6 +126,7 @@ app.use('/assets', express.static(socketIoClientDir));
 // Statische Assets + Spiele-Clients + Docs (vor REST-Routen)
 app.use('/assets',   express.static(path.join(__dirname, '../../server/public')));
 app.use('/tictactoe', express.static(path.join(__dirname, '../../games/tictactoe')));
+app.use('/dudg',     express.static(path.join(__dirname, '../../games/dudg/client')));
 app.use('/docs',     express.static(path.join(__dirname, '../../docs')));
 
 app.get('/health', (_req, res) => {
@@ -207,6 +209,7 @@ app.use('/auth', authRouter);
 app.use('/userdata', userDataRouter);
 app.use('/players', playerDataRouter);
 app.use('/leaderboard', leaderboardRouter);
+app.use('/dudg/api/questions', dudgQuestionsRouter);
 
 // ─── Start ───────────────────────────────────────────────────────────────────
 

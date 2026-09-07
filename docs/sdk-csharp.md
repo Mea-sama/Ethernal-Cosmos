@@ -309,6 +309,42 @@ Task TransferHostAsync(string playerId)
 
 ---
 
+### `LockLobbyAsync` / `UnlockLobbyAsync` _(host only)_
+
+```csharp
+Task LockLobbyAsync()
+Task UnlockLobbyAsync()
+```
+
+---
+
+### `RequestJoinLobbyAsync` / `RequestJoinLobbyByCodeAsync`
+
+```csharp
+Task<Lobby> RequestJoinLobbyAsync(string lobbyId)
+Task<Lobby> RequestJoinLobbyByCodeAsync(string code)
+```
+
+Resolves once the host accepts, or throws if declined/timed out (~15s)/host or lobby changed.
+
+---
+
+### `CancelJoinRequestAsync`
+
+```csharp
+Task CancelJoinRequestAsync(string lobbyId)
+```
+
+---
+
+### `RespondJoinRequestAsync` _(host only)_
+
+```csharp
+Task RespondJoinRequestAsync(string requesterId, bool accept)
+```
+
+---
+
 ## Relay Methods
 
 ### `SendToLobbyAsync`
@@ -524,6 +560,16 @@ Subscribe to events before calling `LoginAsync` / `RegisterAsync` to avoid missi
 | `LobbyList` | `Action<Lobby[]>` | Response to `ListLobbiesAsync` |
 | `LobbyInfo` | `Action<Lobby>` | Response to `GetLobbyInfoAsync` |
 | `PlayerKicked` | `Action<PlayerKickedData>` | You were removed from the lobby |
+
+### Join Requests
+
+| Event | Delegate | Description |
+|-------|----------|-------------|
+| `JoinRequestReceived` | `Action<JoinRequestReceivedData>` | Host: a new join request arrived for your locked lobby |
+| `JoinRequestPending` | `Action<JoinRequestPendingData>` | Requester: ack that your request was sent and awaits the host |
+| `JoinRequestAccepted` | `Action<JoinRequestAcceptedData>` | Requester: the host accepted \u2014 you're already joined server-side |
+| `JoinRequestRejected` | `Action<JoinRequestRejectedData>` | Requester: request ended without joining; `Reason` = declined/timeout/host_changed/lobby_closed |
+| `JoinRequestWithdrawn` | `Action<JoinRequestWithdrawnData>` | Host: a pending request was cancelled or timed out |
 
 ### Game
 

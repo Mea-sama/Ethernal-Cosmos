@@ -308,6 +308,51 @@ Transfers the host role to another player in the lobby.
 
 ---
 
+### `lockLobby()` / `unlockLobby()` _(host only)_
+
+```ts
+lockLobby(): void
+unlockLobby(): void
+```
+
+While locked, `joinLobby`/`joinLobbyByCode` are rejected — other players must use
+`requestJoinLobby`/`requestJoinLobbyByCode` and wait for your approval.
+
+---
+
+### `requestJoinLobby(lobbyId)` / `requestJoinLobbyByCode(code)`
+
+```ts
+requestJoinLobby(lobbyId: string): Promise<Lobby>
+requestJoinLobbyByCode(code: string): Promise<Lobby>
+```
+
+Requests to join a locked lobby. Resolves once the host accepts (you're already joined
+server-side) or rejects if declined, timed out (~15s), or the host/lobby changes meanwhile. If the
+lobby isn't actually locked, this joins immediately.
+
+---
+
+### `cancelJoinRequest(lobbyId)`
+
+```ts
+cancelJoinRequest(lobbyId: string): void
+```
+
+Withdraws your own pending request before the host responds.
+
+---
+
+### `respondJoinRequest(requesterId, accept)` _(host only)_
+
+```ts
+respondJoinRequest(requesterId: string, accept: boolean): void
+```
+
+Accepts or rejects a pending request received via the `joinRequestReceived` event.
+
+---
+
 ## Relay Methods
 
 Used to send messages between players through the Hub. The Hub relays without interpreting the payload.

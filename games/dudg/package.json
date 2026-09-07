@@ -1,0 +1,7 @@
+{
+  "name": "dudg-game",
+  "private": true,
+  "scripts": {
+    "build": "cd server && npm run build"
+  }
+}

@@ -1,0 +1,82 @@
+{
+  "server": "https://mea-sama.duckdns.org:12346",
+  "timestamp": "2026-08-12T07:16:57.268Z",
+  "results": [
+    {
+      "name": "oversize-payload-rejected",
+      "passed": true,
+      "details": {
+        "receivedError": "Binary-Payload zu groß (max 1000 Bytes)",
+        "allErrors": [
+          "Binary-Payload zu groß (max 1000 Bytes)"
+        ]
+      }
+    },
+    {
+      "name": "invalid-typecode-rejected",
+      "passed": true,
+      "details": {
+        "receivedError": "Ungültiger Binary-Typcode",
+        "allErrors": [
+          "Ungültiger Binary-Typcode"
+        ]
+      }
+    },
+    {
+      "name": "rate-limit-sweep-around-200hz",
+      "passed": true,
+      "details": {
+        "sweep": [
+          {
+            "hz": 120,
+            "durationMs": 5000,
+            "sent": 599,
+            "received": 599,
+            "rateLimitHits": 0,
+            "deliveryRatePct": 100
+          },
+          {
+            "hz": 180,
+            "durationMs": 5000,
+            "sent": 900,
+            "received": 900,
+            "rateLimitHits": 0,
+            "deliveryRatePct": 100
+          },
+          {
+            "hz": 220,
+            "durationMs": 5000,
+            "sent": 1099,
+            "received": 1099,
+            "rateLimitHits": 0,
+            "deliveryRatePct": 100
+          },
+          {
+            "hz": 260,
+            "durationMs": 5000,
+            "sent": 1300,
+            "received": 1300,
+            "rateLimitHits": 0,
+            "deliveryRatePct": 100
+          },
+          {
+            "hz": 320,
+            "durationMs": 5000,
+            "sent": 1599,
+            "received": 1340,
+            "rateLimitHits": 2,
+            "deliveryRatePct": 83.80237648530331
+          },
+          {
+            "hz": 380,
+            "durationMs": 5000,
+            "sent": 1900,
+            "received": 1241,
+            "rateLimitHits": 2,
+            "deliveryRatePct": 65.31578947368422
+          }
+        ]
+      }
+    }
+  ]
+}

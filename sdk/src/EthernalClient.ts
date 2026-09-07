@@ -10,11 +10,12 @@ import type {
   PresenceUser,
   RelayMessage,
   RelayBinaryMessage,
+  JoinRequestRejectReason,
 } from '@ethernal/shared';
 
-// ─── Types ────────────────────────────────────────────────────────────────────
+// ─── Types ───────────────────────────────────────────────────────
 
-export type { Lobby, UserDataEntry, DataVisibility, PresenceUser } from '@ethernal/shared';
+export type { Lobby, UserDataEntry, DataVisibility, PresenceUser, JoinRequestRejectReason } from '@ethernal/shared';
 export type { RelayMessage, RelayBinaryMessage } from '@ethernal/shared';
 
 export type BinaryPayload = Uint8Array | ArrayBuffer;
@@ -162,6 +163,40 @@ export class EthernalClient extends EventEmitter {
   /** (Host only) Transfer the host role to another player. */
   transferHost(playerId: string): void {
     this.getSocket().emit('transferHost', { playerId });
+  }
+
+  /** (Host only) Lock the lobby — further joins (including via invite code) require an accepted join request. */
+  lockLobby(): void {
+    this.getSocket().emit('lockLobby');
+  }
+
+  /** (Host only) Unlock the lobby — joinLobby/joinLobbyByCode work directly again. */
+  unlockLobby(): void {
+    this.getSocket().emit('unlockLobby');
+  }
+
+  /**
+   * Request to join a locked lobby by ID. Resolves once the host accepts (with the updated
+   * Lobby, already joined server-side) or rejects when the host declines, the request times
+   * out (~15s of host inactivity), or the host changes/lobby closes in the meantime.
+   */
+  requestJoinLobby(lobbyId: string): Promise<Lobby> {
+    return this.joinRequestRace(() => this.getSocket().emit('requestJoinLobby', { lobbyId }));
+  }
+
+  /** Request to join a locked lobby using its 6-character invite code. See {@link requestJoinLobby}. */
+  requestJoinLobbyByCode(code: string): Promise<Lobby> {
+    return this.joinRequestRace(() => this.getSocket().emit('requestJoinLobbyByCode', { code }));
+  }
+
+  /** Withdraw your own pending join request before the host has responded. */
+  cancelJoinRequest(lobbyId: string): void {
+    this.getSocket().emit('cancelJoinRequest', { lobbyId });
+  }
+
+  /** (Host only) Accept or reject a pending join request (see the 'joinRequestReceived' event). */
+  respondJoinRequest(requesterId: string, accept: boolean): void {
+    this.getSocket().emit('respondJoinRequest', { requesterId, accept });
   }
 
   // ─── Relay ────────────────────────────────────────────────────────────────
@@ -370,6 +405,11 @@ export class EthernalClient extends EventEmitter {
     forward('presence:joined');
     forward('presence:left');
     forward('presence:list');
+    forward('joinRequestReceived');
+    forward('joinRequestPending');
+    forward('joinRequestAccepted');
+    forward('joinRequestRejected');
+    forward('joinRequestWithdrawn');
     // Note: 'error' events from the socket are handled separately to avoid
     // conflicting with Node's EventEmitter built-in 'error' behaviour.
     socket.on('error', (msg: string) => {
@@ -423,6 +463,54 @@ export class EthernalClient extends EventEmitter {
 
       sock.once('error', onError);
       sock.once(successEvent as string, onSuccess);
+      emit();
+    });
+  }
+
+  /**
+   * Emits a join-request event and resolves/rejects based on the eventual host response
+   * ('joinRequestAccepted' / 'joinRequestRejected'), independent of the generic requestTimeout
+   * since the server allows up to ~15s for the host to respond.
+   */
+  private joinRequestRace(emit: () => void): Promise<Lobby> {
+    const JOIN_REQUEST_TIMEOUT_MS = 16_000;
+    return new Promise((resolve, reject) => {
+      const sock = this.getSocket() as unknown as {
+        once: (event: string, cb: (...args: unknown[]) => void) => void;
+        off: (event: string, cb: (...args: unknown[]) => void) => void;
+      };
+
+      const cleanup = () => {
+        clearTimeout(timer);
+        sock.off('error', onError);
+        sock.off('joinRequestAccepted', onAccepted);
+        sock.off('joinRequestRejected', onRejected);
+      };
+
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error('Timeout beim Warten auf die Beitrittsanfrage'));
+      }, JOIN_REQUEST_TIMEOUT_MS);
+
+      const onError = (...args: unknown[]) => {
+        cleanup();
+        reject(new Error(typeof args[0] === 'string' ? args[0] : 'Unbekannter Fehler'));
+      };
+
+      const onAccepted = (...args: unknown[]) => {
+        cleanup();
+        resolve((args[0] as { lobby: Lobby }).lobby);
+      };
+
+      const onRejected = (...args: unknown[]) => {
+        cleanup();
+        const data = args[0] as { reason: JoinRequestRejectReason };
+        reject(new Error(`Beitrittsanfrage abgelehnt (${data.reason})`));
+      };
+
+      sock.once('error', onError);
+      sock.once('joinRequestAccepted', onAccepted);
+      sock.once('joinRequestRejected', onRejected);
       emit();
     });
   }
