@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("BinaryCsharpApp")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+34760188f85a4c803fa5630123918c6604e53ba9")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+9f4ad10d6fb71cd2869f195c7c6d000414295d2f")]
 [assembly: System.Reflection.AssemblyProductAttribute("BinaryCsharpApp")]
 [assembly: System.Reflection.AssemblyTitleAttribute("BinaryCsharpApp")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

@@ -18,7 +18,7 @@ Auf die Gesamthöhe hat ein Stockwerk eine durchschnittliche Deckenhöhe von üb
 
 ## Answer
 
-829.8 m
+829,8 m
 
 ## Labels
 

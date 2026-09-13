@@ -20,4 +20,4 @@ Zusätzlich zu den Skins besitzt *Mea#sama* 130 Chromas (Farbvarianten), was zwi
 
 ## Labels
 
-Basic
+Basic, Snapshot

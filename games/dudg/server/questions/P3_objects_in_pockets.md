@@ -16,7 +16,7 @@ Die Anzahl in der Linken Tasche ist doppelt so hoch!
 
 ## Answer
 
-34 + 17 = **51**
+51 (34 + 17)
 
 ## Labels
 

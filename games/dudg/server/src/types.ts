@@ -102,6 +102,7 @@ export interface Member {
 export interface PartyResultRow {
   userId: string;
   username: string;
+  answer: string;
   rank: number;
   distance: number;
   exact: boolean;

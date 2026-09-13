@@ -99,16 +99,66 @@
 }
 
 .option-btn { margin: 0.25rem; }
+.option-btn.selected {
+  background: var(--gold);
+  color: #1a1000;
+  font-weight: bold;
+  box-shadow: 0 0 0 2px var(--gold-light);
+}
 
 #party-countdown { font-size: 1.1rem; color: var(--gold-light); font-weight: bold; }
 #party-results .player-row { font-size: 0.95rem; }
 
+#party-question img,
+#hint img,
+#host-question img,
+#contestant-question img,
+#display-question img,
+.answer-reveal img {
+  display: block;
+  height: auto;
+  max-width: 100%;
+  margin: 0 auto; /* This also centers the image if the container is wider */
+  cursor: zoom-in;
+}
+
 .rank-up { color: var(--green-chip); font-weight: bold; }
 .rank-down { color: var(--red-light); font-weight: bold; }
 .rank-same { color: var(--text-muted); }
-.leaderboard-gap { justify-content: center; color: var(--text-muted); }
+.leaderboard-gap td { text-align: center; color: var(--text-muted); }
+
+/* Tables can exceed the card's width (long names, large OS font-size settings on phones) —
+   scroll horizontally within the card instead of clipping/overflowing the page. */
+#party-results, #party-leaderboard {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+  margin-bottom: 0.75rem;
+}
+.data-table th, .data-table td {
+  padding: 0.4rem 0.6rem;
+  text-align: left;
+  border-bottom: 1px solid var(--card-border);
+  white-space: nowrap;
+}
+.data-table th {
+  color: var(--gold-light);
+  font-weight: normal;
+  border-bottom: 1px solid var(--gold-dim);
+}
+.data-table tbody tr:nth-child(even) { background: rgba(255, 255, 255, 0.03); }
+.data-table tbody tr.active-turn { background: rgba(200, 162, 39, 0.15); }
+
+.hint-action-status { color: var(--gold-light); font-weight: bold; margin-left: 0.5rem; }
 
 .raise-input { width: 120px; padding: 0.5rem; border-radius: 6px; border: 1px solid var(--card-border); background: var(--felt-dark); color: var(--text); }
+
+.answer-confirm { color: var(--green-chip); font-weight: bold; margin-left: 0.5rem; }
 
 dialog#dlg-custom-question {
   border: 1px solid var(--gold-dim);
@@ -118,6 +168,36 @@ dialog#dlg-custom-question {
   color: var(--text);
 }
 dialog#dlg-custom-question::backdrop { background: rgba(0,0,0,0.6); }
+
+dialog#dlg-image-zoom {
+  padding: 0;
+  border: none;
+  background: transparent;
+  width: 95vw;
+  max-width: 95vw;
+  height: 95vh;
+  max-height: 95vh;
+}
+dialog#dlg-image-zoom::backdrop { background: rgba(0, 0, 0, 0.9); }
+#image-zoom-scroll {
+  width: 100%;
+  height: 100%;
+  overflow: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+#image-zoom-img {
+  max-width: 100%;
+  max-height: 100%;
+  cursor: zoom-in;
+}
+#image-zoom-img.zoomed {
+  max-width: none;
+  max-height: none;
+  width: auto;
+  cursor: zoom-out;
+}
 
 #s-game { display: flex; flex-direction: column; gap: 1rem; }
 #s-setup { display: flex; flex-direction: column; gap: 1rem; }

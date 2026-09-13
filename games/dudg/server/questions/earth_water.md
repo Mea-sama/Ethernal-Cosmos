@@ -14,7 +14,7 @@ Die Genauigkeit der Pokemon-Attacke "Hydropumpe" ist mit 80% höher als der gesu
 
 ## Answer
 
-71%
+71 %
 
 ## Labels
 

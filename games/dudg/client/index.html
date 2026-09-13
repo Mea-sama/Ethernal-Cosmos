@@ -79,7 +79,7 @@
         <input class="code-input" id="question-search" placeholder="Fragen durchsuchen...">
         <div id="label-cards"></div>
         <div id="pool-preview"></div>
-        <div class="field">
+        <div class="field" id="first-question-field">
           <label>Erste Frage</label>
           <select id="first-question"></select>
         </div>
@@ -114,6 +114,11 @@
         <button class="btn" id="btn-cq-cancel">Abbrechen</button>
         <button class="btn btn-gold" id="btn-cq-submit">Speichern</button>
       </div>
+    </dialog>
+
+    <!-- ── Image zoom lightbox (opened by clicking any question/hint image) ── -->
+    <dialog id="dlg-image-zoom">
+      <div id="image-zoom-scroll"><img id="image-zoom-img" alt=""></div>
     </dialog>
 
     <!-- ── Game screen (host / contestant / spectator views) ── -->

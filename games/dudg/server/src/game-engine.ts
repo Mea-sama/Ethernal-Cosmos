@@ -22,11 +22,36 @@ const PARTY_NEAR_UPPER = [200, 125] as const;
 const PARTY_EXACT_UPPER = [250, 150] as const;
 const PARTY_EXACT_LOWER = [100, 50] as const;
 
+/**
+ * Extracts a numeric value from free-form answer text, tolerating trailing units ("m", "Mio.",
+ * "€"), parenthetical notes ("2 (Merkur und Venus)"), and both decimal-separator conventions.
+ * Disambiguates "," vs "." as thousands-vs-decimal: if both appear, the last one wins as the
+ * decimal separator; if only one kind appears more than once, it's treated as thousands grouping
+ * (e.g. "10.050.808" → 10050808); a single lone "," or "." is always the decimal point.
+ */
 export function parseNumericAnswer(raw: string): number | null {
   if (typeof raw !== 'string') return null;
-  const normalized = raw.trim().replace(',', '.');
-  if (normalized === '') return null;
-  const n = Number(normalized);
+  const match = raw.trim().match(/-?[\d.,]+/);
+  if (!match) return null;
+  let token = match[0].replace(/[.,]+$/, ''); // drop a trailing separator with nothing after it
+  if (token === '' || token === '-') return null;
+
+  const dotCount = (token.match(/\./g) ?? []).length;
+  const commaCount = (token.match(/,/g) ?? []).length;
+
+  if (dotCount > 0 && commaCount > 0) {
+    const decimalIsComma = token.lastIndexOf(',') > token.lastIndexOf('.');
+    token = decimalIsComma ? token.replace(/\./g, '').replace(',', '.') : token.replace(/,/g, '');
+  } else if (commaCount > 1) {
+    token = token.replace(/,/g, '');
+  } else if (commaCount === 1) {
+    token = token.replace(',', '.');
+  } else if (dotCount > 1) {
+    token = token.replace(/\./g, '');
+  }
+  // A single lone "." is already a valid JS decimal point — left as-is.
+
+  const n = Number(token);
   return Number.isFinite(n) ? n : null;
 }
 
@@ -337,10 +362,10 @@ export class DudgEngine {
 
   // ─── Party mode ─────────────────────────────────────────────────────────
 
-  startPartyGame(opts: { questionFile: string; startingChips: number }): { ok: boolean; error?: string } {
+  startPartyGame(opts: { startingChips: number }): { ok: boolean; error?: string } {
     if (this.state.phase !== 'setup') return { ok: false, error: 'ALREADY_STARTED' };
     if (this.state.mode !== 'party') return { ok: false, error: 'NOT_PARTY_MODE' };
-    if (!this.state.questionPool.includes(opts.questionFile)) return { ok: false, error: 'QUESTION_NOT_IN_POOL' };
+    if (this.state.questionPool.length === 0) return { ok: false, error: 'POOL_EMPTY' };
     if (this.contestantCount() < 2) return { ok: false, error: 'NOT_ENOUGH_CONTESTANTS' };
 
     this.state.sessionConfig = { startingChips: opts.startingChips, sbAmount: 0, bbAmount: 0, jokerEnabled: false };
@@ -353,7 +378,8 @@ export class DudgEngine {
     });
     this.state.seatOrder = players.map((m) => m.userId);
     this.state.poolLocked = true;
-    this.beginPartyCollecting(opts.questionFile);
+    // Party mode always picks randomly — no host-chosen first question (see beginPartyCollecting).
+    this.beginPartyCollecting();
     return { ok: true };
   }
 
@@ -468,6 +494,8 @@ export class DudgEngine {
     }
   }
 
+  /** Rounds to the nearest 25 (remainder <12.5 rounds down, ≥12.5 rounds up) — applied to the
+   *  percentage curve, not the final currency amount, so 100% always means an exact break-even. */
   private static roundTo25(amount: number): number {
     return Math.round(amount / 25) * 25;
   }
@@ -497,12 +525,13 @@ export class DudgEngine {
   private partyPercent(rank: number, n: number, exact: boolean): number {
     const upperCount = Math.ceil(n / 2);
     const lowerCount = n - upperCount;
-    if (rank <= upperCount) {
-      const curve = exact ? PARTY_EXACT_UPPER : PARTY_NEAR_UPPER;
-      return DudgEngine.curvePercent(rank - 1, upperCount, curve);
-    }
-    if (!exact) return 0;
-    return DudgEngine.curvePercent(rank - upperCount - 1, lowerCount, PARTY_EXACT_LOWER);
+    const raw =
+      rank <= upperCount
+        ? DudgEngine.curvePercent(rank - 1, upperCount, exact ? PARTY_EXACT_UPPER : PARTY_NEAR_UPPER)
+        : exact
+          ? DudgEngine.curvePercent(rank - upperCount - 1, lowerCount, PARTY_EXACT_LOWER)
+          : 0;
+    return DudgEngine.roundTo25(raw);
   }
 
   private computePartyReveal(): void {
@@ -517,12 +546,13 @@ export class DudgEngine {
     const results: PartyResultRow[] = scored.map((entry, i) => {
       const rank = i + 1;
       const percent = this.partyPercent(rank, scored.length, entry.exact);
-      const prize = DudgEngine.roundTo25(entry.m.partyBet * (percent / 100));
+      const prize = Math.round(entry.m.partyBet * (percent / 100));
       entry.m.chips = entry.m.chips - entry.m.partyBet + prize;
       if (entry.m.chips <= 0) entry.m.eliminated = true;
       return {
         userId: entry.m.userId,
         username: entry.m.username,
+        answer: entry.m.answer,
         rank,
         distance: entry.distance,
         exact: entry.exact,

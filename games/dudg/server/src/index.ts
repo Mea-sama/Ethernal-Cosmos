@@ -29,8 +29,11 @@ function send(msg: IpcGameToHub): void {
 function sendStateToUser(userId: string): void {
   const m = engine.state.members[userId];
   let state: unknown;
-  if (engine.state.mode === 'party' && m?.role === 'contestant') state = engine.partySnapshot(userId);
-  else if (userId === engine.state.hostId) state = engine.hostSnapshot();
+  // Only route to the party view once the game has actually started — during 'setup' the host
+  // (whose own Member always has role 'contestant') must keep seeing the host config UI.
+  if (engine.state.mode === 'party' && engine.state.phase !== 'setup' && m?.role === 'contestant') {
+    state = engine.partySnapshot(userId);
+  } else if (userId === engine.state.hostId) state = engine.hostSnapshot();
   else if (m?.role === 'contestant') state = engine.contestantSnapshot(userId);
   else state = engine.spectatorSnapshot();
   send({ type: 'GAME_STATE_FOR_USER', payload: { userId, state } });
@@ -209,10 +212,7 @@ function handleAction(userId: string, action: string, data: unknown): void {
       break;
     case 'startGame':
       if (engine.state.mode === 'party') {
-        engine.startPartyGame({
-          questionFile: String(d.questionFile),
-          startingChips: Number(d.startingChips) || 1000,
-        });
+        engine.startPartyGame({ startingChips: Number(d.startingChips) || 1000 });
         armPartyTimer();
       } else {
         engine.startGame({

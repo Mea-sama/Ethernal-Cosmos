@@ -457,6 +457,7 @@ function renderQuestionHtml(q, wrapperId) {
 
 function renderHost() {
   const s = latestState;
+  syncModeUi(s.mode);
   els.hostQuestion.innerHTML = `<div class="pot-display">🏆 Pot: ${s.pot}</div>` + renderQuestionHtml(s.currentQuestion);
   els.hostPlayers.innerHTML = (s.players ?? [])
     .map((p) => `<div class="player-row ${p.userId === s.currentBettorId ? 'active-turn' : ''} ${p.folded ? 'folded' : ''} ${p.eliminated ? 'eliminated' : ''}">` +
@@ -485,29 +486,66 @@ function renderHost() {
   });
 }
 
+// ─── Shared answer-box renderer (Classic + Party) ────────────────────────────
+// Only rebuilds the DOM when the phase/question actually changes — every gameAction from ANY
+// player triggers a broadcast to everyone, and rebuilding on every single one would wipe out
+// whatever the user is mid-typing in the answer input (lost cursor/keystrokes, felt "random").
+const answerBoxRenderKey = { classic: null, party: null };
+
+function renderAnswerInput(container, s, submitAction, stateKey, inputId, btnId, confirmId) {
+  const collecting = stateKey === 'party' ? s.phase === 'partyCollecting' : s.phase === 'collecting';
+  if (!collecting || s.answerLocked || s.eliminated) {
+    answerBoxRenderKey[stateKey] = null;
+    container.innerHTML = `<p>Deine Antwort: <strong>${escapeHtml(s.answer || '(keine)')}</strong> ${s.answerLocked ? '🔒' : ''}</p>`;
+    return;
+  }
+
+  const key = `${s.phase}:${s.question?.filename ?? ''}`;
+  const unchanged = answerBoxRenderKey[stateKey] === key;
+
+  if (s.question?.questionType === 'options') {
+    if (!unchanged) {
+      answerBoxRenderKey[stateKey] = key;
+      container.innerHTML = (s.question.options ?? [])
+        .map((o) => `<button class="btn option-btn ${o.letter === s.answer ? 'selected' : ''}" data-opt="${o.letter}">${o.letter}: ${o.html}</button>`)
+        .join('');
+      container.querySelectorAll('[data-opt]').forEach((btn) => {
+        btn.addEventListener('click', () => sendAction(submitAction, { answer: btn.dataset.opt }));
+      });
+    } else {
+      container.querySelectorAll('[data-opt]').forEach((btn) => btn.classList.toggle('selected', btn.dataset.opt === s.answer));
+    }
+    return;
+  }
+
+  if (!unchanged) {
+    answerBoxRenderKey[stateKey] = key;
+    const label = stateKey === 'party' ? 'Antwort speichern' : 'Antwort senden';
+    container.innerHTML = `<input id="${inputId}" type="text" inputmode="decimal" value="${escapeHtml(s.answer ?? '')}">` +
+      `<button class="btn btn-gold" id="${btnId}">${label}</button> ` +
+      `<span class="answer-confirm" id="${confirmId}">${s.answer ? '✅ abgeschickt: ' + escapeHtml(s.answer) : ''}</span>`;
+    const input = document.getElementById(inputId);
+    input.addEventListener('input', () => {
+      input.value = input.value.replace(/[^0-9,.\-]/g, '');
+    });
+    document.getElementById(btnId).addEventListener('click', () => {
+      sendAction(submitAction, { answer: document.getElementById(inputId).value });
+    });
+  } else {
+    // Same phase/question as last render — leave the (possibly focused) input untouched,
+    // only refresh the confirmation text next to it.
+    const confirm = document.getElementById(confirmId);
+    if (confirm) confirm.innerHTML = s.answer ? '✅ abgeschickt: ' + escapeHtml(s.answer) : '';
+  }
+}
+
 function renderContestant() {
   const s = latestState;
   els.contestantBar.innerHTML = `<div class="pot-display">🏆 Pot: ${s.pot}</div>` +
     `💰 ${s.chips} &nbsp; | &nbsp; Einsatz: ${s.currentBet} &nbsp; | &nbsp; SB/BB: ${s.sbAmount}/${s.bbAmount}`;
   els.contestantQuestion.innerHTML = renderQuestionHtml(s.question);
 
-  if (s.phase === 'collecting' && !s.answerLocked && !s.eliminated) {
-    els.contestantAnswerBox.innerHTML = s.question?.questionType === 'options'
-      ? (s.question.options ?? []).map((o) => `<button class="btn option-btn" data-opt="${o.letter}">${o.letter}: ${o.html}</button>`).join('')
-      : `<input id="answer-input" type="text" inputmode="decimal" value="${escapeHtml(s.answer ?? '')}"><button class="btn btn-gold" id="btn-submit-answer">Antwort senden</button>`;
-    els.contestantAnswerBox.querySelectorAll('[data-opt]').forEach((btn) => {
-      btn.addEventListener('click', () => sendAction('submitAnswer', { answer: btn.dataset.opt }));
-    });
-    const answerInput = document.getElementById('answer-input');
-    answerInput?.addEventListener('input', () => {
-      answerInput.value = answerInput.value.replace(/[^0-9,.\-]/g, '');
-    });
-    document.getElementById('btn-submit-answer')?.addEventListener('click', () => {
-      sendAction('submitAnswer', { answer: document.getElementById('answer-input').value });
-    });
-  } else {
-    els.contestantAnswerBox.innerHTML = `<p>Deine Antwort: <strong>${escapeHtml(s.answer || '(keine)')}</strong> ${s.answerLocked ? '🔒' : ''}</p>`;
-  }
+  renderAnswerInput(els.contestantAnswerBox, s, 'submitAnswer', 'classic', 'answer-input', 'btn-submit-answer', 'answer-confirm');
 
   els.btnUseJoker.classList.toggle('hidden', !s.jokerEnabled || s.jokerUsed || s.phase !== 'collecting');
   if (s.jokerPendingForMe) els.jokerStatus.textContent = 'Joker wurde angefragt — wartet auf Antwort des Hosts...';
@@ -549,30 +587,29 @@ function renderParty() {
   els.partyHintControls.classList.toggle('hidden', !hinting);
 
   if (collecting && !s.eliminated) {
-    els.partyAnswerBox.innerHTML = s.question?.questionType === 'options'
-      ? (s.question.options ?? []).map((o) => `<button class="btn option-btn" data-opt="${o.letter}">${o.letter}: ${o.html}</button>`).join('')
-      : `<input id="party-answer-input" type="text" inputmode="decimal" value="${escapeHtml(s.answer ?? '')}"><button class="btn btn-gold" id="btn-party-submit-answer">Antwort speichern</button>`;
-    els.partyAnswerBox.querySelectorAll('[data-opt]').forEach((btn) => {
-      btn.addEventListener('click', () => sendAction('submitPartyAnswer', { answer: btn.dataset.opt }));
-    });
-    const input = document.getElementById('party-answer-input');
-    input?.addEventListener('input', () => { input.value = input.value.replace(/[^0-9,.\-]/g, ''); });
-    document.getElementById('btn-party-submit-answer')?.addEventListener('click', () => {
-      sendAction('submitPartyAnswer', { answer: document.getElementById('party-answer-input').value });
-    });
+    renderAnswerInput(els.partyAnswerBox, s, 'submitPartyAnswer', 'party', 'party-answer-input', 'btn-party-submit-answer', 'party-answer-confirm');
     els.partyBetInput.value = s.partyBet;
     els.partyBetInput.min = s.minAnte;
+    els.partyBetInput.max = s.chips;
   } else {
     els.partyAnswerBox.innerHTML = `<p>Deine Antwort: <strong>${escapeHtml(s.answer || '(keine)')}</strong></p>`;
   }
 
+  if (hinting) {
+    const allIn = s.partyBet >= s.chips;
+    els.btnPartyRaise.disabled = s.partyActed || allIn;
+    els.btnPartyCheck.disabled = s.partyActed;
+    els.partyHintControls.querySelectorAll('.hint-action-status').forEach((el) => el.remove());
+    if (s.partyActed) {
+      els.partyHintControls.insertAdjacentHTML('beforeend', `<span class="hint-action-status">✅ Aktion gespeichert — warte auf andere Spieler...</span>`);
+    } else if (allIn) {
+      els.partyHintControls.insertAdjacentHTML('beforeend', `<span class="hint-action-status">Bereits All-In</span>`);
+    }
+  }
+
   if (revealing) {
     renderPartyLeaderboard(s);
-    els.partyResults.innerHTML = (s.partyResults ?? [])
-      .map((r) => `<div class="player-row"><span>#${r.rank} ${escapeHtml(r.username)}</span>` +
-        `<span>${r.exact ? '✅ exakt' : r.distance === null || !Number.isFinite(r.distance) ? '-' : 'Abstand: ' + r.distance}</span>` +
-        `<span>Einsatz: ${r.betBefore}</span><span>${r.percent.toFixed(0)}%</span><span>Gewinn: ${r.prize}</span></div>`)
-      .join('');
+    renderPartyResultsTable(s);
     els.btnPartyReady.disabled = s.ready;
     els.btnPartyReady.textContent = s.ready ? 'Warte auf andere...' : 'Bereit';
   }
@@ -582,6 +619,28 @@ function renderParty() {
     .join('');
 
   if (s.winnerId) setStatus(`Spiel beendet! Gewinner: ${s.winnerUsername}`, 'ok');
+}
+
+/** Round-result breakdown as a proper table — includes every player's own answer for comparison. */
+function renderPartyResultsTable(s) {
+  const rows = (s.partyResults ?? [])
+    .map((r) => {
+      const isMe = r.userId === s.userId ? 'active-turn' : '';
+      const distanceText = r.exact ? '✅ exakt' : !Number.isFinite(r.distance) ? 'keine Antwort' : `±${r.distance}`;
+      return `<tr class="${isMe}">` +
+        `<td>#${r.rank}</td>` +
+        `<td>${escapeHtml(r.username)}</td>` +
+        `<td>${escapeHtml(r.answer || '–')}</td>` +
+        `<td class="${r.exact ? 'rank-up' : ''}">${distanceText}</td>` +
+        `<td>${r.betBefore}</td>` +
+        `<td>${r.percent.toFixed(0)}%</td>` +
+        `<td class="${r.prize >= r.betBefore ? 'rank-up' : 'rank-down'}">${r.prize}</td>` +
+        `</tr>`;
+    })
+    .join('');
+  els.partyResults.innerHTML = `<table class="data-table"><thead><tr>` +
+    `<th>#</th><th>Spieler</th><th>Antwort</th><th>Abstand</th><th>Einsatz</th><th>%</th><th>Gewinn</th>` +
+    `</tr></thead><tbody>${rows}</tbody></table>`;
 }
 
 /** Leaderboard: top 10 by chips, always including the viewer's own row (with a "…" gap if outside top 10). */
@@ -594,19 +653,25 @@ function renderPartyLeaderboard(s) {
     rows.push({ gap: true });
     rows.push(mine);
   }
-  els.partyLeaderboard.innerHTML = rows
+  const body = rows
     .map((r) => {
-      if (r.gap) return `<div class="player-row leaderboard-gap">⋯</div>`;
+      if (r.gap) return `<tr class="leaderboard-gap"><td colspan="5">⋯</td></tr>`;
       const arrow = r.rankDelta > 0 ? `▲${r.rankDelta}` : r.rankDelta < 0 ? `▼${-r.rankDelta}` : '–';
       const arrowClass = r.rankDelta > 0 ? 'rank-up' : r.rankDelta < 0 ? 'rank-down' : 'rank-same';
       const netClass = r.net > 0 ? 'rank-up' : r.net < 0 ? 'rank-down' : '';
       const isMe = r.userId === s.userId ? 'active-turn' : '';
-      return `<div class="player-row ${isMe}"><span>#${r.rank} ${escapeHtml(r.username)}</span>` +
-        `<span class="${arrowClass}">${arrow}</span>` +
-        `<span>💰 ${r.chips}</span>` +
-        `<span class="${netClass}">${r.net >= 0 ? '+' : ''}${r.net}</span></div>`;
+      return `<tr class="${isMe}">` +
+        `<td>#${r.rank}</td>` +
+        `<td class="${arrowClass}">${arrow}</td>` +
+        `<td>${escapeHtml(r.username)}</td>` +
+        `<td>💰 ${r.chips}</td>` +
+        `<td class="${netClass}">${r.net >= 0 ? '+' : ''}${r.net}</td>` +
+        `</tr>`;
     })
     .join('');
+  els.partyLeaderboard.innerHTML = `<table class="data-table"><thead><tr>` +
+    `<th>#</th><th>Δ</th><th>Spieler</th><th>Chips</th><th>±</th>` +
+    `</tr></thead><tbody>${body}</tbody></table>`;
 }
 
 function updatePartyCountdown() {
@@ -656,24 +721,37 @@ els.cqTabRaw.addEventListener('click', () => { cqMode = 'raw'; els.cqTabRaw.clas
 els.modeClassic.addEventListener('change', () => {
   if (els.modeClassic.checked) {
     sendAction('setMode', { mode: 'classic' });
-    els.classicOnlySettings.classList.remove('hidden');
-    els.partyOnlySettings.classList.add('hidden');
-    els.jokerToggleRow.classList.remove('hidden');
+    applyModeUi('classic');
   }
 });
 els.modeParty.addEventListener('change', () => {
   if (els.modeParty.checked) {
     sendAction('setMode', { mode: 'party' });
-    els.classicOnlySettings.classList.add('hidden');
-    els.partyOnlySettings.classList.remove('hidden');
-    els.jokerToggleRow.classList.add('hidden');
+    applyModeUi('party');
   }
 });
+
+/** Shows/hides mode-specific setup fields; also used to sync the toggle from server state (e.g. after a reload). */
+function applyModeUi(mode) {
+  const isParty = mode === 'party';
+  els.classicOnlySettings.classList.toggle('hidden', isParty);
+  els.partyOnlySettings.classList.toggle('hidden', !isParty);
+  els.jokerToggleRow.classList.toggle('hidden', isParty);
+  els.firstQuestionField.classList.toggle('hidden', isParty); // party mode always picks the first question randomly
+}
+
+/** Keeps the setup radio buttons in sync with the engine's actual mode (e.g. after a page reload). */
+function syncModeUi(mode) {
+  if (document.activeElement === els.modeClassic || document.activeElement === els.modeParty) return;
+  els.modeClassic.checked = mode !== 'party';
+  els.modeParty.checked = mode === 'party';
+  applyModeUi(mode);
+}
 
 els.btnStartGame.addEventListener('click', () => {
   const isParty = els.modeParty.checked;
   sendAction('startGame', {
-    questionFile: els.firstQuestion.value,
+    ...(isParty ? {} : { questionFile: els.firstQuestion.value }),
     startingChips: Number(isParty ? els.cfgChipsParty.value : els.cfgChips.value) || 1000,
     sbAmount: Number(els.cfgSb.value) || 25,
     bbAmount: Number(els.cfgBb.value) || 50,
@@ -681,7 +759,13 @@ els.btnStartGame.addEventListener('click', () => {
   });
 });
 
-els.btnPartySetBet.addEventListener('click', () => sendAction('setPartyBet', { amount: Number(els.partyBetInput.value) }));
+els.btnPartySetBet.addEventListener('click', () => {
+  const min = Number(els.partyBetInput.min) || 0;
+  const max = Number(els.partyBetInput.max) || Infinity;
+  const clamped = Math.min(max, Math.max(min, Number(els.partyBetInput.value) || 0));
+  els.partyBetInput.value = clamped;
+  sendAction('setPartyBet', { amount: clamped });
+});
 els.btnPartyRaise.addEventListener('click', () => sendAction('raisePartyBet'));
 els.btnPartyCheck.addEventListener('click', () => sendAction('checkPartyBet'));
 els.btnPartyReady.addEventListener('click', () => sendAction('markPartyReady'));
@@ -702,6 +786,24 @@ els.btnCall.addEventListener('click', () => sendAction('call'));
 els.btnRaise.addEventListener('click', () => sendAction('raise', { totalBet: Number(els.raiseAmount.value) }));
 els.btnAllin.addEventListener('click', () => sendAction('allIn'));
 els.btnUseJoker.addEventListener('click', () => sendAction('useJoker'));
+
+// ─── Image zoom lightbox ──────────────────────────────────────────────────────
+// Any <img> rendered inside a question/hint/answer/display card opens the lightbox;
+// click the image again to toggle native-size zoom+scroll, click the empty backdrop to close.
+
+document.addEventListener('click', (e) => {
+  const img = e.target.closest('img');
+  if (img && img.id !== 'image-zoom-img' && img.closest('#s-game')) {
+    els.imageZoomImg.src = img.src;
+    els.imageZoomImg.alt = img.alt;
+    els.imageZoomImg.classList.remove('zoomed');
+    els.dlgImageZoom.showModal();
+  }
+});
+els.imageZoomImg.addEventListener('click', () => els.imageZoomImg.classList.toggle('zoomed'));
+els.dlgImageZoom.addEventListener('click', (e) => {
+  if (e.target === els.dlgImageZoom || e.target === els.imageZoomScroll) els.dlgImageZoom.close();
+});
 
 // ─── Auto-login from a previous session ──────────────────────────────────────
 

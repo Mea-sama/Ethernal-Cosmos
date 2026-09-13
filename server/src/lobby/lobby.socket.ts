@@ -371,6 +371,19 @@ export function registerLobbyHandlers(io: AppServer): void {
         socket.emit('error', 'Du bist in keiner Lobby');
         return;
       }
+      // Membership may have been established via a different socket (e.g. joined through the
+      // Hub panel's cross-game button) — make sure *this* socket is actually in the room too.
+      if (socket.data.currentLobbyId !== lobby.id) {
+        socket.data.currentLobbyId = lobby.id;
+        socket.join(lobby.id);
+        // A running subprocess only pushes per-user state in reaction to PLAYER_JOIN/actions.
+        // If this user's game socket wasn't connected yet when they joined via a different
+        // socket (e.g. the Hub panel), that original PLAYER_JOIN had nowhere to route their
+        // GAME_STATE_FOR_USER — nudge it again now that gameSocketMap points at this socket.
+        if (instanceManager.isRunning(lobby.id)) {
+          instanceManager.sendToInstance(lobby.id, { type: 'PLAYER_JOIN', payload: { userId, username } });
+        }
+      }
       socket.emit('lobbyInfo', lobby);
     });
 

@@ -14,7 +14,7 @@ Wenn man verliebt ist schwebt man auf einer Wolke mit der gesuchten Zahl
 
 ## Answer
 
-![Blocks](../images/tetris_blocks.jpg)
+7 ![Blocks](../images/tetris_blocks.jpg)
 
 ## Labels
 

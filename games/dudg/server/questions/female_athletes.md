@@ -6,7 +6,7 @@ Also Leuds... tz tz tz
 
 ## Hint 1
 
-Der Buchstabe P kommt genau so oft im "Vater Unser" vor
+Der Buchstabe P kommt genau so oft im "Vater Unser" vor.
 
 ## Hint 2
 

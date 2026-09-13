@@ -14,7 +14,7 @@ Auf jeden Prozent Alkohol kommen mehr als 1,5 Kräuter.
 
 ## Answer
 
-![Jägermeister](../images/welche-kraeuter-jaegermeister.png)
+55 ![Jägermeister](../images/welche-kraeuter-jaegermeister.png)
 
 ## Labels
 
