@@ -56,6 +56,17 @@ Used in: `Lobby.serverStatus`
 | `lost` | `LobbyServerStatus.Lost` | server connection lost, resume grace running |
 | `draining` | `LobbyServerStatus.Draining` | server finishes existing lobbies and accepts no new ones |
 
+## ServerMode
+
+Player preference for a game server at `createLobby` (`serverPreference.mode`).
+
+Used in: `createLobby` (`serverPreference.mode`)
+
+| Wire value | Node.js / C# member | Meaning |
+|---|---|---|
+| `any` | `ServerMode.Any` | use a game server if the game supports one (default) |
+| `none` | `ServerMode.None` | deliberately no game server (only for games with serverSupport `optional`) |
+
 ## ServerSupport
 
 Whether a game uses game servers (`GameInfo.serverSupport`).

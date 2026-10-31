@@ -972,8 +972,10 @@ export function registerLobbyHandlers(io: AppServer): void {
 
     // ── Token-Ablauf: ohne auth:refresh wird der Socket nach Gnadenfrist getrennt ──
     let expiryTimer: NodeJS.Timeout | undefined;
+    let graceTimer: NodeJS.Timeout | undefined;
     const armExpiry = (): void => {
       clearTimeout(expiryTimer);
+      clearTimeout(graceTimer); // ein Refresh nach AUTH_EXPIRED (innerhalb der Gnadenfrist) rettet den Socket
       const exp = socket.data.tokenExpiresAt;
       if (!exp) return;
       const graceMs = Number(process.env.AUTH_EXPIRY_GRACE_MS) >= 0 && process.env.AUTH_EXPIRY_GRACE_MS ? Number(process.env.AUTH_EXPIRY_GRACE_MS) : 15_000;
@@ -981,7 +983,8 @@ export function registerLobbyHandlers(io: AppServer): void {
         const detail = { code: 'AUTH_EXPIRED' as const, message: 'Sitzung abgelaufen' };
         socket.emit('errorDetail', detail);
         socket.emit('error', detail.message);
-        setTimeout(() => socket.disconnect(true), graceMs).unref();
+        graceTimer = setTimeout(() => socket.disconnect(true), graceMs);
+        graceTimer.unref();
       }, Math.max(0, exp - Date.now()));
       expiryTimer.unref();
     };
@@ -1004,6 +1007,7 @@ export function registerLobbyHandlers(io: AppServer): void {
     // ── disconnect ──────────────────────────────────────────────────────────
     socket.on('disconnect', () => {
       clearTimeout(expiryTimer);
+      clearTimeout(graceTimer);
       console.log(`[Socket] "${username}" getrennt (${socket.id})`);
       socketBuckets.delete(socket.id);
       for (const key of [...lastRateLimitNotice.keys()]) {

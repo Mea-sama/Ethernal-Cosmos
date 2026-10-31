@@ -38,6 +38,13 @@ export const LobbyServerStatus = {
 } as const;
 export type LobbyServerStatus = (typeof LobbyServerStatus)[keyof typeof LobbyServerStatus];
 
+/** Player preference for a game server at `createLobby` (`serverPreference.mode`). */
+export const ServerMode = {
+  Any: 'any', // use a game server if the game supports one (default)
+  None: 'none', // deliberately no game server (only for games with serverSupport `optional`)
+} as const;
+export type ServerMode = (typeof ServerMode)[keyof typeof ServerMode];
+
 /** Whether a game uses game servers (`GameInfo.serverSupport`). */
 export const ServerSupport = {
   None: 'none', // game never uses a game server

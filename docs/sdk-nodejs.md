@@ -1,164 +1,26 @@
 # Node.js SDK — `@ethernal/client`
 
-TypeScript SDK for Node.js game servers. Wraps the Hub's REST API and socket.io connection into a typed, promise-based interface.
+TypeScript SDK (the "ODK" for Node/browser/Electron clients) for the Ethernal Cosmos Hub. It wraps the Hub's REST API and socket.io connection into a typed, promise-based `EthernalClient`.
 
----
-
-## Installation
-
-```sh
-npm install @ethernal/client
-```
-
-The package is part of the Ethernal Cosmos npm workspace monorepo (`sdk/`). For external projects, install from the local path or publish to a registry first.
-
----
-
-## Quick Start
+- Every request method returns a promise that rejects with an [`EthernalError`](#errors).
+- Hub → client events are exposed through the `EventEmitter` API (`on`/`once`/`off`, fully typed — see [Events](#events)).
+- Wire enums (`LobbyChangeReason`, `ErrorCode`, …) are exported as value + type — see [Enums](#enums).
+- Related: [socket-events.md](socket-events.md) (raw protocol), [rest-api.md](rest-api.md), [social-api.md](social-api.md), [enums.md](enums.md).
 
 ```ts
-import { EthernalClient } from '@ethernal/client';
+import { EthernalClient, EthernalError, ErrorCode, LobbyChangeReason } from '@ethernal/client';
 
-const client = new EthernalClient({ serverUrl: 'https://mea-sama.duckdns.org:12346' });
-
-await client.login('my-bot', 'password123');
-
-client.on('connected', () => console.log('Socket connected'));
-client.on('lobbyCreated', (lobby) => console.log('Lobby ready:', lobby.id));
-
-const lobby = await client.createLobby({ gameId: 'chess', name: 'Fast game' });
+const client = new EthernalClient({ serverUrl: 'http://localhost:12346' });
+await client.login('alice', 'secret-password');
+client.on('lobbyUpdated', (lobby, reason) => console.log(lobby.id, reason));
+await client.registerGame('chess');
+const lobby = await client.createLobby({ name: 'Fast game' });
+await client.sendToLobby('move', { from: 'e2', to: 'e4' });
 ```
 
----
+## Contents
 
-## Types
-
-### `EthernalClientOptions`
-
-Constructor options.
-
-```ts
-interface EthernalClientOptions {
-  /** Full URL of the Hub server. No trailing slash. */
-  serverUrl: string;
-
-  /**
-   * Timeout in milliseconds for socket request/response pairs.
-   * @default 5000
-   */
-  requestTimeout?: number;
-}
-```
-
-### `AuthResult`
-
-Returned by `login()` and `register()`.
-
-```ts
-interface AuthResult {
-  accessToken:  string;   // JWT, expires in 1h
-  refreshToken: string;   // Opaque token, expires in 30d
-  user: {
-    id:       string;     // UUID
-    username: string;
-  };
-}
-```
-
-### `Lobby`
-
-```ts
-interface Lobby {
-  id:          string;                        // UUID
-  gameId:      string;                        // Registered game identifier
-  name:        string;                        // Display name
-  hosted:      boolean;                       // true = server-managed game; false = external app
-  status:      'open' | 'full' | 'closed';    // 'open' = joinable; 'full' = max players reached; 'closed' = game ended
-  isPrivate:   boolean;
-  inviteCode:  string | undefined;            // 6-char alphanumeric; only present when isPrivate=true
-  hostId:      string;                        // userId of the host
-  players:     Array<{ id: string; username: string }>;
-  maxPlayers:  number;                        // Enforced by the server from the game registry; client cannot override
-  settings:    Record<string, unknown>;       // Game-defined config (see createLobby)
-  createdAt:   string;                        // ISO 8601 timestamp
-}
-```
-
-### `UserDataEntry`
-
-```ts
-interface UserDataEntry {
-  gameId:     string;
-  key:        string;
-  value:      unknown;        // Any JSON-serialisable value
-  visibility: DataVisibility;
-  updatedAt:  string;         // ISO 8601 timestamp
-}
-```
-
-### `DataVisibility`
-
-```ts
-type DataVisibility = 'private' | 'lobby' | 'public';
-```
-
-| Value | Readable by |
-|-------|-------------|
-| `'private'` | Owner only |
-| `'lobby'` | Players in the same lobby |
-| `'public'` | Anyone (also used for leaderboards) |
-
-### `LeaderboardEntry`
-
-```ts
-interface LeaderboardEntry {
-  userId:   string;
-  username: string;
-  value:    number;   // Numeric value of the key
-  rank:     number;   // 1-based rank position
-}
-```
-
-### `PresenceUser`
-
-```ts
-interface PresenceUser {
-  userId:       string;
-  username:     string;
-  lobbyId?:     string;              // Set if the user is currently in a lobby
-  gameId?:      string;              // Set if the user is in a game; matches a registered gameId
-  lobbyStatus?: 'open' | 'full' | 'closed';  // Set only when lobbyId is present.
-                                             // 'open'   = lobby is joinable
-                                             // 'full'   = max players reached, no new joins
-                                             // 'closed' = game ended or host closed the lobby
-}
-```
-
-### `RelayMessage<TPayload = unknown>`
-
-```ts
-interface RelayMessage<TPayload = unknown> {
-  from:    string;   // userId of sender
-  type:    string;
-  payload: TPayload;
-}
-```
-
-### `RelayBinaryMessage`
-
-```ts
-interface RelayBinaryMessage {
-  from:     string;      // userId of sender
-  typeCode: number;      // 0..65535
-  payload:  Uint8Array;
-}
-```
-
-### `BinaryPayload`
-
-```ts
-type BinaryPayload = Uint8Array | ArrayBuffer;
-```
+[Constructor](#constructor) · [Auth](#auth) · [Session](#session) · [Lobbies](#lobbies) · [Relay](#relay) · [Game actions](#game-actions) · [User data](#user-data) · [Leaderboard](#leaderboard) · [Social](#social) · [Events](#events) · [Errors](#errors) · [Enums](#enums) · [Types](#types)
 
 ---
 
@@ -168,492 +30,418 @@ type BinaryPayload = Uint8Array | ArrayBuffer;
 new EthernalClient(options: EthernalClientOptions)
 ```
 
-`EthernalClient` extends Node.js `EventEmitter`. Call `login()` or `register()` before using any socket-based methods.
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `serverUrl` | `string` | — | Hub base URL, e.g. `http://localhost:12346` (a trailing `/` is removed). |
+| `requestTimeout` | `number` | `5000` | Milliseconds to wait for a socket answer before rejecting with `TIMEOUT`. |
 
 ---
 
-## Auth Methods
+## Auth
 
-### `register(username, password)`
+Accounts live on the Hub. `register`/`login` connect the socket and resolve once it is connected, so game calls can follow immediately. The SDK stores the tokens, renews the access token automatically (on `AUTH_EXPIRED` it refreshes the token and re-authenticates the live socket in place) and reconnects with automatic re-registration of the game after connection loss.
 
 ```ts
-register(username: string, password: string): Promise<AuthResult>
+interface AuthResult { user: { id: string; username: string }; accessToken: string; refreshToken: string }
 ```
 
-Creates a new account and connects the socket.
+### `register(username, password): Promise<AuthResult>`
+Create an account and connect. `username` 3–32 chars (`[a-zA-Z0-9_-]`), `password` 8–128 chars.
+Throws `USERNAME_TAKEN`, `INVALID_INPUT`, `RATE_LIMITED`.
 
-**Constraints**
-- `username`: 3–32 characters, only `[a-zA-Z0-9_-]`
-- `password`: 8–128 characters
+### `login(username, password): Promise<AuthResult>`
+Log in and connect. If your seat in a lobby is still held (reconnect grace), the hub resumes it: `hello.lobbyId` is set and `session:resumed` is emitted.
+Throws `INVALID_CREDENTIALS`, `RATE_LIMITED`.
 
-**Throws** if the username is already taken (HTTP 409) or validation fails (HTTP 400).
+### `logout(): Promise<void>`
+Revoke this device's refresh token and close the socket. Local state is cleared even if the request fails.
 
----
+### `logoutAll(): Promise<void>`
+Revoke **all** refresh tokens of the account (every device) and close the socket.
 
-### `login(username, password)`
+### `refreshSocketAuth(): Promise<void>`
+Manually renew the access token and re-authenticate the live socket (`auth:refresh`). Normally unnecessary — the SDK does this on `AUTH_EXPIRED`.
+Throws `INVALID_REFRESH_TOKEN`, `REFRESH_TOKEN_REVOKED`, `REFRESH_TOKEN_EXPIRED`, `NOT_CONNECTED`. When renewal fails on reconnect, `authError` is emitted.
+
+### `disconnect(): void`
+Close the socket **without** logging out: tokens and the registered game are kept, a held lobby seat stays reserved for the grace period, and `disconnected` is emitted. Call `login()` again to resume.
 
 ```ts
-login(username: string, password: string): Promise<AuthResult>
+try {
+  await client.login(name, password);
+} catch (e) {
+  if (e instanceof EthernalError && e.code === ErrorCode.InvalidCredentials) showBadPassword();
+}
+client.on('session:replaced', ({ reason }) => client.disconnect()); // logged in elsewhere
 ```
-
-Authenticates an existing account and connects the socket.
-
-**Throws** on invalid credentials (HTTP 401).
 
 ---
 
-### `logout()`
+## Session
+
+### `registerGame(gameId, opts?): Promise<{ game: GameInfo; state: SessionState }>`
+Bind the connection to a game. Required once after login before lobbies, relay or game actions. `opts`: `{ clientVersion?: string; platform?: string }` (checked against the game's minimum version). After a reconnect the SDK re-registers automatically.
+Throws `UNKNOWN_GAME`, `CLIENT_OUTDATED`, `LEAVE_LOBBY_FIRST`.
+
+### `getSessionState(): Promise<{ state: SessionState; lobby?: Lobby }>`
+Pull the current session (`userId`, `username`, `gameId`, `lobbyId`) and, while in a lobby, the lobby. Use it after a reconnect instead of relying on events.
 
 ```ts
-logout(): Promise<void>
+client.on('hello', (h) => console.log('protocol', h.protocolVersion, 'resumed lobby', h.lobbyId));
+client.on('session:resumed', ({ state, lobby }) => showLobby(lobby));
 ```
-
-Revokes the refresh token on the server and disconnects the socket. Best-effort — does not throw on network errors.
 
 ---
 
-## Lobby Methods
-
-### `createLobby(data)`
+## Lobbies
 
 ```ts
-createLobby(data: {
-  gameId:     string;
-  name:       string;
-  isPrivate?: boolean;                  // default: false
-  settings?:  Record<string, unknown>;  // game-specific config
-}): Promise<Lobby>
+interface CreateLobbyOptions {
+  name: string;
+  isPrivate?: boolean;                 // hidden from listLobbies, gets an invite code
+  settings?: Record<string, unknown>;  // game-defined, size-limited
+  serverPreference?: { mode?: ServerMode; region?: string };
+}
 ```
 
-Creates a new lobby and resolves with the created `Lobby` when the server confirms. The caller becomes the host.
+`Lobby`: `{ id, gameId, name, hostId, players: { userId, username, isHost, connected?, disconnectedAt? }[], maxPlayers, status, isPrivate, inviteCode?, settings, joinable?, server?, serverStatus?, serverBound?, region?, hosted, locked, createdAt }` (`createdAt` unix ms); `status` is a `LobbyStatus`, `serverStatus` a `LobbyServerStatus`.
 
-**Parameters**
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `gameId` | `string` | — | Must match a game registered on the server (in `game.registry.ts` or `external-games.ts`). Unknown IDs are rejected with an error event. |
-| `name` | `string` | — | Display name shown to other players in the lobby list. |
-| `isPrivate` | `boolean` | `false` | If `true`, the lobby is hidden from `listLobbies` and can only be joined via `inviteCode`. |
-| `settings` | `Record<string, unknown>` | `{}` | Arbitrary key-value config defined by your game. The Hub does **not** validate or interpret this object — it stores it on the lobby and makes it available to all players via `lobby.settings`. For server-hosted games it is also passed to the subprocess as the `LOBBY_SETTINGS` environment variable. Use it for things like round limits, difficulty, or game mode. |
-
----
-
-### `joinLobby(lobbyId)`
+### `createLobby(data: CreateLobbyOptions): Promise<Lobby>`
+Create a lobby for the registered game; you become host. `serverPreference` only matters for games with dedicated game-server support: `{ mode: 'none' }` forces the hub-hosted game, `{ mode: 'any', region: 'eu' }` asks for a game server (required for `serverSupport: 'required'` games). The game is bound to the game server that was assigned; see `LobbyChangeReason.ServerLost/ServerRebound` below.
+Throws `GAME_NOT_REGISTERED`, `ALREADY_IN_LOBBY`, `SETTINGS_TOO_LARGE`, `INVALID_INPUT`, `LOBBY_START_FAILED`, `INSTANCE_LIMIT`, `NO_GAME_SERVER_AVAILABLE`.
 
 ```ts
-joinLobby(lobbyId: string): Promise<Lobby>
+const lobby = await client.createLobby({ name: 'Ranked', settings: { map: 'ice' }, serverPreference: { mode: 'any', region: 'eu' } });
 ```
 
-Joins an existing lobby by UUID. Resolves with the updated lobby state.
+### `listLobbies(): Promise<Lobby[]>`
+Public lobbies of the registered game (private lobbies are not listed). Throws `GAME_NOT_REGISTERED`.
 
----
+### `joinLobby(lobbyId: string): Promise<Lobby>`
+Join a public lobby by ID. Throws `LOBBY_NOT_FOUND`, `LOBBY_FULL`, `LOBBY_LOCKED`, `LOBBY_PRIVATE`, `LOBBY_CLOSED`, `LOBBY_IN_PROGRESS`, `ALREADY_IN_LOBBY`, `GAME_MISMATCH`.
 
-### `joinLobbyByCode(code)`
+### `joinLobbyByCode(code: string): Promise<Lobby>`
+Join via invite code (also private lobbies). Throws `INVALID_INVITE_CODE`, `INVITE_CODE_NOT_FOUND` plus the errors of `joinLobby`.
 
-```ts
-joinLobbyByCode(code: string): Promise<Lobby>
-```
+### `leaveLobby(): Promise<void>`
+Leave the current lobby (no error if you are in none). The host leaving promotes another player (`HostLeft`) or closes the lobby.
 
-Joins a private lobby using its 6-character invite code. Code is case-insensitive.
+### `getLobbyInfo(): Promise<Lobby>`
+Snapshot of the current lobby. Throws `NOT_IN_LOBBY`.
 
----
+### `kickPlayer(playerId: string): Promise<void>`
+(Host) Remove a player; they receive `playerKicked`. Throws `NOT_HOST`, `CANNOT_KICK_SELF`, `PLAYER_NOT_FOUND`.
 
-### `leaveLobby()`
+### `transferHost(playerId: string): Promise<void>`
+(Host) Hand over host rights. Throws `NOT_HOST`, `ALREADY_HOST`, `PLAYER_NOT_FOUND`.
 
-```ts
-leaveLobby(): void
-```
+### `lockLobby(): Promise<void>` / `unlockLobby(): Promise<void>`
+(Host) A locked lobby rejects direct joins with `LOBBY_LOCKED`; players can instead ask via `requestJoinLobby`. Throws `NOT_HOST`.
 
-Leaves the current lobby. Fires-and-forgets (no response awaited).
+### `setLobbyState(state: LobbyStatus): Promise<Lobby>`
+(Host) Mark the game as running (`in_progress`) or close the lobby. Throws `NOT_HOST`, `INVALID_STATE`.
 
----
-
-### `listLobbies(gameId)`
-
-```ts
-listLobbies(gameId: string): Promise<Lobby[]>
-```
-
-Returns all open (non-private) lobbies for the given game.
-
----
-
-### `getLobbyInfo()`
-
-```ts
-getLobbyInfo(): Promise<Lobby>
-```
-
-Returns a snapshot of the current lobby state.
-
----
-
-### `kickPlayer(playerId)` _(host only)_
-
-```ts
-kickPlayer(playerId: string): void
-```
-
-Removes a player from the lobby. The kicked player receives a `playerKicked` event.
-
----
-
-### `transferHost(playerId)` _(host only)_
-
-```ts
-transferHost(playerId: string): void
-```
-
-Transfers the host role to another player in the lobby.
-
----
-
-### `lockLobby()` / `unlockLobby()` _(host only)_
-
-```ts
-lockLobby(): void
-unlockLobby(): void
-```
-
-While locked, `joinLobby`/`joinLobbyByCode` are rejected — other players must use
-`requestJoinLobby`/`requestJoinLobbyByCode` and wait for your approval.
-
----
-
-### `requestJoinLobby(lobbyId)` / `requestJoinLobbyByCode(code)`
-
+### Join requests
 ```ts
 requestJoinLobby(lobbyId: string): Promise<Lobby>
 requestJoinLobbyByCode(code: string): Promise<Lobby>
+cancelJoinRequest(lobbyId: string): Promise<void>
+respondJoinRequest(requesterId: string, accept: boolean): Promise<void>
 ```
+`requestJoinLobby*` joins immediately if the lobby is open; for a locked lobby the promise stays pending until the host answers (≈15 s timeout) and resolves with the lobby (you are already a member). A rejection by the host, a timeout or a changed lobby rejects with `LOBBY_LOCKED`; `cancelJoinRequest` rejects the pending promise with `JOIN_REQUEST_NOT_FOUND`. The host receives `joinRequestReceived` and answers with `respondJoinRequest` (`NOT_HOST`, `JOIN_REQUEST_NOT_FOUND`, `LOBBY_FULL`). Raw outcome events: `joinRequestPending`, `joinRequestAccepted`, `joinRequestRejected`, `joinRequestWithdrawn`.
 
-Requests to join a locked lobby. Resolves once the host accepts (you're already joined
-server-side) or rejects if declined, timed out (~15s), or the host/lobby changes meanwhile. If the
-lobby isn't actually locked, this joins immediately.
-
----
-
-### `cancelJoinRequest(lobbyId)`
+### `lobbyUpdated` and its `reason`
+`lobbyUpdated(lobby, reason?)` fires on every lobby change; the second argument is a [`LobbyChangeReason`](enums.md#lobbychangereason).
 
 ```ts
-cancelJoinRequest(lobbyId: string): void
-```
-
-Withdraws your own pending request before the host responds.
-
----
-
-### `respondJoinRequest(requesterId, accept)` _(host only)_
-
-```ts
-respondJoinRequest(requesterId: string, accept: boolean): void
-```
-
-Accepts or rejects a pending request received via the `joinRequestReceived` event.
-
----
-
-## Relay Methods
-
-Used to send messages between players through the Hub. The Hub relays without interpreting the payload.
-Incoming relay payloads are already JSON-decoded by Socket.IO, so you usually only need TypeScript typing on the receiver side.
-
-### `sendToLobby(type, payload)`
-
-```ts
-sendToLobby(type: string, payload: unknown): void
-```
-
-Broadcasts a message to all other players in the lobby. Recipients receive a `message` event.
-
-**Parameters**
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `type` | `string` | An arbitrary string that categorises the message — completely defined by your game (e.g. `'move'`, `'chat'`, `'state-update'`). The Hub relays it unchanged. Receivers switch on this string to handle different message kinds. |
-| `payload` | `unknown` | Any JSON-serialisable value. Shape is fully up to your game. |
-
----
-
-### `sendToPlayer(playerId, type, payload)`
-
-```ts
-sendToPlayer(playerId: string, type: string, payload: unknown): void
-```
-
-Sends a message to a single player in the lobby. Recipient receives a `message` event.
-
-`type` and `payload` follow the same conventions as `sendToLobby` — arbitrary strings and JSON values defined by your game.
-
-### `onMessage(listener)`
-
-```ts
-onMessage<TPayload = unknown>(listener: (data: RelayMessage<TPayload>) => void): this
-```
-
-Convenience helper for the `message` event.
-
-### `onceMessage(listener)`
-
-```ts
-onceMessage<TPayload = unknown>(listener: (data: RelayMessage<TPayload>) => void): this
-```
-
-Same as `onMessage()`, but only for the next incoming relay message.
-
----
-
-### `sendToLobbyBinary(typeCode, payload)`
-
-```ts
-sendToLobbyBinary(typeCode: number, payload: BinaryPayload): void
-```
-
-Broadcasts a binary payload to all other players in the lobby. Recipients receive `messageBinary`.
-
----
-
-### `sendToPlayerBinary(playerId, typeCode, payload)`
-
-```ts
-sendToPlayerBinary(playerId: string, typeCode: number, payload: BinaryPayload): void
-```
-
-Sends a binary payload to one player in the lobby. Recipient receives `messageBinary`.
-
----
-
-### `onBinaryMessage(listener)`
-
-```ts
-onBinaryMessage(listener: (data: RelayBinaryMessage) => void): this
-```
-
-Convenience helper for the `messageBinary` event.
-
-### `onceBinaryMessage(listener)`
-
-```ts
-onceBinaryMessage(listener: (data: RelayBinaryMessage) => void): this
-```
-
-Same as `onBinaryMessage()`, but only for the next incoming binary relay message.
-
----
-
-### `sendGameAction(type, payload)`
-
-```ts
-sendGameAction(type: string, payload: unknown): void
-```
-
-Forwards a game action to the running game subprocess. Only relevant if the game's registry entry has an `entryScript` (i.e. `lobby.hosted === true` and a server process manages game logic). For relay-only games (external apps or hosted games without a subprocess) this event is silently ignored — use `sendToLobby` instead.
-
----
-
-## User Data — Socket Methods
-
-### `getUserData(gameId)`
-
-```ts
-getUserData(gameId: string): Promise<UserDataEntry[]>
-```
-
-Returns all KV entries owned by the current user for the given game.
-
----
-
-### `getPlayerData(playerId, gameId)`
-
-```ts
-getPlayerData(playerId: string, gameId: string): Promise<UserDataEntry[]>
-```
-
-Returns visible KV entries for another user. Returns:
-- `public` entries always
-- `lobby` entries only if both users are currently in the same lobby
-
----
-
-### `listPresence()`
-
-```ts
-listPresence(): Promise<PresenceUser[]>
-```
-
-Returns all currently connected users with their presence state. This is a one-shot request — the server sends the full list once and the Promise resolves.
-
-For live updates, subscribe to the `'presence:joined'` and `'presence:left'` events instead. These fire automatically without needing to poll.
-
----
-
-## User Data — REST Methods
-
-These methods use HTTP and are suitable for bulk operations outside a game session.
-
-### `setKey(gameId, key, value, visibility?)`
-
-```ts
-setKey(
-  gameId:      string,
-  key:         string,
-  value:       unknown,
-  visibility?: DataVisibility,   // default: 'private'
-): Promise<void>
-```
-
-Creates or updates a single KV entry.
-
-**Constraints**
-- `gameId`: 1–32 chars, `[a-z0-9-]`
-- `key`: 1–64 chars, `[a-zA-Z0-9_.-]`
-- `value`: any JSON-serialisable value
-
-**`visibility` — when to use which value**
-
-| Value | Readable by | Typical use |
-|-------|-------------|-------------|
-| `'private'` | Owner only | Personal progress, inventory, settings |
-| `'lobby'` | Players in the same active lobby | Current match score, draft picks — visible to opponents during play but not to the public |
-| `'public'` | Anyone | Cumulative stats like `wins`, `rank`, `elo` — these keys also appear in leaderboards |
-
-If `visibility` is omitted it defaults to `'private'`.
-
----
-
-### `deleteKey(gameId, key)`
-
-```ts
-deleteKey(gameId: string, key: string): Promise<void>
-```
-
-Deletes a single KV entry. No-op (204) if the key does not exist.
-
----
-
-### `bulkSet(gameId, entries)`
-
-```ts
-bulkSet(
-  gameId:  string,
-  entries: Array<{
-    key:         string;
-    value:       unknown;
-    visibility?: DataVisibility;
-  }>,
-): Promise<void>
-```
-
-Sets multiple keys in one HTTP request. Max **100 entries** per call.
-
----
-
-### `getAllData(gameId)`
-
-```ts
-getAllData(gameId: string): Promise<UserDataEntry[]>
-```
-
-Returns all own KV entries for a game via REST (equivalent to `getUserData` via socket).
-
----
-
-### `getLeaderboard(gameId, key, options?)`
-
-```ts
-getLeaderboard(
-  gameId:  string,
-  key:     string,
-  options?: {
-    order?: 'asc' | 'desc';   // default: 'desc' (highest first)
-    limit?: number;            // default: 10, max: 100
-  },
-): Promise<LeaderboardEntry[]>
-```
-
-Returns the ranked leaderboard for a key. Only keys that were stored with `visibility: 'public'` **and** have a numeric value are eligible. Querying a key that doesn't exist or isn't public returns an empty array.
-
-**Example**
-
-```ts
-const top10 = await client.getLeaderboard('chess', 'wins', { limit: 10 });
-// [{ userId, username, value: 42, rank: 1 }, ...]
-```
-
----
-
-## EventEmitter Events
-
-`EthernalClient` extends `EventEmitter`. All server→client socket events are forwarded, plus lifecycle events.
-
-### Lifecycle
-
-| Event | Payload | Description |
-|-------|---------|-------------|
-| `connected` | — | Socket connected to the Hub |
-| `disconnected` | `reason: string` | Socket disconnected |
-| `authError` | `message: string` | Token refresh failed or socket rejected |
-
-### Lobby Events
-
-| Event | Payload | Description |
-|-------|---------|-------------|
-| `lobbyCreated` | `Lobby` | Confirmation after `createLobby()` |
-| `lobbyUpdated` | `Lobby` | A player joined/left; lobby state changed |
-| `lobbyList` | `Lobby[]` | Response to `listLobbies()` |
-| `lobbyInfo` | `Lobby` | Response to `getLobbyInfo()` |
-| `playerKicked` | `{ lobbyId: string }` | You were removed from the lobby |
-
-### Game Events
-
-| Event | Payload | Description |
-|-------|---------|-------------|
-| `gameStarting` | `{ lobbyId: string; gameId: string }` | Game subprocess is starting |
-| `gameState` | `unknown` | Full game state broadcast from subprocess |
-| `gameEvent` | `{ type: string; data: unknown }` | Single game event from subprocess |
-| `gameOver` | `unknown` | Game session ended, result payload |
-
-### Relay Events
-
-| Event | Payload | Description |
-|-------|---------|-------------|
-| `message` | `RelayMessage<TPayload = unknown>` | Message from another player via relay. Use `onMessage<T>()` if you want a typed payload on the receiver side. |
-| `messageBinary` | `RelayBinaryMessage` | Binary message from another player via relay. Use for packed high-frequency data paths. |
-
-### User Data Events
-
-| Event | Payload | Description |
-|-------|---------|-------------|
-| `userData` | `{ gameId: string; entries: UserDataEntry[] }` | Response to `getUserData()` |
-| `playerData` | `{ playerId: string; gameId: string; entries: UserDataEntry[] }` | Response to `getPlayerData()` |
-
-### Presence Events
-
-| Event | Payload | Description |
-|-------|---------|-------------|
-| `presence:list` | `PresenceUser[]` | Response to `listPresence()` |
-| `presence:joined` | `PresenceUser` | A user connected or changed lobby/game state |
-| `presence:left` | `{ userId: string }` | A user disconnected |
-
-**Example**
-
-```ts
-client.on('presence:joined', (user) => {
-  console.log(`${user.username} is now online`);
-});
-
-client.on('lobbyUpdated', (lobby) => {
-  if (lobby.players.length === 2) startGame(lobby);
-});
-
-client.on('authError', (msg) => {
-  console.error('Auth error:', msg);
-  process.exit(1);
+client.on('lobbyUpdated', (lobby, reason) => {
+  switch (reason) {
+    case LobbyChangeReason.PlayerJoined:  toast('Someone joined'); break;
+    case LobbyChangeReason.HostLeft:      toast('New host'); break;
+    case LobbyChangeReason.ServerRebound: reconnectGameTransport(lobby); break; // game server replaced; `lobby.server` changed
+    case LobbyChangeReason.ServerLost:    showReconnecting(); break;
+  }
 });
 ```
 
 ---
 
-## Token Refresh
+## Relay
 
-The SDK automatically refreshes the access token when a `connect_error` with message `'INVALID_TOKEN'` is received. The socket reconnects transparently with the new token. If the refresh itself fails, an `'authError'` event is emitted.
+Low-latency player-to-player messaging inside a lobby, routed by the hub (the hub stamps `from`, `timestamp` and a per-lobby increasing `seq`; clients cannot spoof them). Requires a registered game and being in a lobby.
+
+```ts
+interface RelaySendOptions { echo?: boolean }   // also deliver to the sender; for sendToPlayer* allows targeting yourself
+interface RelayMessage<T = unknown>   { from: string; type: string; payload: T; timestamp: number; seq: number; lobbyId?: string }
+interface RelayBinaryMessage          { from: string; typeCode: number; payload: Uint8Array; timestamp: number; seq: number; lobbyId?: string }
+```
+
+| Method | Description |
+|---|---|
+| `sendToLobby(type, payload, opts?)` | JSON message to all other lobby members. |
+| `sendToPlayer(playerId, type, payload, opts?)` | JSON message to one lobby member. |
+| `sendToLobbyBinary(typeCode, payload, opts?)` | Binary frame (`Uint8Array`/`ArrayBuffer`, `typeCode` 0–255) to the lobby. |
+| `sendToPlayerBinary(playerId, typeCode, payload, opts?)` | Binary frame to one member. |
+| `onMessage(listener)` / `onceMessage(listener)` | Typed shortcut for `on('message', …)` / `once`. |
+| `onBinaryMessage(listener)` / `onceBinaryMessage(listener)` | Same for `messageBinary`. |
+
+All send methods return `Promise<void>` and throw `NOT_IN_LOBBY`, `INVALID_INPUT`, `INVALID_MESSAGE_TYPE`, `PAYLOAD_TOO_LARGE` (JSON ≤ 16 KB), `INVALID_BINARY_TYPECODE`, `INVALID_BINARY_PAYLOAD`, `BINARY_PAYLOAD_TOO_LARGE` (≤ 1000 bytes by default), `PLAYER_NOT_IN_LOBBY`, `PLAYER_UNREACHABLE`, `CANNOT_TARGET_SELF` (without `echo`), `RATE_LIMITED`.
+
+```ts
+client.onMessage<{ from: string; to: string }>((m) => console.log(m.from, m.type, m.seq, m.payload));
+await client.sendToLobby('move', { from: 'e2', to: 'e4' });
+await client.sendToPlayerBinary(otherId, 7, new Uint8Array([1, 2, 3]));
+await client.sendToLobby('ping', {}, { echo: true }); // loop back to yourself
+```
+
+---
+
+## Game actions
+
+### `sendGameAction(type: string, payload: unknown): Promise<void>`
+Send an action to the lobby's game logic: the hub-hosted game subprocess, or the connected game server for server-hosted lobbies. Results arrive as `gameState`, `gameEvent` and `gameOver`; `gameStarting` signals the game is ready, `gameCrashed` that the subprocess died (the lobby is closed).
+Throws `GAME_NOT_RUNNING`, `NOT_IN_LOBBY`, `INVALID_INPUT`, `PAYLOAD_TOO_LARGE`, `RATE_LIMITED`.
+
+```ts
+client.on('gameState', (s) => render(s));
+client.on('gameEvent', ({ type, data }) => handle(type, data));
+await client.sendGameAction('play-card', { card: 7 });
+```
+
+---
+
+## User data
+
+Per-user, per-game key/value storage. Each entry: `UserDataEntry { key, value, visibility, writeScope, version, updatedAt }` (`updatedAt` unix ms). `visibility` ([`DataVisibility`](enums.md#datavisibility)): `private` (default, owner only), `lobby` (visible to lobby mates), `public` (everyone, usable for the leaderboard). `writeScope` ([`DataWriteScope`](enums.md#datawritescope)) is `server` for keys only the game may write (read-only for clients → `DATA_READ_ONLY`).
+
+### Over the socket (requires login; results also arrive as events)
+
+| Method | Description |
+|---|---|
+| `getUserData(gameId): Promise<UserDataEntry[]>` | Own entries (also emits `userData`). |
+| `getPlayerData(playerId, gameId): Promise<UserDataEntry[]>` | Another player's entries you may see: `public`, plus `lobby` when you share a lobby (also emits `playerData`). |
+| `setUserData(gameId, key, value, visibility?): Promise<void>` | Set one entry. |
+| `bulkSetUserData(gameId, entries: BulkDataEntry[]): Promise<void>` | Atomic batch; `BulkDataEntry = { key, value, visibility? }`. |
+| `deleteUserData(gameId, key): Promise<void>` | Delete one entry. |
+
+Throws `UNKNOWN_GAME`, `INVALID_INPUT`, `DATA_READ_ONLY`, `DATA_QUOTA_EXCEEDED`, `DATA_VALUE_TOO_LARGE`, `RATE_LIMITED`.
+
+### Over REST (works without a game registration)
+
+| Method | Description |
+|---|---|
+| `setKey(gameId, key, value, visibility?): Promise<void>` | `PUT /userdata/:gameId/:key`. |
+| `bulkSet(gameId, entries: BulkDataEntry[]): Promise<void>` | `PATCH /userdata/:gameId` with 1–100 entries, all or nothing. |
+| `deleteKey(gameId, key): Promise<void>` | `DELETE`; a missing key is not an error. |
+| `getAllData(gameId): Promise<UserDataEntry[]>` | `GET /userdata/:gameId`. |
+
+REST failures are thrown as `EthernalError` carrying the hub's `code` (`HTTP_ERROR` if none). The REST calls use the access token and renew it once on a 401.
+
+```ts
+await client.setUserData('chess', 'level', 5);
+await client.setKey('chess', 'title', 'Knight', DataVisibility.Public);
+const mine = await client.getAllData('chess');
+```
+
+---
+
+## Leaderboard
+
+### `getLeaderboard(gameId, key, options?): Promise<LeaderboardEntry[]>`
+Ranks the **public numeric** values of a key. `options`: `{ order?: 'asc' | 'desc' (default 'desc'); limit?: number (default 10, max 100) }`. Rank = array index + 1.
+
+```ts
+interface LeaderboardEntry { userId: string; username: string; value: number; updatedAt: number }
+const top = await client.getLeaderboard('chess', 'elo', { limit: 20 });
+```
+
+---
+
+## Social
+
+Friends, presence, notifications, direct messages and lobby invites. Every event has a pull equivalent, so a client can always resynchronise with `syncSocial()`. Friends are only ever addressed by `userId` (or looked up by exact name). See [social-api.md](social-api.md) for the full semantics and limits.
+
+### Friends
+
+| Method | Returns | Throws |
+|---|---|---|
+| `requestFriendByName(username)` | `FriendRequestResult` — `REQUEST_SENT` or `NO_SUCH_PLAYER` (also for self/blocked/already friends, so names cannot be probed). A pending request from that user is accepted automatically. | `FRIEND_LIMIT_REACHED`, `REQUEST_LIMIT_REACHED`, `RATE_LIMITED` |
+| `requestFriendFromLobby(userId)` | `FriendRequestResult` — request a current lobby mate. | `NOT_IN_LOBBY`, `PLAYER_NOT_IN_LOBBY`, limits |
+| `respondFriendRequest(requestId, accept)` | `void` | `FRIEND_REQUEST_NOT_FOUND`, `FRIEND_LIMIT_REACHED` |
+| `cancelFriendRequest(requestId)` | `void` (your outgoing request) | `FRIEND_REQUEST_NOT_FOUND` |
+| `removeFriend(friendId)` | `void` | `NOT_FRIENDS` |
+| `listFriends()` | `FriendInfo[]` | |
+| `listFriendRequests()` | `{ incoming: FriendRequestInfo[]; outgoing: FriendRequestInfo[] }` | |
+
+Events: `friend:requestReceived`, `friend:requestAccepted`, `friend:requestDeclined` (only if the hub has `FRIEND_SILENT_DECLINE=false`), `friend:requestCancelled`, `friend:removed`.
+
+```ts
+const result = await client.requestFriendByName('bob');   // FriendRequestResult.RequestSent | NoSuchPlayer
+client.on('friend:requestReceived', async ({ request }) => {
+  await client.respondFriendRequest(request.id, true);
+});
+```
+
+### Presence and settings
+
+| Method | Description |
+|---|---|
+| `getFriendsPresence(): Promise<FriendPresence[]>` | Friends' presence: `{ userId, username, online, status, gameId?, lobbyJoinable?, lastSeen? }`. Never contains lobby IDs. |
+| `getSocialSettings(): Promise<SocialSettings>` | `{ status, showLastSeen, dmReadReceipts, mutedNotificationTypes, … }`. |
+| `setSocialSettings(patch: Partial<SocialSettings>): Promise<SocialSettings>` | Patch; `status` is an `OwnPresenceStatus` (`online`/`busy`/`invisible`/…); `invisible` makes you appear offline. `mutedNotificationTypes` takes `NotificationType` values. Throws `INVALID_INPUT`. |
+| `syncSocial(etag?): Promise<SocialSnapshot \| { notModified: true; etag: string }>` | Full snapshot (settings, friends, presence, requests, invites, unread counts, conversations) or `notModified` when `etag` still matches. |
+| `getFriendLobby(friendId): Promise<FriendLobbyInfo \| null>` | The friend's lobby (`null` if none): `{ lobbyId?, name, players, slots, joinable, locked, hasInvite }`. `lobbyId` is omitted for private lobbies. Throws `NOT_FRIENDS`. |
+
+Event: `friend:presence` (`FriendPresence`) — pushed to friends whenever status/online/game/joinability changes.
+
+### Notifications
+
+Persistent, collapsed notifications (types: [`NotificationType`](enums.md#notificationtype)): friend requests/accepts, DMs (only when you are offline), lobby invites, and `friend_online` — sent to **online friends** when a friend comes online (suppressed if the friend is invisible or you muted that type).
+
+| Method | Description |
+|---|---|
+| `listNotifications(opts?): Promise<NotificationListResult>` | `opts: { since?, unreadOnly?, limit?, cursor? }` → `{ notifications, nextCursor? }`. |
+| `markNotificationsRead({ ids?, upTo? }): Promise<{ marked: number; unread: number }>` | Mark by id or everything created up to a timestamp. Throws `INVALID_INPUT` if neither is given. |
+| `getNotificationCounts(): Promise<NotificationCounts>` | `{ unread, byType }`. |
+
+Events: `notification` (`HubNotification { id, type, payload, createdAt, expiresAt, read? }`) live, and `notification:backlog` (`{ unreadCount, latest }`) once after every connect.
+
+```ts
+client.on('notification', (n) => {
+  if (n.type === NotificationType.FriendOnline) toast(`${n.payload.username} is online`);
+});
+```
+
+### Direct messages (friends only)
+
+| Method | Returns | Throws |
+|---|---|---|
+| `sendDirectMessage(toUserId, text)` | `DirectMessage { id, from, to, text, seq, sentAt }` | `NOT_FRIENDS`, `INVALID_INPUT` (empty), `MESSAGE_TOO_LONG`, `RATE_LIMITED` |
+| `getDmHistory(withUserId, opts?: { before?, limit? })` | `{ messages, nextBefore? }` — oldest first; page backwards with `before = nextBefore`. | `NOT_FRIENDS` |
+| `listConversations()` | `DmConversation[]` — `{ withUserId, username, unreadCount, lastMessage }` | |
+| `markConversationRead(withUserId)` | `number` of messages marked read | `NOT_FRIENDS` |
+| `sendTyping(toUserId)` | `void` — typing indicator | `NOT_FRIENDS` |
+
+Events: `dm:received` (`DirectMessage`), `dm:delivered` (`{ byUserId, messageIds }`, for messages sent while the recipient was offline, when they come back), `dm:read` (`{ byUserId, upToSeq }`, suppressed when the reader disabled `dmReadReceipts`), `dm:typing` (`{ fromUserId }`).
+
+### Lobby invites and joining friends
+
+| Method | Returns | Throws |
+|---|---|---|
+| `inviteFriend(friendId)` | `LobbyInvite { inviteId, lobbyId, lobbyName, gameId, fromUserId, fromUsername, expiresAt }` | `NOT_IN_LOBBY`, `NOT_FRIENDS`, `FRIEND_OFFLINE`, `GAME_MISMATCH`, `NOT_HOST` (host-only invites), `RATE_LIMITED` |
+| `cancelLobbyInvite(inviteId)` | `void` | `INVITE_NOT_FOUND` |
+| `acceptLobbyInvite(inviteId)` | `Lobby` — joins, also private/locked lobbies | `INVITE_NOT_FOUND`, `LOBBY_FULL`, `LOBBY_CLOSED`, `ALREADY_IN_LOBBY` |
+| `declineLobbyInvite(inviteId)` | `void` | `INVITE_NOT_FOUND` |
+| `listLobbyInvites()` | `LobbyInvite[]` (still valid, incoming) | |
+| `joinFriend(friendId)` | `{ pending: boolean; lobby?: Lobby }` — joins directly if possible; for a locked lobby a join request is filed (`pending: true`, result via `joinRequestAccepted`/`joinRequestRejected`). | `NOT_FRIENDS`, `FRIEND_NOT_IN_LOBBY`, `LOBBY_PRIVATE`, `LOBBY_FULL`, `GAME_MISMATCH` |
+
+Events: `lobby:inviteReceived` (`LobbyInvite`), `lobby:inviteCancelled` (`{ inviteId, lobbyId, reason }`, `reason` is a [`LobbyInviteCancelReason`](enums.md#lobbyinvitecancelreason)), `lobby:inviteDeclined` (`{ inviteId, userId }`).
+
+```ts
+client.on('lobby:inviteReceived', async (inv) => { if (await ask(`${inv.fromUsername} invites you`)) await client.acceptLobbyInvite(inv.inviteId); });
+const { pending, lobby } = await client.joinFriend(friendId);
+```
+
+---
+
+## Events
+
+`EthernalClient` extends `EventEmitter`; `on`, `once` and `off` are typed through `EthernalClientEvents` (event name → argument tuple), so listener parameters are inferred. Unknown event names are still accepted (untyped).
+
+```ts
+import type { EthernalClientEvents } from '@ethernal/client';
+client.on('lobbyUpdated', (lobby, reason) => {});   // lobby: Lobby, reason?: LobbyChangeReason
+```
+
+### Connection lifecycle
+
+| Event | Payload | When |
+|---|---|---|
+| `connected` | — | Socket (re)connected. |
+| `disconnected` | `reason: string` | Socket lost or `disconnect()`/`logout()` called. The SDK reconnects automatically (not after logout/`disconnect()`). |
+| `authError` | `message: string` | The token could not be renewed / the hub rejected the socket. |
+| `serverError` | `message: string` | Legacy text error from the hub (the socket's `error` event is renamed to avoid EventEmitter's reserved name). |
+| `errorDetail` | `HubErrorPayload { code, message, retryAfterMs? }` | **Unsolicited** structured errors (e.g. `AUTH_EXPIRED`). Errors answering your calls reject the promise instead and are not emitted. |
+| `hello` | `HelloPayload { protocolVersion, serverTime, sessionId, capabilities, gameId?, lobbyId? }` | After every successful connect. |
+| `session:resumed` | `{ state: SessionState; lobby: Lobby }` | A held lobby seat was resumed. |
+| `session:replaced` | `{ reason: SessionReplacedReason }` | A newer session of this user replaced this one (the socket is closed). |
+
+### Lobby and game
+
+| Event | Payload |
+|---|---|
+| `lobbyCreated` | `Lobby` (confirmation for the host) |
+| `lobbyUpdated` | `(lobby: Lobby, reason?: LobbyChangeReason)` |
+| `lobbyList` | `Lobby[]` (also answers `listLobbies`) |
+| `lobbyInfo` | `Lobby` (also answers `getLobbyInfo`) |
+| `playerKicked` | `{ lobbyId }` — you were removed by the host |
+| `gameStarting` | `{ lobbyId, gameId }` |
+| `gameState` | `unknown` — state pushed by the game |
+| `gameEvent` | `{ type: string; data: unknown }` |
+| `gameOver` | `unknown` — result |
+| `gameCrashed` | `{ lobbyId, code: number \| null }` |
+| `message` | `RelayMessage` |
+| `messageBinary` | `RelayBinaryMessage` |
+| `joinRequestReceived` | `{ lobbyId, requesterId, username }` (host) |
+| `joinRequestPending` | `{ lobbyId }` |
+| `joinRequestAccepted` | `{ lobby: Lobby }` |
+| `joinRequestRejected` | `{ lobbyId, reason: JoinRequestRejectReason }` |
+| `joinRequestWithdrawn` | `{ requesterId, reason: JoinRequestWithdrawReason }` (host) |
+
+### Data and social
+
+| Event | Payload |
+|---|---|
+| `userData` | `{ gameId, entries: UserDataEntry[] }` |
+| `playerData` | `{ playerId, gameId, entries: UserDataEntry[] }` |
+| `friend:presence` | `FriendPresence` |
+| `friend:requestReceived` | `{ request: FriendRequestInfo }` |
+| `friend:requestAccepted` | `{ friend: FriendInfo; requestId? }` |
+| `friend:requestDeclined` | `{ requestId, user: FriendInfo }` |
+| `friend:requestCancelled` | `{ requestId }` |
+| `friend:removed` | `{ userId }` |
+| `notification` | `HubNotification` |
+| `notification:backlog` | `NotificationBacklog { unreadCount, latest }` |
+| `dm:received` | `DirectMessage` |
+| `dm:delivered` | `{ byUserId, messageIds }` |
+| `dm:read` | `{ byUserId, upToSeq }` |
+| `dm:typing` | `{ fromUserId }` |
+| `lobby:inviteReceived` | `LobbyInvite` |
+| `lobby:inviteCancelled` | `{ inviteId, lobbyId, reason: LobbyInviteCancelReason }` |
+| `lobby:inviteDeclined` | `{ inviteId, userId }` |
+
+---
+
+## Errors
+
+Every call rejects with `EthernalError { name, message, code, retryAfterMs? }`. Compare `code` with the exported `ErrorCode` constants; `message` is for display only. The SDK adds three client-side codes: `TIMEOUT` (no answer within `requestTimeout`), `NOT_CONNECTED` (no live socket) and `HTTP_ERROR` (REST error without a hub code). For `RATE_LIMITED`, `retryAfterMs` says when to retry.
+
+```ts
+try {
+  await client.joinLobby(id);
+} catch (e) {
+  if (!(e instanceof EthernalError)) throw e;
+  switch (e.code) {
+    case ErrorCode.LobbyFull: showFull(); break;
+    case ErrorCode.LobbyLocked: await client.requestJoinLobby(id); break;
+    case ErrorCode.RateLimited: await sleep(e.retryAfterMs ?? 1000); break;
+    case 'TIMEOUT': retry(); break;
+  }
+}
+```
+
+All hub codes are listed in [enums.md](enums.md#errorcode).
+
+---
+
+## Enums
+
+Wire enums are exported as **const objects with a same-named type**: use them as values (`LobbyChangeReason.ServerRebound === 'server_rebound'`) and as types (`reason: LobbyChangeReason`). The wire values are plain strings. Details and values: [enums.md](enums.md).
+
+`LobbyStatus`, `LobbyChangeReason`, `LobbyServerStatus`, `ServerSupport`, `LobbyAssignReason`, `LobbyClosedReason`, `PlayerLeftReason`, `SessionReplacedReason`, `JoinRequestRejectReason`, `JoinRequestWithdrawReason`, `DataVisibility`, `DataWriteScope`, `FriendRequestSource`, `FriendRequestResult`, `OwnPresenceStatus`, `FriendPresenceStatus`, `LobbyInviteCancelReason`, `NotificationType`, `ErrorCode`.
+
+---
+
+## Types
+
+Exported types: `EthernalClientOptions`, `EthernalClientEvents`, `CreateLobbyOptions`, `RelaySendOptions`, `AuthResult`, `LeaderboardEntry`, `BinaryPayload`, `Lobby`, `UserDataEntry`, `BulkDataEntry`, `RelayMessage`, `RelayBinaryMessage`, `HubErrorPayload`, `GameInfo`, `SessionState`, `HelloPayload`, `FriendInfo`, `FriendRequestInfo`, `FriendRequestsResult`, `FriendPresence`, `SocialSettings`, `SocialSnapshot`, `HubNotification`, `NotificationBacklog`, `NotificationCounts`, `NotificationListResult`, `DirectMessage`, `DmConversation`, `DmHistoryResult`, `LobbyInvite`, `FriendLobbyInfo`. The definitions live in `shared/src/types/`.

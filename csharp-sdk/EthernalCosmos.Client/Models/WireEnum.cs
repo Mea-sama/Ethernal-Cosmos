@@ -8,6 +8,7 @@ namespace EthernalCosmos.Client.Models;
 [AttributeUsage(AttributeTargets.Field)]
 public sealed class WireValueAttribute(string value) : Attribute
 {
+    /// <summary>The exact wire string.</summary>
     public string Value { get; } = value;
 }
 
@@ -35,9 +36,11 @@ public sealed class WireEnumConverter<T> : JsonConverter<T> where T : struct, En
     /// <summary>Parses a wire string; unknown or null values give <c>default</c> (<c>Unknown</c>).</summary>
     public static T Parse(string? wire) => wire is not null && FromWire.TryGetValue(wire, out var v) ? v : default;
 
+    /// <inheritdoc />
     public override T Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
         reader.TokenType == JsonTokenType.String && FromWire.TryGetValue(reader.GetString()!, out var v) ? v : default;
 
+    /// <inheritdoc />
     public override void Write(Utf8JsonWriter writer, T value, JsonSerializerOptions options)
     {
         if (ToWire.TryGetValue(value, out var wire)) writer.WriteStringValue(wire);
@@ -45,6 +48,7 @@ public sealed class WireEnumConverter<T> : JsonConverter<T> where T : struct, En
     }
 }
 
+/// <summary>Helpers for wire enums.</summary>
 public static class WireEnumExtensions
 {
     /// <summary>The exact string of this value on the wire (e.g. <c>in_progress</c>).</summary>

@@ -2,7 +2,7 @@
 // Ein Game-Server ist ein Dienst, kein Lobby-Teilnehmer: ein Server bedient N Lobbys, eine Lobby hat 0..1 Server.
 
 import type { Ack } from './errors';
-import type { LobbyAssignReason, LobbyChangeReason, LobbyClosedReason, PlayerLeftReason } from './enums';
+import type { LobbyAssignReason, ServerMode, LobbyChangeReason, LobbyClosedReason, PlayerLeftReason } from './enums';
 import type { Lobby, LobbyStatus } from './index';
 
 /** Handshake (socket.handshake.auth) eines Game-Servers */
@@ -37,7 +37,7 @@ export interface GameServerPlayer {
 /** Wunsch des Spielers bei createLobby */
 export interface ServerPreference {
   /** 'none' = bewusst ohne Server (nur bei serverSupport 'optional') */
-  mode?: 'any' | 'none';
+  mode?: ServerMode;
   region?: string;
 }
 

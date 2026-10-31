@@ -14,6 +14,7 @@ const usedIn = {
   LobbyStatus: '`Lobby.status`',
   LobbyChangeReason: '`lobbyUpdated` (2nd argument), `lobby:updated` (game server)',
   LobbyServerStatus: '`Lobby.serverStatus`',
+  ServerMode: '`createLobby` (`serverPreference.mode`)',
   ServerSupport: '`GameInfo.serverSupport`',
   LobbyAssignReason: '`lobby:assigned` (game server)',
   LobbyClosedReason: '`lobby:closed` (game server)',
@@ -52,7 +53,7 @@ public enum ${name}
 {
     /// <summary>Value not known to this SDK version.</summary>
     Unknown = 0,
-${members.map(([, key, wire, note]) => `${note ? `    /// <summary>${xml(note)}</summary>\n` : ''}    [WireValue("${wire}")] ${key},`).join('\n')}
+${members.map(([, key, wire, note]) => `    /// <summary>${note ? xml(note) : `Wire value <c>${wire}</c>.`}</summary>\n    [WireValue("${wire}")] ${key},`).join('\n')}
 }
 `;
 }

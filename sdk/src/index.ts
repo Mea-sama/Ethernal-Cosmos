@@ -4,6 +4,7 @@ export {
   LobbyStatus,
   LobbyChangeReason,
   LobbyServerStatus,
+  ServerMode,
   ServerSupport,
   LobbyAssignReason,
   LobbyClosedReason,
@@ -23,6 +24,9 @@ export {
 } from '@ethernal/shared';
 export type {
   EthernalClientOptions,
+  EthernalClientEvents,
+  CreateLobbyOptions,
+  RelaySendOptions,
   AuthResult,
   LeaderboardEntry,
   BinaryPayload,
