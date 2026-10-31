@@ -13,9 +13,12 @@
     "build:shared": "npm run build --workspace=shared",
     "build:server": "npm run build --workspace=server",
     "build:sdk": "npm run build --workspace=sdk",
-    "build": "npm run build:shared && npm run build:server && npm run build:sdk"
+    "build": "npm run build:shared && npm run build:server && npm run build:sdk",
+    "test": "npm run build && vitest run",
+    "test:only": "vitest run"
   },
   "devDependencies": {
-    "ts-node": "^10.9.2"
+    "ts-node": "^10.9.2",
+    "vitest": "^5.0.5"
   }
 }

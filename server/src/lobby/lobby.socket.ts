@@ -1,22 +1,31 @@
 import { Server, Socket } from 'socket.io';
 import { z } from 'zod';
+import { v4 as uuidv4 } from 'uuid';
 import { verifyToken } from '../auth/auth.service';
 import { lobbyManager } from './lobby.manager';
 import { getGame } from '../games/game.registry';
 import { instanceManager } from '../games/instance.manager';
-import { bulkSet, getAllOwn, getVisibleData } from '../user-data/userdata.service';
+import { bulkSet, deleteKey, getAllOwn, getVisibleData, writeEntries } from '../user-data/userdata.service';
+import { GameIdSchema, KeySchema, VisibilitySchema, BulkEntriesSchema } from '../user-data/userdata.schemas';
 import { serverLimits } from '../config/limits';
-import type {
-  ClientToServerEvents,
-  ServerToClientEvents,
-  SocketData,
-  IpcGameToHub,
-  PresenceUser,
-  Lobby,
+import { HubError, isHubError } from '../errors';
+import { sessionManager, userRoom, gameRoom } from '../session/session.manager';
+import {
+  PROTOCOL_VERSION,
+  type ClientToServerEvents,
+  type ServerToClientEvents,
+  type SocketData,
+  type IpcGameToHub,
+  type PresenceUser,
+  type Lobby,
+  type GameInfo,
+  type HelloPayload,
 } from '@ethernal/shared';
 
 type AppServer = Server<ClientToServerEvents, ServerToClientEvents, Record<string, never>, SocketData>;
 type AppSocket = Socket<ClientToServerEvents, ServerToClientEvents, Record<string, never>, SocketData>;
+
+// ─── Rate Limiting ────────────────────────────────────────────────────────────
 
 interface TokenBucket {
   tokens: number;
@@ -37,12 +46,13 @@ const lobbyBuckets = new Map<string, Map<string, TokenBucket>>();
 const lastRateLimitNotice = new Map<string, number>();
 const RATE_NOTICE_COOLDOWN_MS = serverLimits.rateLimitNoticeCooldownMs;
 
-function allowByBucket(
+/** Gibt 0 zurück wenn erlaubt, sonst die Wartezeit in ms bis zum nächsten freien Token. */
+function consumeBucket(
   bucketMap: Map<string, Map<string, TokenBucket>>,
   entityId: string,
   key: string,
   rule: LimitRule,
-): boolean {
+): number {
   const now = Date.now();
   const entityBuckets = bucketMap.get(entityId) ?? new Map<string, TokenBucket>();
   const bucket = entityBuckets.get(key) ?? { tokens: rule.burst, lastRefill: now };
@@ -50,43 +60,91 @@ function allowByBucket(
   const elapsedSeconds = Math.max(0, (now - bucket.lastRefill) / 1000);
   bucket.tokens = Math.min(rule.burst, bucket.tokens + elapsedSeconds * rule.refillPerSecond);
   bucket.lastRefill = now;
-
-  if (bucket.tokens < 1) {
-    entityBuckets.set(key, bucket);
-    bucketMap.set(entityId, entityBuckets);
-    return false;
-  }
-
-  bucket.tokens -= 1;
   entityBuckets.set(key, bucket);
   bucketMap.set(entityId, entityBuckets);
-  return true;
+
+  if (bucket.tokens < 1) {
+    return rule.refillPerSecond > 0 ? Math.ceil(((1 - bucket.tokens) / rule.refillPerSecond) * 1000) : 60_000;
+  }
+  bucket.tokens -= 1;
+  return 0;
 }
 
-function allowSocketEvent(socket: AppSocket, key: keyof typeof SOCKET_LIMITS): boolean {
+function assertSocketLimit(socketId: string, key: string): void {
   const rule = SOCKET_LIMITS[key];
-  return allowByBucket(socketBuckets, socket.id, key, rule);
+  if (!rule) throw new Error(`Kein Rate-Limit für "${key}" konfiguriert`);
+  const wait = consumeBucket(socketBuckets, socketId, key, rule);
+  if (wait > 0) throw new HubError('RATE_LIMITED', `Rate limit erreicht (${key})`, wait);
 }
 
-function allowLobbyEvent(lobbyId: string, key: keyof typeof LOBBY_LIMITS): boolean {
+function assertLobbyLimit(lobbyId: string, key: string): void {
   const rule = LOBBY_LIMITS[key];
-  return allowByBucket(lobbyBuckets, lobbyId, key, rule);
+  if (!rule) throw new Error(`Kein Lobby-Rate-Limit für "${key}" konfiguriert`);
+  const wait = consumeBucket(lobbyBuckets, lobbyId, key, rule);
+  if (wait > 0) throw new HubError('RATE_LIMITED', `Rate limit erreicht (${key}:lobby)`, wait);
 }
 
-function emitRateLimitError(socket: AppSocket, eventName: string): void {
-  const key = `${socket.id}:${eventName}`;
-  const now = Date.now();
-  const last = lastRateLimitNotice.get(key) ?? 0;
-  if (now - last < RATE_NOTICE_COOLDOWN_MS) return;
-  lastRateLimitNotice.set(key, now);
-  socket.emit('error', `Rate limit erreicht (${eventName})`);
+// ─── Handler-Wrapper: Rate-Limit → Handler → Ack / Fehler ─────────────────────
+
+interface HandleOptions {
+  /** Key in socketLimits */
+  limit: string;
+  /** Fehler ohne Ack nicht als Legacy-`error`/`errorDetail`-Event senden (für hochfrequente Events) */
+  quiet?: boolean;
 }
 
-function enforceSocketLimit(socket: AppSocket, eventName: keyof typeof SOCKET_LIMITS): boolean {
-  if (allowSocketEvent(socket, eventName)) return true;
-  emitRateLimitError(socket, eventName);
-  return false;
+type AnyAck = (result: unknown) => void;
+
+/**
+ * Registriert einen Event-Handler mit einheitlicher Fehlerbehandlung:
+ * - letztes Argument, falls Funktion, ist der Ack-Callback → `{ ok: true, ... }` bzw. `{ ok: false, error }`
+ * - ohne Ack gehen Fehler als `error` (Legacy-Text) und `errorDetail` (strukturiert) an den Socket
+ */
+function handle(
+  socket: AppSocket,
+  event: string,
+  opts: HandleOptions,
+  fn: (data: any) => Promise<Record<string, unknown> | void> | Record<string, unknown> | void,
+): void {
+  if (!SOCKET_LIMITS[opts.limit]) throw new Error(`Kein Rate-Limit für "${opts.limit}" konfiguriert`);
+  (socket as unknown as { on(e: string, l: (...a: unknown[]) => void): void }).on(event, async (...args: unknown[]) => {
+    const ack = typeof args[args.length - 1] === 'function' ? (args.pop() as AnyAck) : undefined;
+    const data = args[0];
+    const requestId =
+      data && typeof data === 'object' && typeof (data as { requestId?: unknown }).requestId === 'string'
+        ? ((data as { requestId: string }).requestId.slice(0, 64))
+        : undefined;
+    try {
+      assertSocketLimit(socket.id, opts.limit);
+      const result = await fn(data);
+      ack?.({ ok: true, ...(result ?? {}) });
+    } catch (err) {
+      let hubErr: HubError;
+      if (isHubError(err)) {
+        hubErr = err;
+      } else {
+        console.error(`[Socket] ${event} Fehler:`, err);
+        hubErr = new HubError('INTERNAL');
+      }
+      const payload = hubErr.toPayload({ event, requestId });
+      if (ack) {
+        ack({ ok: false, error: payload });
+        return;
+      }
+      if (opts.quiet) return;
+      if (hubErr.code === 'RATE_LIMITED') {
+        const key = `${socket.id}:${event}`;
+        const now = Date.now();
+        if (now - (lastRateLimitNotice.get(key) ?? 0) < RATE_NOTICE_COOLDOWN_MS) return;
+        lastRateLimitNotice.set(key, now);
+      }
+      socket.emit('error', hubErr.message);
+      socket.emit('errorDetail', payload);
+    }
+  });
 }
+
+// ─── Hilfsfunktionen: Binary ──────────────────────────────────────────────────
 
 function asBinaryPayload(payload: unknown): Uint8Array | null {
   if (payload instanceof Uint8Array) return payload;
@@ -104,36 +162,104 @@ function asBinaryPayload(payload: unknown): Uint8Array | null {
   return null;
 }
 
-function validateBinaryRelayInput(
-  socket: AppSocket,
-  data: { typeCode: number; payload: unknown },
-): { typeCode: number; payload: Uint8Array } | null {
-  if (!Number.isInteger(data.typeCode) || data.typeCode < 0 || data.typeCode > 65535) {
-    socket.emit('error', 'Ungültiger Binary-Typcode');
-    return null;
+function validateBinaryRelayInput(data: { typeCode: number; payload: unknown }): { typeCode: number; payload: Uint8Array } {
+  if (!Number.isInteger(data?.typeCode) || data.typeCode < 0 || data.typeCode > 65535) {
+    throw new HubError('INVALID_BINARY_TYPECODE');
   }
-
   const payload = asBinaryPayload(data.payload);
-  if (!payload) {
-    socket.emit('error', 'Ungültige Binary-Payload');
-    return null;
-  }
+  if (!payload) throw new HubError('INVALID_BINARY_PAYLOAD');
   if (payload.byteLength > MAX_BINARY_PAYLOAD_BYTES) {
-    socket.emit('error', `Binary-Payload zu groß (max ${MAX_BINARY_PAYLOAD_BYTES} Bytes)`);
-    return null;
+    throw new HubError('BINARY_PAYLOAD_TOO_LARGE', `Binary-Payload zu groß (max ${MAX_BINARY_PAYLOAD_BYTES} Bytes)`);
   }
-
   return { typeCode: data.typeCode, payload };
 }
 
-// ─── Presence Map ──────────────────────────────────────────────────────────────
-// userId → PresenceUser (in-memory, wird bei connect/disconnect gepflegt)
-const presenceMap = new Map<string, PresenceUser>();// userId → aktive socket.id für Game-Clients (für Session-Takeover)
-const gameSocketMap = new Map<string, string>();
+// ─── Hilfsfunktionen: Session-/Lobby-Kontext ──────────────────────────────────
 
-// ─── Beitrittsanfragen für gesperrte Lobbys ──────────────────────────────────
+function requireGame(userId: string): GameInfo {
+  const gameId = sessionManager.getGameId(userId);
+  if (!gameId) throw new HubError('GAME_NOT_REGISTERED');
+  const game = getGame(gameId);
+  if (!game) throw new HubError('UNKNOWN_GAME');
+  return game;
+}
+
+function requireLobby(userId: string): Lobby {
+  const lobby = lobbyManager.getLobbyByUserId(userId);
+  if (!lobby) throw new HubError('NOT_IN_LOBBY');
+  return lobby;
+}
+
+function compareVersions(a: string, b: string): number {
+  const pa = a.split('.').map((n) => Number.parseInt(n, 10) || 0);
+  const pb = b.split('.').map((n) => Number.parseInt(n, 10) || 0);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const d = (pa[i] ?? 0) - (pb[i] ?? 0);
+    if (d !== 0) return d;
+  }
+  return 0;
+}
+
+/** Lobby für Nicht-Mitglieder (Listen): ohne Invite-Code, Settings ggf. auf publicSettingKeys reduziert. */
+function toListing(lobby: Lobby): Lobby {
+  const game = getGame(lobby.gameId);
+  const keys = game?.publicSettingKeys;
+  const settings = keys
+    ? Object.fromEntries(Object.entries(lobby.settings).filter(([k]) => keys.includes(k)))
+    : lobby.settings;
+  return { ...lobby, inviteCode: undefined, settings };
+}
+
+function jsonDepth(value: unknown, depth = 0): number {
+  if (depth > 16 || value === null || typeof value !== 'object') return depth;
+  let max = depth;
+  for (const v of Object.values(value as Record<string, unknown>)) max = Math.max(max, jsonDepth(v, depth + 1));
+  return max;
+}
+
+const CreateLobbySchema = z.object({
+  name: z.string().trim().min(1).max(64),
+  isPrivate: z.boolean().optional().default(false),
+  settings: z.record(z.unknown()).optional().default({}),
+});
+
+const InviteCodeSchema = z.string().trim().length(6).transform((c) => c.toUpperCase());
+
+function parseInput<T>(schema: z.ZodType<T, z.ZodTypeDef, unknown>, data: unknown, err: HubError = new HubError('INVALID_INPUT')): T {
+  const parsed = schema.safeParse(data);
+  if (!parsed.success) throw err;
+  return parsed.data;
+}
+
+// ─── Presence (abgeleitet aus Session- und Lobby-Zustand) ─────────────────────
+
+function presenceFor(userId: string): PresenceUser | undefined {
+  const u = sessionManager.get(userId);
+  if (!u || !sessionManager.hasGameSession(userId)) return undefined;
+  const lobby = lobbyManager.getLobbyByUserId(userId);
+  const base: PresenceUser = { userId, username: u.username, gameId: u.gameId };
+  // Private Lobbys dürfen nicht über Presence auffindbar sein
+  if (lobby && !lobby.isPrivate) {
+    base.lobbyId = lobby.id;
+    base.lobbyStatus = lobby.status;
+  }
+  return base;
+}
+
+function broadcastPresence(io: AppServer, userId: string): void {
+  const p = presenceFor(userId);
+  if (p) io.emit('presence:joined', p);
+}
+
+function broadcastLobbyChange(io: AppServer, lobby: Lobby): void {
+  io.to(lobby.id).emit('lobbyUpdated', lobby);
+  for (const p of lobby.players) broadcastPresence(io, p.userId);
+}
+
+// ─── Beitrittsanfragen für gesperrte Lobbys ───────────────────────────────────
+
 // lobbyId → (requesterId → ausstehende Anfrage mit Auto-Reject-Timer)
-const joinRequests = new Map<string, Map<string, { username: string; timer: NodeJS.Timeout }>>();
+const joinRequests = new Map<string, Map<string, { username: string; viaCode: boolean; timer: NodeJS.Timeout }>>();
 const JOIN_REQUEST_TIMEOUT_MS = 15_000;
 
 function clearJoinRequest(lobbyId: string, requesterId: string): void {
@@ -151,8 +277,7 @@ function rejectAllJoinRequests(io: AppServer, lobbyId: string, reason: 'host_cha
   if (!reqs) return;
   for (const requesterId of [...reqs.keys()]) {
     clearJoinRequest(lobbyId, requesterId);
-    const reqSocketId = gameSocketMap.get(requesterId);
-    if (reqSocketId) io.to(reqSocketId).emit('joinRequestRejected', { lobbyId, reason });
+    io.to(userRoom(requesterId)).emit('joinRequestRejected', { lobbyId, reason });
   }
 }
 
@@ -162,25 +287,103 @@ function withdrawAllRequestsFor(io: AppServer, requesterId: string, reason: 'can
     if (!reqs.has(requesterId)) continue;
     clearJoinRequest(lobbyId, requesterId);
     const lobby = lobbyManager.getLobby(lobbyId);
-    const hostSocketId = lobby ? gameSocketMap.get(lobby.hostId) : undefined;
-    if (hostSocketId) io.to(hostSocketId).emit('joinRequestWithdrawn', { requesterId, reason });
+    if (lobby) io.to(userRoom(lobby.hostId)).emit('joinRequestWithdrawn', { requesterId, reason });
   }
 }
 
-// ─── Validierung ─────────────────────────────────────────────────────────────
+// ─── Lobby verlassen (gemeinsamer Pfad für Leave, Disconnect-Ablauf, Kick) ────
 
-const CreateLobbySchema = z.object({
-  gameId: z.string().min(1).max(32).regex(/^[a-z0-9-]+$/),
-  name: z.string().min(1).max(64),
-  isPrivate: z.boolean().optional().default(false),
-  settings: z.record(z.unknown()).optional().default({}),
-});
+function leaveLobbyFlow(io: AppServer, userId: string, opts: { notifyInstance?: boolean } = {}): void {
+  const before = lobbyManager.getLobbyByUserId(userId);
+  const wasHost = before?.hostId === userId;
+  sessionManager.clearGrace(userId);
+  const { lobby, dissolved, lobbyId } = lobbyManager.leaveLobby(userId);
+  if (!lobbyId) return;
+
+  io.in(userRoom(userId)).socketsLeave(lobbyId);
+  if (opts.notifyInstance !== false && instanceManager.isRunning(lobbyId)) {
+    instanceManager.sendToInstance(lobbyId, { type: 'PLAYER_LEAVE', payload: { userId } });
+  }
+
+  if (dissolved) {
+    // Subprocess beenden — sonst leakt pro aufgelöster Lobby ein Prozess
+    instanceManager.stopInstance(lobbyId);
+    lobbyBuckets.delete(lobbyId);
+    rejectAllJoinRequests(io, lobbyId, 'lobby_closed');
+  } else if (lobby) {
+    broadcastLobbyChange(io, lobby);
+    if (wasHost && lobby.hostId !== userId) rejectAllJoinRequests(io, lobbyId, 'host_changed');
+  }
+  broadcastPresence(io, userId);
+}
+
+/** Bindet die Sockets des Users an die Lobby (Room-Mitgliedschaft hängt am User, nicht am Socket). */
+function bindUserToLobby(io: AppServer, userId: string, lobbyId: string): void {
+  io.in(userRoom(userId)).socketsJoin(lobbyId);
+}
+
+function afterJoin(io: AppServer, userId: string, username: string, lobby: Lobby): void {
+  bindUserToLobby(io, userId, lobby.id);
+  broadcastLobbyChange(io, lobby);
+  if (instanceManager.isRunning(lobby.id)) {
+    instanceManager.sendToInstance(lobby.id, { type: 'PLAYER_JOIN', payload: { userId, username } });
+  }
+}
+
+// ─── Disconnect / Reconnect ───────────────────────────────────────────────────
+
+function handleLastSessionGone(io: AppServer, userId: string): void {
+  withdrawAllRequestsFor(io, userId, 'cancelled');
+  io.emit('presence:left', { userId });
+
+  const lobby = lobbyManager.getLobbyByUserId(userId);
+  if (!lobby) {
+    sessionManager.dropIfIdle(userId);
+    return;
+  }
+
+  const grace = getGame(lobby.gameId)?.reconnectGraceMs ?? 0;
+  if (grace <= 0) {
+    leaveLobbyFlow(io, userId, { notifyInstance: false });
+    sessionManager.dropIfIdle(userId);
+    return;
+  }
+
+  const updated = lobbyManager.setConnected(userId, false);
+  if (instanceManager.isRunning(lobby.id)) {
+    instanceManager.sendToInstance(lobby.id, { type: 'PLAYER_DISCONNECT', payload: { userId } });
+  }
+  if (updated) io.to(lobby.id).emit('lobbyUpdated', updated);
+
+  sessionManager.startGrace(userId, grace, () => {
+    console.log(`[Session] Reconnect-Gnadenfrist abgelaufen für ${userId}`);
+    leaveLobbyFlow(io, userId);
+    sessionManager.dropIfIdle(userId);
+  });
+}
+
+/** Verbindet eine neue Session mit einer bestehenden Lobby-Mitgliedschaft (Reconnect, zweites Gerät, Takeover). */
+function resumeIntoLobby(io: AppServer, socket: AppSocket, lobby: Lobby): void {
+  const { userId } = socket.data;
+  const wasInGrace = sessionManager.clearGrace(userId);
+  const updated = lobbyManager.setConnected(userId, true) ?? lobby;
+  socket.join(lobby.id);
+
+  if (socket.data.clientType === 'game' && instanceManager.isRunning(lobby.id)) {
+    instanceManager.sendToInstance(lobby.id, {
+      type: 'PLAYER_RECONNECT',
+      payload: { userId, username: socket.data.username },
+    });
+  }
+  if (wasInGrace) io.to(lobby.id).emit('lobbyUpdated', updated);
+  socket.emit('session:resumed', { state: sessionManager.stateFor(userId, socket.data.sessionId, lobby.id), lobby: updated });
+}
 
 // ─── Socket.io Auth-Middleware ────────────────────────────────────────────────
 
 /**
  * Prüft den JWT aus socket.handshake.auth.token bei jeder neuen Verbindung.
- * Client sendet: io({ auth: { token: "Bearer eyJ..." } })
+ * Client sendet: io({ auth: { token: "Bearer <jwt>" } })
  */
 export function registerSocketAuth(io: AppServer): void {
   io.use((socket, next) => {
@@ -195,13 +398,15 @@ export function registerSocketAuth(io: AppServer): void {
       socket.data.userId = payload.userId;
       socket.data.username = payload.username;
       socket.data.clientType = clientType;
+      socket.data.sessionId = uuidv4();
       next();
     } catch {
       next(new Error('INVALID_TOKEN'));
     }
   });
 }
-// ─── IPC → Socket.io Routing ───────────────────────────────────────────────────────────────
+
+// ─── IPC → Socket.io Routing ──────────────────────────────────────────────────
 
 /**
  * Registriert den IPC-Callback: leitet Subprocess-Nachrichten als
@@ -214,32 +419,29 @@ export function registerIpcRouting(io: AppServer): void {
         io.to(lobbyId).emit('gameState', msg.payload);
         break;
       case 'GAME_STATE_FOR_USER': {
-        // Sicherheitscheck: wie sendToPlayer — nur an Sockets liefern, die aktuell
-        // noch Mitglied DIESER Lobby sind (verhindert Zustellung nach Lobby-Verlassen/-Wechsel).
+        // Nur an aktuelle Mitglieder DIESER Lobby liefern (nicht nach Verlassen/Wechsel)
         const targetLobby = lobbyManager.getLobbyByUserId(msg.payload.userId);
         if (!targetLobby || targetLobby.id !== lobbyId) break;
-        const socketId = gameSocketMap.get(msg.payload.userId);
-        if (socketId) io.to(socketId).emit('gameState', msg.payload.state);
+        io.to(gameRoom(msg.payload.userId)).emit('gameState', msg.payload.state);
         break;
       }
       case 'GAME_EVENT':
         io.to(lobbyId).emit('gameEvent', msg.payload);
         break;
-      case 'GAME_OVER':
+      case 'GAME_OVER': {
         io.to(lobbyId).emit('gameOver', msg.payload);
         lobbyManager.setStatus(lobbyId, 'closed');
-        // Presence: lobbyStatus aller Spieler in dieser Lobby auf 'closed' setzen
-        for (const [uid, pu] of presenceMap) {
-          if (pu.lobbyId === lobbyId) {
-            const updated = { ...pu, lobbyStatus: 'closed' as const };
-            presenceMap.set(uid, updated);
-            io.emit('presence:joined', updated);
-          }
-        }
+        const lobby = lobbyManager.getLobby(lobbyId);
+        if (lobby) for (const p of lobby.players) broadcastPresence(io, p.userId);
         break;
+      }
       case 'SAVE_META': {
         const { userId, gameId, entries } = msg.payload;
-        bulkSet(userId, gameId, entries).catch((err) =>
+        if (!lobbyManager.isParticipant(lobbyId, gameId, userId)) {
+          console.warn(`[IPC] SAVE_META abgelehnt (${userId}/${gameId}) in Lobby ${lobbyId}`);
+          break;
+        }
+        bulkSet(userId, gameId, entries, 'server').catch((err) =>
           console.error(`[IPC] SAVE_META fehlgeschlagen (${userId}/${gameId}):`, err)
         );
         break;
@@ -257,459 +459,332 @@ export function registerIpcRouting(io: AppServer): void {
     }
   });
 }
+
 // ─── Lobby-Events ─────────────────────────────────────────────────────────────
 
 export function registerLobbyHandlers(io: AppServer): void {
   io.on('connection', (socket: AppSocket) => {
-    const { userId, username, clientType } = socket.data;
+    const { userId, username, clientType, sessionId } = socket.data;
     console.log(`[Socket] "${username}" verbunden als ${clientType} (${socket.id})`);
 
-    // ── Presence: nur für Spiel-Clients verwalten ──────────────────────────────
-    // Das Panel läuft als zweiter Socket desselben Users im selben Tab — es darf
-    // die Presence weder überschreiben noch beim Disconnect entfernen.
+    // Session-Takeover: ein neuer Spiel-Client ersetzt den alten (F5, Gerätewechsel).
+    // Die Lobby-Mitgliedschaft bleibt dabei bestehen (hängt am User).
     if (clientType === 'game') {
-      // Session-Takeover: wenn der User bereits über ein anderes Gerät/Fenster
-      // verbunden ist, den alten Socket trennen bevor der neue übernimmt.
-      // Damit funktionieren F5, Navigation und Gerätewechsel sauber.
-      const oldSocketId = gameSocketMap.get(userId);
-      if (oldSocketId) {
-        const oldSocket = io.sockets.sockets.get(oldSocketId);
+      for (const old of sessionManager.gameSessions(userId)) {
+        const oldSocket = io.sockets.sockets.get(old.socketId);
         if (oldSocket) {
-          console.log(`[Socket] Session-Takeover für "${username}" — alter Socket ${oldSocketId} wird getrennt`);
+          console.log(`[Socket] Session-Takeover für "${username}" — alter Socket ${old.socketId} wird getrennt`);
+          oldSocket.emit('session:replaced', { reason: 'new_session' });
           oldSocket.disconnect(true);
         }
       }
-      gameSocketMap.set(userId, socket.id);
-      presenceMap.set(userId, { userId, username });
-      socket.broadcast.emit('presence:joined', { userId, username });
     }
 
+    sessionManager.add(userId, username, { sessionId, socketId: socket.id, clientType });
+    socket.join(userRoom(userId));
+    if (clientType === 'game') socket.join(gameRoom(userId));
+
+    // Bestehende Lobby-Mitgliedschaft übernehmen (Reconnect innerhalb der Gnadenfrist, zweites Gerät)
+    const existingLobby = lobbyManager.getLobbyByUserId(userId);
+    if (existingLobby) sessionManager.setGame(userId, existingLobby.gameId);
+
+    const hello: HelloPayload = {
+      protocolVersion: PROTOCOL_VERSION,
+      serverTime: Date.now(),
+      sessionId,
+      capabilities: ['acks', 'gameRegistration', 'reconnect', 'userDataWriteScope', 'userDataSocketWrite'],
+      gameId: sessionManager.getGameId(userId),
+      lobbyId: existingLobby?.id,
+    };
+    socket.emit('hello', hello);
+    if (existingLobby) resumeIntoLobby(io, socket, existingLobby);
+    if (clientType === 'game') broadcastPresence(io, userId);
+
+    // ── session:registerGame ─────────────────────────────────────────────────
+    handle(socket, 'session:registerGame', { limit: 'registerGame' }, (data) => {
+      const input = parseInput(
+        z.object({
+          gameId: GameIdSchema,
+          clientVersion: z.string().max(32).optional(),
+          platform: z.string().max(32).optional(),
+        }),
+        data,
+      );
+      const game = getGame(input.gameId);
+      if (!game) throw new HubError('UNKNOWN_GAME');
+      const lobby = lobbyManager.getLobbyByUserId(userId);
+      if (lobby && lobby.gameId !== game.id) throw new HubError('LEAVE_LOBBY_FIRST');
+      if (game.minClientVersion && (!input.clientVersion || compareVersions(input.clientVersion, game.minClientVersion) < 0)) {
+        throw new HubError('CLIENT_OUTDATED', `Client-Version zu alt (mindestens ${game.minClientVersion})`);
+      }
+      sessionManager.setGame(userId, game.id, input.clientVersion, input.platform);
+      broadcastPresence(io, userId);
+      return { game, state: sessionManager.stateFor(userId, sessionId, lobby?.id) };
+    });
+
+    // ── session:getState ─────────────────────────────────────────────────────
+    handle(socket, 'session:getState', { limit: 'sessionState' }, () => {
+      const lobby = lobbyManager.getLobbyByUserId(userId);
+      return { state: sessionManager.stateFor(userId, sessionId, lobby?.id), lobby };
+    });
+
     // ── presence:list ────────────────────────────────────────────────────────
-    socket.on('presence:list', () => {
-      if (!enforceSocketLimit(socket, 'presenceList')) return;
-      socket.emit('presence:list', [...presenceMap.values()]);
+    handle(socket, 'presence:list', { limit: 'presenceList' }, () => {
+      const users = sessionManager.onlineGameUsers().map((u) => presenceFor(u.userId)!).filter(Boolean);
+      socket.emit('presence:list', users);
+      return { users };
     });
 
     // ── listLobbies ─────────────────────────────────────────────────────────
-    socket.on('listLobbies', (gameId: string) => {
-      if (!enforceSocketLimit(socket, 'listLobbies')) return;
-      const lobbies = lobbyManager.listLobbies(gameId);
+    handle(socket, 'listLobbies', { limit: 'listLobbies' }, () => {
+      const game = requireGame(userId);
+      const lobbies = lobbyManager.listLobbies(game.id).map(toListing);
       socket.emit('lobbyList', lobbies);
+      return { lobbies };
     });
 
     // ── createLobby ─────────────────────────────────────────────────────────
-    socket.on('createLobby', async (data) => {
-      if (!enforceSocketLimit(socket, 'createLobby')) return;
-      const parse = CreateLobbySchema.safeParse(data);
-      if (!parse.success) {
-        socket.emit('error', 'Ungültige Lobby-Daten');
-        return;
-      }
-      const { gameId, name, isPrivate, settings } = parse.data;
+    handle(socket, 'createLobby', { limit: 'createLobby' }, async (data) => {
+      const game = requireGame(userId);
+      const { name, isPrivate, settings } = parseInput(CreateLobbySchema, data);
+      const maxBytes = game.maxSettingsBytes ?? 8192;
+      if (Buffer.byteLength(JSON.stringify(settings)) > maxBytes) throw new HubError('SETTINGS_TOO_LARGE');
+      if (jsonDepth(settings) > 8) throw new HubError('INVALID_INPUT', 'Lobby-Einstellungen zu tief verschachtelt');
 
-      // maxPlayers kommt aus der Registry, nicht vom Client
-      const game = getGame(gameId);
-      if (!game) {
-        socket.emit('error', 'Unbekanntes Spiel');
-        return;
-      }
-
+      const lobby = lobbyManager.createLobby(userId, username, game.id, name, game.maxPlayers, game.hosted, isPrivate, settings);
+      bindUserToLobby(io, userId, lobby.id);
       try {
-        const lobby = lobbyManager.createLobby(userId, username, gameId, name, game.maxPlayers, game.hosted, isPrivate, settings);
-        socket.data.currentLobbyId = lobby.id;
-        socket.join(lobby.id);
-        socket.emit('lobbyCreated', lobby);
-
-        // Presence aktualisieren
-        presenceMap.set(userId, { userId, username, lobbyId: lobby.id, gameId, lobbyStatus: lobby.status });
-        io.emit('presence:joined', presenceMap.get(userId)!);
-
-        // Subprocess sofort starten – solo play ist ab sofort möglich
         await instanceManager.startInstance(lobby);
-      } catch (err: unknown) {
-        if (err instanceof Error && err.message === 'ALREADY_IN_LOBBY') {
-          socket.emit('error', 'Du bist bereits in einer Lobby');
-        } else {
-          console.error('[createLobby] Fehler:', err);
-          socket.emit('error', 'Lobby konnte nicht erstellt werden');
-        }
+      } catch (err) {
+        // Kein Ghost-Lobby: bei Startfehler komplett zurückrollen
+        console.error(`[createLobby] Start fehlgeschlagen (${game.id}):`, err);
+        io.in(userRoom(userId)).socketsLeave(lobby.id);
+        lobbyManager.removeLobby(lobby.id);
+        instanceManager.stopInstance(lobby.id);
+        throw new HubError('LOBBY_START_FAILED');
       }
+      socket.emit('lobbyCreated', lobby);
+      broadcastPresence(io, userId);
+      return { lobby };
     });
 
     // ── joinLobby ───────────────────────────────────────────────────────────
-    socket.on('joinLobby', ({ lobbyId }) => {
-      if (!enforceSocketLimit(socket, 'joinLobby')) return;
-      joinLobbyById(socket, io, userId, username, lobbyId);
+    handle(socket, 'joinLobby', { limit: 'joinLobby' }, (data) => {
+      const { lobbyId } = parseInput(z.object({ lobbyId: z.string().min(1).max(64) }), data);
+      const game = requireGame(userId);
+      const lobby = lobbyManager.joinLobby(userId, username, lobbyId, { gameId: game.id });
+      afterJoin(io, userId, username, lobby);
+      return { lobby };
     });
 
     // ── joinLobbyByCode ──────────────────────────────────────────────────────
-    socket.on('joinLobbyByCode', ({ code }) => {
-      if (!enforceSocketLimit(socket, 'joinLobbyByCode')) return;
-      const codeClean = z.string().min(6).max(6).safeParse(code?.trim().toUpperCase());
-      if (!codeClean.success) {
-        socket.emit('error', 'Ungültiger Einladungscode');
-        return;
-      }
-      const lobby = lobbyManager.getByInviteCode(codeClean.data);
-      if (!lobby) {
-        socket.emit('error', 'Einladungscode nicht gefunden');
-        return;
-      }
-      joinLobbyById(socket, io, userId, username, lobby.id);
+    handle(socket, 'joinLobbyByCode', { limit: 'joinLobbyByCode' }, (data) => {
+      const { code } = parseInput(z.object({ code: InviteCodeSchema }), data, new HubError('INVALID_INVITE_CODE'));
+      const game = requireGame(userId);
+      const found = lobbyManager.getByInviteCode(code);
+      if (!found) throw new HubError('INVITE_CODE_NOT_FOUND');
+      const lobby = lobbyManager.joinLobby(userId, username, found.id, { gameId: game.id, viaCode: true });
+      afterJoin(io, userId, username, lobby);
+      return { lobby };
     });
 
     // ── leaveLobby ──────────────────────────────────────────────────────────
-    socket.on('leaveLobby', () => {
-      handleLeave(socket, io, true);
+    handle(socket, 'leaveLobby', { limit: 'leaveLobby' }, () => {
+      // Explizites Verlassen kennt keine Gnadenfrist
+      leaveLobbyFlow(io, userId);
     });
 
     // ── getLobbyInfo ─────────────────────────────────────────────────────────
-    socket.on('getLobbyInfo', () => {
-      if (!enforceSocketLimit(socket, 'getLobbyInfo')) return;
-      const lobby = lobbyManager.getLobbyByUserId(userId);
-      if (!lobby) {
-        socket.emit('error', 'Du bist in keiner Lobby');
-        return;
-      }
-      // Membership may have been established via a different socket (e.g. joined through the
-      // Hub panel's cross-game button) — make sure *this* socket is actually in the room too.
-      if (socket.data.currentLobbyId !== lobby.id) {
-        socket.data.currentLobbyId = lobby.id;
-        socket.join(lobby.id);
-        // A running subprocess only pushes per-user state in reaction to PLAYER_JOIN/actions.
-        // If this user's game socket wasn't connected yet when they joined via a different
-        // socket (e.g. the Hub panel), that original PLAYER_JOIN had nowhere to route their
-        // GAME_STATE_FOR_USER — nudge it again now that gameSocketMap points at this socket.
-        if (instanceManager.isRunning(lobby.id)) {
-          instanceManager.sendToInstance(lobby.id, { type: 'PLAYER_JOIN', payload: { userId, username } });
-        }
-      }
+    handle(socket, 'getLobbyInfo', { limit: 'getLobbyInfo' }, () => {
+      const lobby = requireLobby(userId);
       socket.emit('lobbyInfo', lobby);
+      return { lobby };
     });
 
     // ── kickPlayer ───────────────────────────────────────────────────────────
-    socket.on('kickPlayer', async ({ playerId }) => {
-      if (!enforceSocketLimit(socket, 'kickPlayer')) return;
-      try {
-        const lobby = lobbyManager.kickPlayer(userId, playerId);
-        // Dem gekickten Spieler Bescheid geben und ihn aus dem Room entfernen
-        const allSockets = await io.in(lobby.id).fetchSockets();
-        for (const s of allSockets) {
-          if (s.data.userId === playerId) {
-            s.emit('playerKicked', { lobbyId: lobby.id });
-            s.leave(lobby.id);
-            s.data.currentLobbyId = undefined;
-            break;
-          }
-        }
-        if (instanceManager.isRunning(lobby.id)) {
-          instanceManager.sendToInstance(lobby.id, { type: 'PLAYER_LEAVE', payload: { userId: playerId } });
-        }
-        io.to(lobby.id).emit('lobbyUpdated', lobby);
-      } catch (err: unknown) {
-        const msg =
-          err instanceof Error
-            ? ({
-                NOT_IN_LOBBY: 'Du bist in keiner Lobby',
-                NOT_HOST: 'Nur der Host kann Spieler entfernen',
-                CANNOT_KICK_SELF: 'Du kannst dich nicht selbst kicken',
-                PLAYER_NOT_FOUND: 'Spieler nicht in dieser Lobby',
-              }[err.message] ?? 'Kick fehlgeschlagen')
-            : 'Kick fehlgeschlagen';
-        socket.emit('error', msg);
+    handle(socket, 'kickPlayer', { limit: 'kickPlayer' }, (data) => {
+      const { playerId } = parseInput(z.object({ playerId: z.string().min(1).max(64) }), data);
+      const lobby = lobbyManager.kickPlayer(userId, playerId);
+      io.to(userRoom(playerId)).emit('playerKicked', { lobbyId: lobby.id });
+      io.in(userRoom(playerId)).socketsLeave(lobby.id);
+      sessionManager.clearGrace(playerId);
+      if (instanceManager.isRunning(lobby.id)) {
+        instanceManager.sendToInstance(lobby.id, { type: 'PLAYER_LEAVE', payload: { userId: playerId } });
       }
+      broadcastLobbyChange(io, lobby);
+      broadcastPresence(io, playerId);
+      if (!sessionManager.isConnected(playerId)) sessionManager.dropIfIdle(playerId);
+      return { lobby };
     });
 
     // ── transferHost ─────────────────────────────────────────────────────────
-    socket.on('transferHost', ({ playerId }) => {
-      if (!enforceSocketLimit(socket, 'transferHost')) return;
-      try {
-        const lobby = lobbyManager.transferHost(userId, playerId);
-        io.to(lobby.id).emit('lobbyUpdated', lobby);
-      } catch (err: unknown) {
-        const msg =
-          err instanceof Error
-            ? ({
-                NOT_IN_LOBBY: 'Du bist in keiner Lobby',
-                NOT_HOST: 'Nur der Host kann die Rolle übertragen',
-                ALREADY_HOST: 'Du bist bereits der Host',
-                PLAYER_NOT_FOUND: 'Spieler nicht in dieser Lobby',
-              }[err.message] ?? 'Übertragung fehlgeschlagen')
-            : 'Übertragung fehlgeschlagen';
-        socket.emit('error', msg);
-      }
+    handle(socket, 'transferHost', { limit: 'transferHost' }, (data) => {
+      const { playerId } = parseInput(z.object({ playerId: z.string().min(1).max(64) }), data);
+      const lobby = lobbyManager.transferHost(userId, playerId);
+      broadcastLobbyChange(io, lobby);
+      return { lobby };
     });
 
     // ── lockLobby / unlockLobby ───────────────────────────────────────────────
-    socket.on('lockLobby', () => {
-      if (!enforceSocketLimit(socket, 'lockLobby')) return;
-      try {
-        const lobby = lobbyManager.setLocked(userId, true);
-        io.to(lobby.id).emit('lobbyUpdated', lobby);
-      } catch (err: unknown) {
-        socket.emit('error', mapLockError(err));
-      }
+    handle(socket, 'lockLobby', { limit: 'lockLobby' }, () => {
+      const lobby = lobbyManager.setLocked(userId, true);
+      broadcastLobbyChange(io, lobby);
+      return { lobby };
     });
-
-    socket.on('unlockLobby', () => {
-      if (!enforceSocketLimit(socket, 'unlockLobby')) return;
-      try {
-        const lobby = lobbyManager.setLocked(userId, false);
-        io.to(lobby.id).emit('lobbyUpdated', lobby);
-      } catch (err: unknown) {
-        socket.emit('error', mapLockError(err));
-      }
+    handle(socket, 'unlockLobby', { limit: 'unlockLobby' }, () => {
+      const lobby = lobbyManager.setLocked(userId, false);
+      broadcastLobbyChange(io, lobby);
+      return { lobby };
     });
 
     // ── requestJoinLobby / requestJoinLobbyByCode ─────────────────────────────
-    socket.on('requestJoinLobby', ({ lobbyId }) => {
-      if (!enforceSocketLimit(socket, 'requestJoinLobby')) return;
+    handle(socket, 'requestJoinLobby', { limit: 'requestJoinLobby' }, (data) => {
+      const { lobbyId } = parseInput(z.object({ lobbyId: z.string().min(1).max(64) }), data);
       const lobby = lobbyManager.getLobby(lobbyId);
-      if (!lobby) {
-        socket.emit('error', 'Lobby nicht gefunden');
-        return;
-      }
-      startJoinRequest(io, socket, userId, username, lobby);
+      if (!lobby) throw new HubError('LOBBY_NOT_FOUND');
+      return startJoinRequest(io, userId, username, lobby, false);
     });
 
-    socket.on('requestJoinLobbyByCode', ({ code }) => {
-      if (!enforceSocketLimit(socket, 'requestJoinLobbyByCode')) return;
-      const codeClean = z.string().min(6).max(6).safeParse(code?.trim().toUpperCase());
-      if (!codeClean.success) {
-        socket.emit('error', 'Ungültiger Einladungscode');
-        return;
-      }
-      const lobby = lobbyManager.getByInviteCode(codeClean.data);
-      if (!lobby) {
-        socket.emit('error', 'Einladungscode nicht gefunden');
-        return;
-      }
-      startJoinRequest(io, socket, userId, username, lobby);
+    handle(socket, 'requestJoinLobbyByCode', { limit: 'requestJoinLobbyByCode' }, (data) => {
+      const { code } = parseInput(z.object({ code: InviteCodeSchema }), data, new HubError('INVALID_INVITE_CODE'));
+      const lobby = lobbyManager.getByInviteCode(code);
+      if (!lobby) throw new HubError('INVITE_CODE_NOT_FOUND');
+      return startJoinRequest(io, userId, username, lobby, true);
     });
 
     // ── cancelJoinRequest ─────────────────────────────────────────────────────
-    socket.on('cancelJoinRequest', ({ lobbyId }) => {
-      if (!enforceSocketLimit(socket, 'cancelJoinRequest')) return;
-      if (!joinRequests.get(lobbyId)?.has(userId)) return;
+    handle(socket, 'cancelJoinRequest', { limit: 'cancelJoinRequest' }, (data) => {
+      const { lobbyId } = parseInput(z.object({ lobbyId: z.string().min(1).max(64) }), data);
+      if (!joinRequests.get(lobbyId)?.has(userId)) throw new HubError('JOIN_REQUEST_NOT_FOUND');
       clearJoinRequest(lobbyId, userId);
       const lobby = lobbyManager.getLobby(lobbyId);
-      const hostSocketId = lobby ? gameSocketMap.get(lobby.hostId) : undefined;
-      if (hostSocketId) io.to(hostSocketId).emit('joinRequestWithdrawn', { requesterId: userId, reason: 'cancelled' });
+      if (lobby) io.to(userRoom(lobby.hostId)).emit('joinRequestWithdrawn', { requesterId: userId, reason: 'cancelled' });
     });
 
     // ── respondJoinRequest (Host) ─────────────────────────────────────────────
-    socket.on('respondJoinRequest', async ({ requesterId, accept }) => {
-      if (!enforceSocketLimit(socket, 'respondJoinRequest')) return;
+    handle(socket, 'respondJoinRequest', { limit: 'respondJoinRequest' }, (data) => {
+      const { requesterId, accept } = parseInput(
+        z.object({ requesterId: z.string().min(1).max(64), accept: z.boolean() }),
+        data,
+      );
       const lobby = lobbyManager.getLobbyByUserId(userId);
       if (!lobby || lobby.hostId !== userId) {
-        socket.emit('error', 'Nur der Host kann Beitrittsanfragen beantworten');
-        return;
+        throw new HubError('NOT_HOST', 'Nur der Host kann Beitrittsanfragen beantworten');
       }
       const entry = joinRequests.get(lobby.id)?.get(requesterId);
-      if (!entry) {
-        socket.emit('error', 'Anfrage nicht gefunden oder bereits abgelaufen');
-        return;
-      }
+      if (!entry) throw new HubError('JOIN_REQUEST_NOT_FOUND');
       clearJoinRequest(lobby.id, requesterId);
-      const reqSocketId = gameSocketMap.get(requesterId);
 
       if (!accept) {
-        if (reqSocketId) io.to(reqSocketId).emit('joinRequestRejected', { lobbyId: lobby.id, reason: 'declined' });
+        io.to(userRoom(requesterId)).emit('joinRequestRejected', { lobbyId: lobby.id, reason: 'declined' });
         return;
       }
-
       try {
-        const updated = lobbyManager.joinLobby(requesterId, entry.username, lobby.id, { bypassLock: true });
-        const reqSocket = reqSocketId ? io.sockets.sockets.get(reqSocketId) : undefined;
-        if (reqSocket) {
-          reqSocket.data.currentLobbyId = updated.id;
-          reqSocket.join(updated.id);
-        }
-        presenceMap.set(requesterId, {
-          userId: requesterId,
-          username: entry.username,
-          lobbyId: updated.id,
-          gameId: updated.gameId,
-          lobbyStatus: updated.status,
+        const requesterGame = sessionManager.getGameId(requesterId);
+        const updated = lobbyManager.joinLobby(requesterId, entry.username, lobby.id, {
+          gameId: requesterGame,
+          viaCode: entry.viaCode,
+          bypassLock: true,
         });
-        io.emit('presence:joined', presenceMap.get(requesterId)!);
-        io.to(updated.id).emit('lobbyUpdated', updated);
-        if (instanceManager.isRunning(updated.id)) {
-          instanceManager.sendToInstance(updated.id, {
-            type: 'PLAYER_JOIN',
-            payload: { userId: requesterId, username: entry.username },
-          });
-        }
-        if (reqSocket) reqSocket.emit('joinRequestAccepted', { lobby: updated });
+        afterJoin(io, requesterId, entry.username, updated);
+        io.to(userRoom(requesterId)).emit('joinRequestAccepted', { lobby: updated });
       } catch {
-        if (reqSocketId) io.to(reqSocketId).emit('joinRequestRejected', { lobbyId: lobby.id, reason: 'lobby_closed' });
+        io.to(userRoom(requesterId)).emit('joinRequestRejected', { lobbyId: lobby.id, reason: 'lobby_closed' });
+        throw new HubError('LOBBY_CLOSED', 'Beitritt nicht mehr möglich (Lobby voll/geschlossen oder Spieler nicht mehr verfügbar)');
       }
     });
 
-    // ── sendToLobby (Relay) ──────────────────────────────────────────────────
-    socket.on('sendToLobby', ({ type, payload }) => {
-      if (!enforceSocketLimit(socket, 'sendToLobby')) return;
-      const lobbyId = socket.data.currentLobbyId;
-      if (!lobbyId) {
-        socket.emit('error', 'Du bist in keiner Lobby');
-        return;
-      }
-      const currentLobby = lobbyManager.getLobbyByUserId(userId);
-      if (!currentLobby || currentLobby.id !== lobbyId) {
-        socket.emit('error', 'Lobby-Kontext ungültig');
-        return;
-      }
-      if (!allowLobbyEvent(lobbyId, 'sendToLobby')) {
-        emitRateLimitError(socket, 'sendToLobby:lobby');
-        return;
-      }
-      // An alle anderen in der Lobby senden (Sender ausgenommen)
-      socket.to(lobbyId).emit('message', { from: userId, type, payload });
-    });
-
-    // ── sendToLobbyBinary (Relay) ───────────────────────────────────────────
-    socket.on('sendToLobbyBinary', ({ typeCode, payload }) => {
-      if (!enforceSocketLimit(socket, 'sendToLobbyBinary')) return;
-      const lobbyId = socket.data.currentLobbyId;
-      if (!lobbyId) {
-        socket.emit('error', 'Du bist in keiner Lobby');
-        return;
-      }
-      const currentLobby = lobbyManager.getLobbyByUserId(userId);
-      if (!currentLobby || currentLobby.id !== lobbyId) {
-        socket.emit('error', 'Lobby-Kontext ungültig');
-        return;
-      }
-      if (!allowLobbyEvent(lobbyId, 'sendToLobbyBinary')) {
-        emitRateLimitError(socket, 'sendToLobbyBinary:lobby');
-        return;
-      }
-
-      const binaryData = validateBinaryRelayInput(socket, { typeCode, payload });
-      if (!binaryData) return;
-
-      socket.to(lobbyId).emit('messageBinary', {
-        from: userId,
-        typeCode: binaryData.typeCode,
-        payload: binaryData.payload,
-      });
-    });
-
-    // ── sendToPlayer (Relay) ─────────────────────────────────────────────────
-    socket.on('sendToPlayer', async ({ playerId, type, payload }) => {
-      if (!enforceSocketLimit(socket, 'sendToPlayer')) return;
-      const lobbyId = socket.data.currentLobbyId;
-      if (!lobbyId) {
-        socket.emit('error', 'Du bist in keiner Lobby');
-        return;
-      }
-      const senderLobby = lobbyManager.getLobbyByUserId(userId);
-      if (!senderLobby || senderLobby.id !== lobbyId) {
-        socket.emit('error', 'Lobby-Kontext ungültig');
-        return;
-      }
-
+    // ── Relay ────────────────────────────────────────────────────────────────
+    const relayTarget = (playerId: string): void => {
+      const lobby = requireLobby(userId);
       const targetLobby = lobbyManager.getLobbyByUserId(playerId);
-      if (!targetLobby || targetLobby.id !== lobbyId) {
-        socket.emit('error', 'Spieler nicht in derselben Lobby');
-        return;
-      }
+      if (!targetLobby || targetLobby.id !== lobby.id) throw new HubError('PLAYER_NOT_IN_LOBBY');
+      const target = targetLobby.players.find((p) => p.userId === playerId);
+      if (target?.connected === false || !sessionManager.hasGameSession(playerId)) throw new HubError('PLAYER_UNREACHABLE');
+    };
 
-      const targetSocketId = gameSocketMap.get(playerId);
-      const target = targetSocketId ? io.sockets.sockets.get(targetSocketId) : undefined;
-      if (!target) {
-        socket.emit('error', 'Spieler nicht erreichbar');
-        return;
-      }
-      target.emit('message', { from: userId, type, payload });
+    handle(socket, 'sendToLobby', { limit: 'sendToLobby' }, (data) => {
+      const lobby = requireLobby(userId);
+      assertLobbyLimit(lobby.id, 'sendToLobby');
+      const { type, payload } = parseInput(z.object({ type: z.string().min(1).max(64), payload: z.unknown() }), data);
+      // Alle anderen Mitglieder (auch deren Sessions); alle eigenen Sessions des Senders ausgenommen
+      io.to(lobby.id).except(userRoom(userId)).emit('message', { from: userId, type, payload });
     });
 
-    // ── sendToPlayerBinary (Relay) ──────────────────────────────────────────
-    socket.on('sendToPlayerBinary', async ({ playerId, typeCode, payload }) => {
-      if (!enforceSocketLimit(socket, 'sendToPlayerBinary')) return;
-      const lobbyId = socket.data.currentLobbyId;
-      if (!lobbyId) {
-        socket.emit('error', 'Du bist in keiner Lobby');
-        return;
-      }
-      const senderLobby = lobbyManager.getLobbyByUserId(userId);
-      if (!senderLobby || senderLobby.id !== lobbyId) {
-        socket.emit('error', 'Lobby-Kontext ungültig');
-        return;
-      }
-
-      const targetLobby = lobbyManager.getLobbyByUserId(playerId);
-      if (!targetLobby || targetLobby.id !== lobbyId) {
-        socket.emit('error', 'Spieler nicht in derselben Lobby');
-        return;
-      }
-
-      const targetSocketId = gameSocketMap.get(playerId);
-      const target = targetSocketId ? io.sockets.sockets.get(targetSocketId) : undefined;
-      if (!target) {
-        socket.emit('error', 'Spieler nicht erreichbar');
-        return;
-      }
-
-      const binaryData = validateBinaryRelayInput(socket, { typeCode, payload });
-      if (!binaryData) return;
-
-      target.emit('messageBinary', {
-        from: userId,
-        typeCode: binaryData.typeCode,
-        payload: binaryData.payload,
-      });
-    });
-    // ── getUserData ──────────────────────────────────────────────────────────────
-    socket.on('getUserData', async (gameId: string) => {
-      if (!enforceSocketLimit(socket, 'getUserData')) return;
-      const parse = z.string().min(1).max(32).regex(/^[a-z0-9-]+$/).safeParse(gameId);
-      if (!parse.success) {
-        socket.emit('error', 'Ungültige Spiel-ID');
-        return;
-      }
-      try {
-        const entries = await getAllOwn(userId, parse.data);
-        socket.emit('userData', { gameId: parse.data, entries });
-      } catch (err) {
-        console.error('[Socket] getUserData Fehler:', err);
-        socket.emit('error', 'Fehler beim Laden der User-Daten');
-      }
+    handle(socket, 'sendToLobbyBinary', { limit: 'sendToLobbyBinary' }, (data) => {
+      const lobby = requireLobby(userId);
+      assertLobbyLimit(lobby.id, 'sendToLobbyBinary');
+      const bin = validateBinaryRelayInput(data);
+      io.to(lobby.id).except(userRoom(userId)).emit('messageBinary', { from: userId, typeCode: bin.typeCode, payload: bin.payload });
     });
 
-    // ── getPlayerData ─────────────────────────────────────────────────────────
-    socket.on('getPlayerData', async ({ playerId, gameId }) => {
-      if (!enforceSocketLimit(socket, 'getPlayerData')) return;
-      const parse = z.string().min(1).max(32).regex(/^[a-z0-9-]+$/).safeParse(gameId);
-      if (!parse.success) {
-        socket.emit('error', 'Ungültige Spiel-ID');
-        return;
-      }
+    handle(socket, 'sendToPlayer', { limit: 'sendToPlayer' }, (data) => {
+      const { playerId, type, payload } = parseInput(
+        z.object({ playerId: z.string().min(1).max(64), type: z.string().min(1).max(64), payload: z.unknown() }),
+        data,
+      );
+      relayTarget(playerId);
+      io.to(gameRoom(playerId)).emit('message', { from: userId, type, payload });
+    });
+
+    handle(socket, 'sendToPlayerBinary', { limit: 'sendToPlayerBinary' }, (data) => {
+      const playerId = parseInput(z.string().min(1).max(64), data?.playerId);
+      relayTarget(playerId);
+      const bin = validateBinaryRelayInput(data);
+      io.to(gameRoom(playerId)).emit('messageBinary', { from: userId, typeCode: bin.typeCode, payload: bin.payload });
+    });
+
+    // ── User-Daten (Socket-Parität zu REST) ──────────────────────────────────
+    handle(socket, 'getUserData', { limit: 'getUserData' }, async (gameIdRaw) => {
+      const gameId = parseInput(GameIdSchema, gameIdRaw, new HubError('INVALID_INPUT', 'Ungültige Spiel-ID'));
+      if (!getGame(gameId)) throw new HubError('UNKNOWN_GAME');
+      const entries = await getAllOwn(userId, gameId);
+      socket.emit('userData', { gameId, entries });
+      return { gameId, entries };
+    });
+
+    handle(socket, 'setUserData', { limit: 'setUserData' }, async (data) => {
+      const { gameId, key, value, visibility } = parseInput(
+        z.object({ gameId: GameIdSchema, key: KeySchema, value: z.unknown(), visibility: VisibilitySchema.optional() }),
+        data,
+      );
+      await writeEntries(userId, gameId, [{ key, value, visibility }], 'client');
+    });
+
+    handle(socket, 'bulkSetUserData', { limit: 'bulkSetUserData' }, async (data) => {
+      const { gameId, entries } = parseInput(z.object({ gameId: GameIdSchema, entries: BulkEntriesSchema }), data);
+      await writeEntries(userId, gameId, entries, 'client');
+    });
+
+    handle(socket, 'deleteUserData', { limit: 'deleteUserData' }, async (data) => {
+      const { gameId, key } = parseInput(z.object({ gameId: GameIdSchema, key: KeySchema }), data);
+      await deleteKey(userId, gameId, key, 'client');
+    });
+
+    handle(socket, 'getPlayerData', { limit: 'getPlayerData' }, async (data) => {
+      const { playerId, gameId } = parseInput(
+        z.object({ playerId: z.string().min(1).max(64), gameId: GameIdSchema }),
+        data,
+        new HubError('INVALID_INPUT', 'Ungültige Spiel-ID'),
+      );
+      if (!getGame(gameId)) throw new HubError('UNKNOWN_GAME');
       const requesterLobby = lobbyManager.getLobbyByUserId(userId);
-      const targetLobby    = lobbyManager.getLobbyByUserId(playerId);
-      const inSameLobby    = !!(requesterLobby && targetLobby && requesterLobby.id === targetLobby.id);
-      try {
-        const entries = await getVisibleData(playerId, parse.data, inSameLobby);
-        socket.emit('playerData', { playerId, gameId: parse.data, entries });
-      } catch (err) {
-        console.error('[Socket] getPlayerData Fehler:', err);
-        socket.emit('error', 'Fehler beim Laden der Spieler-Daten');
-      }
+      const targetLobby = lobbyManager.getLobbyByUserId(playerId);
+      const inSameLobby = !!(requesterLobby && targetLobby && requesterLobby.id === targetLobby.id);
+      const entries = await getVisibleData(playerId, gameId, inSameLobby);
+      socket.emit('playerData', { playerId, gameId, entries });
+      return { playerId, gameId, entries };
     });
-    // ── gameAction ───────────────────────────────────────────────────────────────
-    socket.on('gameAction', (data) => {
-      if (!enforceSocketLimit(socket, 'gameAction')) return;
-      const lobbyId = socket.data.currentLobbyId;
-      if (!lobbyId || !instanceManager.isRunning(lobbyId)) return;
-      const currentLobby = lobbyManager.getLobbyByUserId(userId);
-      if (!currentLobby || currentLobby.id !== lobbyId) return;
-      if (!allowLobbyEvent(lobbyId, 'gameAction')) {
-        emitRateLimitError(socket, 'gameAction:lobby');
-        return;
-      }
-      instanceManager.sendToInstance(lobbyId, {
+
+    // ── gameAction ───────────────────────────────────────────────────────────
+    handle(socket, 'gameAction', { limit: 'gameAction', quiet: true }, (data) => {
+      const lobby = requireLobby(userId);
+      if (!instanceManager.isRunning(lobby.id)) throw new HubError('GAME_NOT_RUNNING');
+      assertLobbyLimit(lobby.id, 'gameAction');
+      const { type, payload } = parseInput(z.object({ type: z.string().min(1).max(64), payload: z.unknown() }), data);
+      instanceManager.sendToInstance(lobby.id, {
         type: 'PLAYER_ACTION',
-        payload: { userId, action: data.type, data: data.payload },
+        payload: { userId, action: type, data: payload },
       });
     });
 
@@ -717,168 +792,58 @@ export function registerLobbyHandlers(io: AppServer): void {
     socket.on('disconnect', () => {
       console.log(`[Socket] "${username}" getrennt (${socket.id})`);
       socketBuckets.delete(socket.id);
-
-      if (clientType === 'game') {
-        // Nur entfernen wenn dieser Socket noch der aktive ist (kein Takeover)
-        if (gameSocketMap.get(userId) === socket.id) {
-          gameSocketMap.delete(userId);
-          presenceMap.delete(userId);
-          io.emit('presence:left', { userId });
-        }
-
-        // Laufende Spielinstanz über Disconnect informieren
-        const currentLobby = socket.data.currentLobbyId;
-        if (currentLobby && instanceManager.isRunning(currentLobby)) {
-          instanceManager.sendToInstance(currentLobby, {
-            type: 'PLAYER_DISCONNECT',
-            payload: { userId },
-          });
-        }
-        withdrawAllRequestsFor(io, userId, 'cancelled');
-        handleLeave(socket, io, false);
+      for (const key of [...lastRateLimitNotice.keys()]) {
+        if (key.startsWith(`${socket.id}:`)) lastRateLimitNotice.delete(key);
       }
+
+      const { remaining } = sessionManager.remove(userId, socket.id);
+      if (remaining > 0) {
+        // Anderer Socket des Users aktiv (Takeover/Panel): nur Presence neu bewerten
+        if (!sessionManager.hasGameSession(userId)) io.emit('presence:left', { userId });
+        return;
+      }
+      handleLastSessionGone(io, userId);
     });
   });
 }
 
-// ─── Hilfsfunktion: Lobby beitreten (gemeinsam für joinLobby + joinLobbyByCode) ──
+// ─── Hilfsfunktion: Beitrittsanfrage (gemeinsam für ID + Invite-Code) ─────────
 
-function joinLobbyById(socket: AppSocket, io: AppServer, userId: string, username: string, lobbyId: string): void {
-  try {
-    const lobby = lobbyManager.joinLobby(userId, username, lobbyId);
-    socket.data.currentLobbyId = lobby.id;
-    socket.join(lobby.id);
-    io.to(lobby.id).emit('lobbyUpdated', lobby);
-
-    // Presence aktualisieren
-    presenceMap.set(userId, { userId, username, lobbyId: lobby.id, gameId: lobby.gameId, lobbyStatus: lobby.status });
-    io.emit('presence:joined', presenceMap.get(userId)!);
-
-    if (instanceManager.isRunning(lobby.id)) {
-      instanceManager.sendToInstance(lobby.id, {
-        type: 'PLAYER_JOIN',
-        payload: { userId, username },
-      });
-    }
-  } catch (err: unknown) {
-    const msg =
-      err instanceof Error
-        ? {
-            ALREADY_IN_LOBBY: 'Du bist bereits in einer Lobby',
-            LOBBY_NOT_FOUND: 'Lobby nicht gefunden',
-            LOBBY_CLOSED: 'Lobby ist geschlossen',
-            LOBBY_LOCKED: 'Lobby ist gesperrt — bitte Beitritt anfragen',
-            LOBBY_FULL: 'Lobby ist voll',
-          }[err.message] ?? 'Beitreten fehlgeschlagen'
-        : 'Beitreten fehlgeschlagen';
-    socket.emit('error', msg);
-  }
-}
-
-// ─── Hilfsfunktion: Lobby verlassen und alle informieren ─────────────────────
-
-function handleLeave(socket: AppSocket, io: AppServer, isExplicitLeave: boolean): void {
-  const { userId, username } = socket.data;
-  const wasHost = lobbyManager.getLobbyByUserId(userId)?.hostId === userId;
-  const { lobby, dissolved } = lobbyManager.leaveLobby(userId);
-
-  if (!lobby && !dissolved) return; // war in keiner Lobby
-
-  const lobbyId = socket.data.currentLobbyId;
-  socket.data.currentLobbyId = undefined;
-  if (lobbyId) socket.leave(lobbyId);
-
-  // Subprocess informieren: explizites Verlassen kennt keine Reconnect-Gnadenfrist
-  // (Disconnects senden PLAYER_DISCONNECT bereits an anderer Stelle).
-  if (isExplicitLeave && lobbyId && instanceManager.isRunning(lobbyId)) {
-    instanceManager.sendToInstance(lobbyId, { type: 'PLAYER_LEAVE', payload: { userId } });
-  }
-
-  // Presence: Lobby/Game-Kontext des ausgetretenen Users zurücksetzen
-  presenceMap.set(userId, { userId, username });
-  io.emit('presence:joined', { userId, username }); // Broadcast: User ist jetzt ohne Lobby
-
-  if (!dissolved && lobby) {
-    // Verbleibende Spieler über den aktualisierten Stand informieren
-    io.to(lobby.id).emit('lobbyUpdated', lobby);
-    console.log(`[Lobby] "${username}" verließ "${lobby.name}"`);
-
-    // Presence der verbleibenden Spieler aktualisieren (lobbyStatus kann sich geändert haben, z.B. wieder 'open')
-    for (const player of lobby.players) {
-      const existing = presenceMap.get(player.userId);
-      if (existing?.lobbyId === lobby.id) {
-        const updated: typeof existing = { ...existing, lobbyStatus: lobby.status };
-        presenceMap.set(player.userId, updated);
-        io.emit('presence:joined', updated);
-      }
-    }
-
-    // Host gewechselt (war Host, ist es jetzt nicht mehr) → offene Anfragen sind hinfällig
-    if (wasHost && lobby.hostId !== userId) {
-      rejectAllJoinRequests(io, lobby.id, 'host_changed');
-    }
-  } else if (dissolved && lobbyId) {
-    lobbyBuckets.delete(lobbyId);
-    rejectAllJoinRequests(io, lobbyId, 'lobby_closed');
-  }
-}
-
-// ─── Hilfsfunktion: Lock-Fehler zu Klartext-Meldung ──────────────────────────
-
-function mapLockError(err: unknown): string {
-  return err instanceof Error
-    ? ({
-        NOT_IN_LOBBY: 'Du bist in keiner Lobby',
-        NOT_HOST: 'Nur der Host kann die Lobby sperren/entsperren',
-      }[err.message] ?? 'Aktion fehlgeschlagen')
-    : 'Aktion fehlgeschlagen';
-}
-
-// ─── Hilfsfunktion: Beitrittsanfrage starten (gemeinsam für ID + Invite-Code) ─
-
-function startJoinRequest(io: AppServer, socket: AppSocket, userId: string, username: string, lobby: Lobby): void {
-  if (lobbyManager.getLobbyByUserId(userId)) {
-    socket.emit('error', 'Du bist bereits in einer Lobby');
-    return;
-  }
-  if (lobby.status === 'closed') {
-    socket.emit('error', 'Lobby ist geschlossen');
-    return;
-  }
-  if (lobby.players.length >= lobby.maxPlayers) {
-    socket.emit('error', 'Lobby ist voll');
-    return;
-  }
+function startJoinRequest(
+  io: AppServer,
+  userId: string,
+  username: string,
+  lobby: Lobby,
+  viaCode: boolean,
+): Record<string, unknown> {
+  const game = requireGame(userId);
+  lobbyManager.assertJoinable(userId, lobby, { gameId: game.id, viaCode });
 
   // Nicht gesperrt → direkter Beitritt, keine Anfrage nötig
   if (!lobby.locked) {
-    joinLobbyById(socket, io, userId, username, lobby.id);
-    return;
+    const joined = lobbyManager.joinLobby(userId, username, lobby.id, { gameId: game.id, viaCode });
+    afterJoin(io, userId, username, joined);
+    return { pending: false, lobby: joined };
   }
 
   if (joinRequests.get(lobby.id)?.has(userId)) {
-    socket.emit('joinRequestPending', { lobbyId: lobby.id });
-    return;
+    io.to(userRoom(userId)).emit('joinRequestPending', { lobbyId: lobby.id });
+    return { pending: true };
   }
-  if (!allowLobbyEvent(lobby.id, 'requestJoinLobby')) {
-    emitRateLimitError(socket, 'requestJoinLobby:lobby');
-    return;
-  }
+  assertLobbyLimit(lobby.id, 'requestJoinLobby');
 
   const timer = setTimeout(() => {
     clearJoinRequest(lobby.id, userId);
-    socket.emit('joinRequestRejected', { lobbyId: lobby.id, reason: 'timeout' });
-    const hostSocketId = gameSocketMap.get(lobby.hostId);
-    if (hostSocketId) io.to(hostSocketId).emit('joinRequestWithdrawn', { requesterId: userId, reason: 'timeout' });
+    io.to(userRoom(userId)).emit('joinRequestRejected', { lobbyId: lobby.id, reason: 'timeout' });
+    io.to(userRoom(lobby.hostId)).emit('joinRequestWithdrawn', { requesterId: userId, reason: 'timeout' });
   }, JOIN_REQUEST_TIMEOUT_MS);
+  timer.unref();
 
   const reqs = joinRequests.get(lobby.id) ?? new Map();
-  reqs.set(userId, { username, timer });
+  reqs.set(userId, { username, viaCode, timer });
   joinRequests.set(lobby.id, reqs);
 
-  socket.emit('joinRequestPending', { lobbyId: lobby.id });
-  const hostSocketId = gameSocketMap.get(lobby.hostId);
-  if (hostSocketId) {
-    io.to(hostSocketId).emit('joinRequestReceived', { lobbyId: lobby.id, requesterId: userId, username });
-  }
+  io.to(userRoom(userId)).emit('joinRequestPending', { lobbyId: lobby.id });
+  io.to(userRoom(lobby.hostId)).emit('joinRequestReceived', { lobbyId: lobby.id, requesterId: userId, username });
+  return { pending: true };
 }

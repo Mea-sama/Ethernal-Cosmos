@@ -17,34 +17,10 @@ export interface ServerLimits {
     maxPayloadBytes: number;
   };
   rateLimitNoticeCooldownMs: number;
-  socketLimits: {
-    createLobby: LimitRule;
-    joinLobby: LimitRule;
-    joinLobbyByCode: LimitRule;
-    kickPlayer: LimitRule;
-    transferHost: LimitRule;
-    lockLobby: LimitRule;
-    unlockLobby: LimitRule;
-    requestJoinLobby: LimitRule;
-    requestJoinLobbyByCode: LimitRule;
-    cancelJoinRequest: LimitRule;
-    respondJoinRequest: LimitRule;
-    listLobbies: LimitRule;
-    getLobbyInfo: LimitRule;
-    presenceList: LimitRule;
-    getUserData: LimitRule;
-    getPlayerData: LimitRule;
-    sendToLobby: LimitRule;
-    sendToLobbyBinary: LimitRule;
-    sendToPlayer: LimitRule;
-    sendToPlayerBinary: LimitRule;
-    gameAction: LimitRule;
-  };
-  lobbyLimits: {
-    sendToLobby: LimitRule;
-    sendToLobbyBinary: LimitRule;
-    gameAction: LimitRule;
-  };
+  /** Token-Buckets pro Socket und Event-Name */
+  socketLimits: Record<string, LimitRule>;
+  /** Token-Buckets pro Lobby und Event-Name */
+  lobbyLimits: Record<string, LimitRule>;
   authRateLimits: {
     login: AuthLimitRule;
     register: AuthLimitRule;
@@ -79,11 +55,18 @@ const defaultLimits: ServerLimits = {
     sendToPlayer: { refillPerSecond: 200, burst: 400 },
     sendToPlayerBinary: { refillPerSecond: 200, burst: 400 },
     gameAction: { refillPerSecond: 300, burst: 600 },
+    registerGame: { refillPerSecond: 0.5, burst: 5 },
+    sessionState: { refillPerSecond: 5, burst: 15 },
+    setUserData: { refillPerSecond: 8, burst: 30 },
+    bulkSetUserData: { refillPerSecond: 2, burst: 6 },
+    deleteUserData: { refillPerSecond: 8, burst: 30 },
+    leaveLobby: { refillPerSecond: 1, burst: 5 },
   },
   lobbyLimits: {
     sendToLobby: { refillPerSecond: 1200, burst: 2400 },
     sendToLobbyBinary: { refillPerSecond: 1200, burst: 2400 },
     gameAction: { refillPerSecond: 1600, burst: 3200 },
+    requestJoinLobby: { refillPerSecond: 2, burst: 10 },
   },
   authRateLimits: {
     login: {
@@ -105,7 +88,9 @@ const defaultLimits: ServerLimits = {
 };
 
 function loadLimitsFromFile(): Partial<ServerLimits> {
-  const configPath = path.resolve(__dirname, '../../../server/config/limits.json');
+  const configPath = process.env.LIMITS_CONFIG_PATH
+    ? path.resolve(process.env.LIMITS_CONFIG_PATH)
+    : path.resolve(__dirname, '../../../server/config/limits.json');
   if (!fs.existsSync(configPath)) {
     console.warn(`[Limits] Konfigurationsdatei nicht gefunden, nutze Defaults: ${configPath}`);
     return {};
@@ -130,6 +115,14 @@ function rule(value: unknown, fallback: LimitRule): LimitRule {
   return { refillPerSecond, burst };
 }
 
+function mergeRuleMap(base: Record<string, LimitRule>, override: Record<string, unknown>): Record<string, LimitRule> {
+  const result: Record<string, LimitRule> = { ...base };
+  for (const [key, value] of Object.entries(override)) {
+    result[key] = rule(value, base[key] ?? { refillPerSecond: 10, burst: 20 });
+  }
+  return result;
+}
+
 function authRule(value: unknown, fallback: AuthLimitRule): AuthLimitRule {
   if (!value || typeof value !== 'object') return fallback;
   const candidate = value as Partial<AuthLimitRule>;
@@ -142,8 +135,8 @@ function authRule(value: unknown, fallback: AuthLimitRule): AuthLimitRule {
 }
 
 function mergeLimits(base: ServerLimits, override: Partial<ServerLimits>): ServerLimits {
-  const socketOverrides: Partial<ServerLimits['socketLimits']> = override.socketLimits ?? {};
-  const lobbyOverrides: Partial<ServerLimits['lobbyLimits']> = override.lobbyLimits ?? {};
+  const socketOverrides = override.socketLimits ?? {};
+  const lobbyOverrides = override.lobbyLimits ?? {};
   const authOverrides: Partial<ServerLimits['authRateLimits']> = override.authRateLimits ?? {};
 
   return {
@@ -157,34 +150,8 @@ function mergeLimits(base: ServerLimits, override: Partial<ServerLimits>): Serve
       Number.isFinite(Number(override.rateLimitNoticeCooldownMs)) && Number(override.rateLimitNoticeCooldownMs) >= 0
         ? Number(override.rateLimitNoticeCooldownMs)
         : base.rateLimitNoticeCooldownMs,
-    socketLimits: {
-      createLobby: rule(socketOverrides.createLobby, base.socketLimits.createLobby),
-      joinLobby: rule(socketOverrides.joinLobby, base.socketLimits.joinLobby),
-      joinLobbyByCode: rule(socketOverrides.joinLobbyByCode, base.socketLimits.joinLobbyByCode),
-      kickPlayer: rule(socketOverrides.kickPlayer, base.socketLimits.kickPlayer),
-      transferHost: rule(socketOverrides.transferHost, base.socketLimits.transferHost),
-      lockLobby: rule(socketOverrides.lockLobby, base.socketLimits.lockLobby),
-      unlockLobby: rule(socketOverrides.unlockLobby, base.socketLimits.unlockLobby),
-      requestJoinLobby: rule(socketOverrides.requestJoinLobby, base.socketLimits.requestJoinLobby),
-      requestJoinLobbyByCode: rule(socketOverrides.requestJoinLobbyByCode, base.socketLimits.requestJoinLobbyByCode),
-      cancelJoinRequest: rule(socketOverrides.cancelJoinRequest, base.socketLimits.cancelJoinRequest),
-      respondJoinRequest: rule(socketOverrides.respondJoinRequest, base.socketLimits.respondJoinRequest),
-      listLobbies: rule(socketOverrides.listLobbies, base.socketLimits.listLobbies),
-      getLobbyInfo: rule(socketOverrides.getLobbyInfo, base.socketLimits.getLobbyInfo),
-      presenceList: rule(socketOverrides.presenceList, base.socketLimits.presenceList),
-      getUserData: rule(socketOverrides.getUserData, base.socketLimits.getUserData),
-      getPlayerData: rule(socketOverrides.getPlayerData, base.socketLimits.getPlayerData),
-      sendToLobby: rule(socketOverrides.sendToLobby, base.socketLimits.sendToLobby),
-      sendToLobbyBinary: rule(socketOverrides.sendToLobbyBinary, base.socketLimits.sendToLobbyBinary),
-      sendToPlayer: rule(socketOverrides.sendToPlayer, base.socketLimits.sendToPlayer),
-      sendToPlayerBinary: rule(socketOverrides.sendToPlayerBinary, base.socketLimits.sendToPlayerBinary),
-      gameAction: rule(socketOverrides.gameAction, base.socketLimits.gameAction),
-    },
-    lobbyLimits: {
-      sendToLobby: rule(lobbyOverrides.sendToLobby, base.lobbyLimits.sendToLobby),
-      sendToLobbyBinary: rule(lobbyOverrides.sendToLobbyBinary, base.lobbyLimits.sendToLobbyBinary),
-      gameAction: rule(lobbyOverrides.gameAction, base.lobbyLimits.gameAction),
-    },
+    socketLimits: mergeRuleMap(base.socketLimits, socketOverrides),
+    lobbyLimits: mergeRuleMap(base.lobbyLimits, lobbyOverrides),
     authRateLimits: {
       login: authRule(authOverrides.login, base.authRateLimits.login),
       register: authRule(authOverrides.register, base.authRateLimits.register),

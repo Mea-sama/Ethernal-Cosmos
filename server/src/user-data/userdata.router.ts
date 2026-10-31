@@ -2,23 +2,34 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { requireAuth } from '../auth/auth.middleware';
 import { lobbyManager } from '../lobby/lobby.manager';
+import { GameIdSchema, KeySchema, VisibilitySchema, BulkEntriesSchema } from './userdata.schemas';
+import { getGame } from '../games/game.registry';
+import { HubError, isHubError, sendHubError } from '../errors';
 import { setKey, getKey, deleteKey, getAllOwn, bulkSet, getVisibleData, getLeaderboard } from './userdata.service';
 
-// ─── Schemas ──────────────────────────────────────────────────────────────────
+function handleError(res: import('express').Response, tag: string, err: unknown): void {
+  if (isHubError(err)) {
+    sendHubError(res, err);
+    return;
+  }
+  console.error(tag, err);
+  sendHubError(res, new HubError('INTERNAL'));
+}
 
-const GameIdSchema = z.string().min(1).max(32).regex(/^[a-z0-9-]+$/);
-const KeySchema    = z.string().min(1).max(64).regex(/^[a-zA-Z0-9_.-]+$/);
-const VisibilitySchema = z.enum(['private', 'lobby', 'public']);
+function knownGame(res: import('express').Response, gameId: string): boolean {
+  if (getGame(gameId)) return true;
+  sendHubError(res, new HubError('UNKNOWN_GAME'));
+  return false;
+}
+
+// ─── Schemas ──────────────────────────────────────────────────────────────────
 
 const SetKeyBodySchema = z.object({
   value: z.unknown(),
   visibility: VisibilitySchema.optional(),
 });
 
-const BulkSetBodySchema = z
-  .array(z.object({ key: KeySchema, value: z.any(), visibility: VisibilitySchema.optional() }))
-  .min(1)
-  .max(100);
+const BulkSetBodySchema = BulkEntriesSchema;
 
 // ─── Eigene Daten: /userdata ──────────────────────────────────────────────────
 
@@ -29,11 +40,11 @@ userDataRouter.use(requireAuth);
 userDataRouter.get('/:gameId', async (req, res): Promise<void> => {
   const parse = GameIdSchema.safeParse(req.params.gameId);
   if (!parse.success) { res.status(400).json({ error: 'Ungültige Spiel-ID' }); return; }
+  if (!knownGame(res, parse.data)) return;
   try {
     res.json(await getAllOwn(req.auth!.userId, parse.data));
   } catch (err) {
-    console.error('[UserData] GET /:gameId Fehler:', err);
-    res.status(500).json({ error: 'Interner Fehler' });
+    handleError(res, '[UserData] GET /:gameId Fehler:', err);
   }
 });
 
@@ -42,13 +53,13 @@ userDataRouter.get('/:gameId/:key', async (req, res): Promise<void> => {
   const gameId = GameIdSchema.safeParse(req.params.gameId);
   const key    = KeySchema.safeParse(req.params.key);
   if (!gameId.success || !key.success) { res.status(400).json({ error: 'Ungültige Parameter' }); return; }
+  if (!knownGame(res, gameId.data)) return;
   try {
     const entry = await getKey(req.auth!.userId, gameId.data, key.data);
-    if (!entry) { res.status(404).json({ error: 'Key nicht gefunden' }); return; }
+    if (!entry) { sendHubError(res, new HubError('DATA_KEY_NOT_FOUND')); return; }
     res.json(entry);
   } catch (err) {
-    console.error('[UserData] GET /:gameId/:key Fehler:', err);
-    res.status(500).json({ error: 'Interner Fehler' });
+    handleError(res, '[UserData] GET /:gameId/:key Fehler:', err);
   }
 });
 
@@ -58,13 +69,12 @@ userDataRouter.put('/:gameId/:key', async (req, res): Promise<void> => {
   const key    = KeySchema.safeParse(req.params.key);
   const body   = SetKeyBodySchema.safeParse(req.body);
   if (!gameId.success || !key.success) { res.status(400).json({ error: 'Ungültige Parameter' }); return; }
-  if (!body.success) { res.status(400).json({ error: body.error.flatten() }); return; }
+  if (!body.success) { sendHubError(res, new HubError('INVALID_INPUT')); return; }
   try {
     await setKey(req.auth!.userId, gameId.data, key.data, body.data.value, body.data.visibility);
     res.json({ ok: true });
   } catch (err) {
-    console.error('[UserData] PUT /:gameId/:key Fehler:', err);
-    res.status(500).json({ error: 'Interner Fehler' });
+    handleError(res, '[UserData] PUT /:gameId/:key Fehler:', err);
   }
 });
 
@@ -77,8 +87,7 @@ userDataRouter.delete('/:gameId/:key', async (req, res): Promise<void> => {
     await deleteKey(req.auth!.userId, gameId.data, key.data);
     res.status(204).send();
   } catch (err) {
-    console.error('[UserData] DELETE /:gameId/:key Fehler:', err);
-    res.status(500).json({ error: 'Interner Fehler' });
+    handleError(res, '[UserData] DELETE /:gameId/:key Fehler:', err);
   }
 });
 
@@ -87,13 +96,12 @@ userDataRouter.patch('/:gameId', async (req, res): Promise<void> => {
   const gameId = GameIdSchema.safeParse(req.params.gameId);
   if (!gameId.success) { res.status(400).json({ error: 'Ungültige Spiel-ID' }); return; }
   const body = BulkSetBodySchema.safeParse(req.body);
-  if (!body.success) { res.status(400).json({ error: body.error.flatten() }); return; }
+  if (!body.success) { sendHubError(res, new HubError('INVALID_INPUT')); return; }
   try {
     await bulkSet(req.auth!.userId, gameId.data, body.data as Array<{ key: string; value: unknown; visibility?: 'private' | 'lobby' | 'public' }>);
     res.json({ ok: true });
   } catch (err) {
-    console.error('[UserData] PATCH /:gameId Fehler:', err);
-    res.status(500).json({ error: 'Interner Fehler' });
+    handleError(res, '[UserData] PATCH /:gameId Fehler:', err);
   }
 });
 
@@ -117,11 +125,11 @@ playerDataRouter.get('/:playerId/data/:gameId', async (req, res): Promise<void> 
   const targetLobby    = lobbyManager.getLobbyByUserId(playerId);
   const inSameLobby    = !!(requesterLobby && targetLobby && requesterLobby.id === targetLobby.id);
 
+  if (!knownGame(res, gameId.data)) return;
   try {
     res.json(await getVisibleData(playerId, gameId.data, inSameLobby));
   } catch (err) {
-    console.error('[PlayerData] GET Fehler:', err);
-    res.status(500).json({ error: 'Interner Fehler' });
+    handleError(res, '[PlayerData] GET Fehler:', err);
   }
 });
 
@@ -147,8 +155,7 @@ leaderboardRouter.get('/:gameId/:key', async (req, res): Promise<void> => {
   try {
     res.json(await getLeaderboard(gameId.data, key.data, order, limit));
   } catch (err) {
-    console.error('[Leaderboard] GET Fehler:', err);
-    res.status(500).json({ error: 'Interner Fehler' });
+    handleError(res, '[Leaderboard] GET Fehler:', err);
   }
 });
 

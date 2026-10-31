@@ -318,6 +318,7 @@ process.on('message', (raw: unknown) => {
       handleAction(msg.payload.userId, msg.payload.action, msg.payload.data);
       break;
     case 'PLAYER_JOIN':
+    case 'PLAYER_RECONNECT':
       clearTimer(msg.payload.userId);
       engine.join(msg.payload.userId, msg.payload.username);
       broadcastAll();

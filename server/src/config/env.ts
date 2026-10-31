@@ -1,3 +1,5 @@
+import path from 'path';
+
 export const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 
 function fail(message: string): never {
@@ -61,3 +63,15 @@ export function isAllowedOrigin(origin: string | undefined): boolean {
   if (!origin) return true;
   return ALLOWED_ORIGINS.includes(origin);
 }
+/** Verzeichnis für ethernal.db und spiel-eigene DBs (Default: <repo>/data) */
+export const DATA_DIR = process.env.DATA_DIR
+  ? path.resolve(process.env.DATA_DIR)
+  : path.resolve(__dirname, '../../../data');
+
+/** bcrypt-Kosten; unter 10 nur außerhalb von production erlaubt (Tests) */
+export const BCRYPT_ROUNDS = (() => {
+  const parsed = Number.parseInt(process.env.BCRYPT_ROUNDS ?? '', 10);
+  if (!Number.isFinite(parsed)) return 12;
+  if (IS_PRODUCTION && parsed < 10) fail('[Config] BCRYPT_ROUNDS darf in production nicht < 10 sein');
+  return Math.min(Math.max(parsed, 4), 15);
+})();

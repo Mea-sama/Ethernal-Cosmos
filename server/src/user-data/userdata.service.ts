@@ -1,24 +1,117 @@
 import { db } from '../db/database';
-import type { DataVisibility, UserDataEntry } from '@ethernal/shared';
+import type { DataVisibility, DataWriteScope, UserDataEntry } from '@ethernal/shared';
+import { HubError } from '../errors';
+import { getGame } from '../games/game.registry';
 
-// ─── Einzelner Key ────────────────────────────────────────────────────────────
+// ─── Limits ───────────────────────────────────────────────────────────────────
+
+export const DATA_LIMITS = {
+  maxValueBytes: 16 * 1024,
+  maxKeysPerGame: 200,
+  maxTotalBytesPerGame: 512 * 1024,
+};
+
+export type DataActor = 'client' | 'server';
+
+export interface DataWrite {
+  key: string;
+  value?: unknown;
+  /** Fehlt sie, bleibt die bestehende Sichtbarkeit erhalten (neu angelegt: 'private'). */
+  visibility?: DataVisibility;
+  /** Nur für actor='server': Schreibschutz für den Client setzen/aufheben. */
+  writeScope?: DataWriteScope;
+}
+
+function matchesServerKey(gameId: string, key: string): boolean {
+  const patterns = getGame(gameId)?.serverKeys ?? [];
+  return patterns.some((p) => new RegExp(`^(?:${p})$`).test(key));
+}
+
+/**
+ * Schreibt einen oder mehrere Keys in einer Transaktion (alles oder nichts).
+ * - actor='client': schreibgeschützte Keys (writeScope='server' oder game.serverKeys) → DATA_READ_ONLY
+ * - Limits für Wertgröße, Key-Anzahl und Gesamtgröße pro User/Spiel
+ * - version wird pro Schreibvorgang erhöht
+ */
+export async function writeEntries(
+  userId: string,
+  gameId: string,
+  entries: DataWrite[],
+  actor: DataActor = 'client'
+): Promise<void> {
+  if (!getGame(gameId)) throw new HubError('UNKNOWN_GAME');
+  if (entries.length === 0) return;
+
+  const serialized = entries.map((e) => {
+    const json = JSON.stringify(e.value ?? null);
+    if (Buffer.byteLength(json) > DATA_LIMITS.maxValueBytes) throw new HubError('DATA_VALUE_TOO_LARGE');
+    return { ...e, json };
+  });
+
+  const tx = await db.transaction('write');
+  try {
+    const existing = await tx.execute({
+      sql: 'SELECT key, length(value) AS size, visibility, write_scope FROM user_data WHERE user_id = ? AND game_id = ?',
+      args: [userId, gameId],
+    });
+    const byKey = new Map<string, { size: number; visibility: string; write_scope: string }>(
+      existing.rows.map((r) => [
+        r.key as string,
+        { size: Number(r.size), visibility: r.visibility as string, write_scope: r.write_scope as string },
+      ])
+    );
+    let totalBytes = [...byKey.values()].reduce((sum, r) => sum + r.size, 0);
+    let keyCount = byKey.size;
+
+    const now = Date.now();
+    for (const e of serialized) {
+      const row = byKey.get(e.key);
+      if (actor === 'client' && (row?.write_scope === 'server' || matchesServerKey(gameId, e.key))) {
+        throw new HubError('DATA_READ_ONLY');
+      }
+      const scope: DataWriteScope =
+        actor === 'server'
+          ? e.writeScope ?? (row?.write_scope as DataWriteScope | undefined) ?? (matchesServerKey(gameId, e.key) ? 'server' : 'client')
+          : 'client';
+      const visibility = e.visibility ?? (row?.visibility as DataVisibility | undefined) ?? 'private';
+
+      if (!row) keyCount += 1;
+      totalBytes += Buffer.byteLength(e.json) - (row?.size ?? 0);
+      if (keyCount > DATA_LIMITS.maxKeysPerGame || totalBytes > DATA_LIMITS.maxTotalBytesPerGame) {
+        throw new HubError('DATA_QUOTA_EXCEEDED');
+      }
+      byKey.set(e.key, { size: Buffer.byteLength(e.json), visibility, write_scope: scope });
+
+      await tx.execute({
+        sql: `
+          INSERT INTO user_data (user_id, game_id, key, value, visibility, updated_at, write_scope, version)
+          VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+          ON CONFLICT(user_id, game_id, key)
+          DO UPDATE SET value = excluded.value, visibility = excluded.visibility,
+                        updated_at = excluded.updated_at, write_scope = excluded.write_scope,
+                        version = user_data.version + 1
+        `,
+        args: [userId, gameId, e.key, e.json, visibility, now, scope],
+      });
+    }
+    await tx.commit();
+  } catch (err) {
+    await tx.rollback().catch(() => undefined);
+    throw err;
+  } finally {
+    tx.close();
+  }
+}
 
 export async function setKey(
   userId: string,
   gameId: string,
   key: string,
   value: unknown,
-  visibility: DataVisibility = 'private'
+  visibility?: DataVisibility,
+  actor: DataActor = 'client'
 ): Promise<void> {
-  await db.execute({
-    sql: `
-      INSERT INTO user_data (user_id, game_id, key, value, visibility, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?)
-      ON CONFLICT(user_id, game_id, key)
-      DO UPDATE SET value = excluded.value, visibility = excluded.visibility, updated_at = excluded.updated_at
-    `,
-    args: [userId, gameId, key, JSON.stringify(value), visibility, Date.now()],
-  });
+  await writeEntries(userId, gameId, [{ key, value, visibility }], actor);
 }
 
 export async function getKey(
@@ -27,7 +120,7 @@ export async function getKey(
   key: string
 ): Promise<UserDataEntry | null> {
   const result = await db.execute({
-    sql: 'SELECT key, value, visibility, updated_at FROM user_data WHERE user_id = ? AND game_id = ? AND key = ?',
+    sql: 'SELECT key, value, visibility, updated_at, write_scope, version FROM user_data WHERE user_id = ? AND game_id = ? AND key = ?',
     args: [userId, gameId, key],
   });
   if (result.rows.length === 0) return null;
@@ -37,8 +130,14 @@ export async function getKey(
 export async function deleteKey(
   userId: string,
   gameId: string,
-  key: string
+  key: string,
+  actor: DataActor = 'client'
 ): Promise<void> {
+  if (!getGame(gameId)) throw new HubError('UNKNOWN_GAME');
+  if (actor === 'client') {
+    const existing = await getKey(userId, gameId, key);
+    if (existing?.writeScope === 'server' || matchesServerKey(gameId, key)) throw new HubError('DATA_READ_ONLY');
+  }
   await db.execute({
     sql: 'DELETE FROM user_data WHERE user_id = ? AND game_id = ? AND key = ?',
     args: [userId, gameId, key],
@@ -52,7 +151,7 @@ export async function getAllOwn(
   gameId: string
 ): Promise<UserDataEntry[]> {
   const result = await db.execute({
-    sql: 'SELECT key, value, visibility, updated_at FROM user_data WHERE user_id = ? AND game_id = ? ORDER BY key',
+    sql: 'SELECT key, value, visibility, updated_at, write_scope, version FROM user_data WHERE user_id = ? AND game_id = ? ORDER BY key',
     args: [userId, gameId],
   });
   return result.rows.map(rowToEntry);
@@ -63,22 +162,10 @@ export async function getAllOwn(
 export async function bulkSet(
   userId: string,
   gameId: string,
-  entries: Array<{ key: string; value: unknown; visibility?: DataVisibility }>
+  entries: DataWrite[],
+  actor: DataActor = 'client'
 ): Promise<void> {
-  if (entries.length === 0) return;
-  const now = Date.now();
-  await db.batch(
-    entries.map((e) => ({
-      sql: `
-        INSERT INTO user_data (user_id, game_id, key, value, visibility, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?)
-        ON CONFLICT(user_id, game_id, key)
-        DO UPDATE SET value = excluded.value, visibility = excluded.visibility, updated_at = excluded.updated_at
-      `,
-      args: [userId, gameId, e.key, JSON.stringify(e.value), e.visibility ?? 'private', now],
-    })),
-    'write'
-  );
+  await writeEntries(userId, gameId, entries, actor);
 }
 
 // ─── Fremde Daten (sichtbare Keys) ────────────────────────────────────────────
@@ -96,7 +183,7 @@ export async function getVisibleData(
   const visibilities = inSameLobby ? ['public', 'lobby'] : ['public'];
   const placeholders = visibilities.map(() => '?').join(', ');
   const result = await db.execute({
-    sql: `SELECT key, value, visibility, updated_at FROM user_data
+    sql: `SELECT key, value, visibility, updated_at, write_scope, version FROM user_data
           WHERE user_id = ? AND game_id = ? AND visibility IN (${placeholders})
           ORDER BY key`,
     args: [targetId, gameId, ...visibilities],
@@ -162,5 +249,7 @@ function rowToEntry(row: { [key: string]: unknown }): UserDataEntry {
     value: JSON.parse(row['value'] as string),
     visibility: row['visibility'] as DataVisibility,
     updatedAt: row['updated_at'] as number,
+    writeScope: (row['write_scope'] as DataWriteScope) ?? 'client',
+    version: Number(row['version'] ?? 1),
   };
 }

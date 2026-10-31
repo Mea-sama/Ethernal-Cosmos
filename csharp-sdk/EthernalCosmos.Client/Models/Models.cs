@@ -12,6 +12,8 @@ public sealed class LobbyPlayer
     [JsonPropertyName("userId")]   public string UserId   { get; init; } = "";
     [JsonPropertyName("username")] public string Username { get; init; } = "";
     [JsonPropertyName("isHost")]   public bool   IsHost   { get; init; }
+    /// <summary>false while the player is disconnected but still inside the reconnect grace period.</summary>
+    [JsonPropertyName("connected")] public bool  Connected { get; init; } = true;
 }
 
 public sealed class Lobby
@@ -37,6 +39,8 @@ public sealed class UserDataEntry
     [JsonPropertyName("value")]      public object?        Value      { get; init; }
     [JsonPropertyName("visibility")] public string         Visibility { get; init; } = "private";
     [JsonPropertyName("updatedAt")]  public long           UpdatedAt  { get; init; }
+    [JsonPropertyName("writeScope")] public string         WriteScope { get; init; } = "client";
+    [JsonPropertyName("version")]    public int            Version    { get; init; } = 1;
 }
 
 public sealed class PublicUser
@@ -183,4 +187,78 @@ public sealed class PresenceUser
     /// <summary>Status of the lobby the user is in. Only set when LobbyId is present.
     /// "open" = joinable, "full" / "closed" = not joinable.</summary>
     [JsonPropertyName("lobbyStatus")] public string? LobbyStatus { get; init; }
+}
+
+public sealed class HubErrorPayload
+{
+    [JsonPropertyName("code")]         public string  Code         { get; init; } = "INTERNAL";
+    [JsonPropertyName("message")]      public string  Message      { get; init; } = "";
+    [JsonPropertyName("event")]        public string? Event        { get; init; }
+    [JsonPropertyName("requestId")]    public string? RequestId    { get; init; }
+    [JsonPropertyName("retryAfterMs")] public int?    RetryAfterMs { get; init; }
+}
+
+/// <summary>Thrown by every SDK call that fails; <see cref="Code"/> is a stable server error code (e.g. GAME_MISMATCH).</summary>
+public sealed class EthernalException : Exception
+{
+    public string Code { get; }
+    public int? RetryAfterMs { get; }
+    public EthernalException(string code, string message, int? retryAfterMs = null) : base(message)
+    {
+        Code = code;
+        RetryAfterMs = retryAfterMs;
+    }
+}
+
+public sealed class HelloPayload
+{
+    [JsonPropertyName("protocolVersion")] public int      ProtocolVersion { get; init; }
+    [JsonPropertyName("serverTime")]      public long     ServerTime      { get; init; }
+    [JsonPropertyName("sessionId")]       public string   SessionId       { get; init; } = "";
+    [JsonPropertyName("capabilities")]    public string[] Capabilities    { get; init; } = [];
+    [JsonPropertyName("gameId")]          public string?  GameId          { get; init; }
+    [JsonPropertyName("lobbyId")]         public string?  LobbyId         { get; init; }
+}
+
+public sealed class SessionState
+{
+    [JsonPropertyName("sessionId")] public string  SessionId { get; init; } = "";
+    [JsonPropertyName("userId")]    public string  UserId    { get; init; } = "";
+    [JsonPropertyName("username")]  public string  Username  { get; init; } = "";
+    [JsonPropertyName("gameId")]    public string? GameId    { get; init; }
+    [JsonPropertyName("lobbyId")]   public string? LobbyId   { get; init; }
+}
+
+public sealed class SessionResumedData
+{
+    [JsonPropertyName("state")] public SessionState State { get; init; } = new();
+    [JsonPropertyName("lobby")] public Lobby        Lobby { get; init; } = new();
+}
+
+public sealed class SessionReplacedData
+{
+    [JsonPropertyName("reason")] public string Reason { get; init; } = "new_session";
+}
+
+public sealed class GameInfo
+{
+    [JsonPropertyName("id")]               public string  Id               { get; init; } = "";
+    [JsonPropertyName("name")]             public string  Name             { get; init; } = "";
+    [JsonPropertyName("description")]      public string  Description      { get; init; } = "";
+    [JsonPropertyName("maxPlayers")]       public int     MaxPlayers       { get; init; }
+    [JsonPropertyName("hosted")]           public bool    Hosted           { get; init; }
+    [JsonPropertyName("reconnectGraceMs")] public int?    ReconnectGraceMs { get; init; }
+    [JsonPropertyName("minClientVersion")] public string? MinClientVersion { get; init; }
+}
+
+public sealed class RegisterGameResult
+{
+    [JsonPropertyName("game")]  public GameInfo     Game  { get; init; } = new();
+    [JsonPropertyName("state")] public SessionState State { get; init; } = new();
+}
+
+public sealed class SessionStateResult
+{
+    [JsonPropertyName("state")] public SessionState State { get; init; } = new();
+    [JsonPropertyName("lobby")] public Lobby?       Lobby { get; init; }
 }

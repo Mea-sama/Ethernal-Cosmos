@@ -35,6 +35,10 @@ export interface LobbyPlayer {
   userId: string;
   username: string;
   isHost: boolean;
+  /** false = Verbindung verloren, Spieler befindet sich in der Reconnect-Gnadenfrist (Default: true) */
+  connected?: boolean;
+  /** unix ms — nur gesetzt, solange connected=false */
+  disconnectedAt?: number;
 }
 
 export interface Lobby {
@@ -80,6 +84,17 @@ export interface GameInfo {
   /** Externer Link (nur für hosted=false).
    *  Wird auf der Hub-Startseite als "Zum Spiel"-Button angezeigt und in einem neuen Tab geöffnet. */
   link?: string;
+  /** Reconnect-Gnadenfrist in ms, in der ein getrennter Spieler seinen Lobby-Platz behält.
+   *  0 = sofort entfernen. Default: 60000. */
+  reconnectGraceMs?: number;
+  /** Minimale Client-Version (numerisch vergleichbar, z.B. "1.2.0"); ältere Clients werden bei registerGame abgelehnt. */
+  minClientVersion?: string;
+  /** Maximale Größe der Lobby-Settings als JSON in Bytes (Default 8192). */
+  maxSettingsBytes?: number;
+  /** Wenn gesetzt: nur diese Settings-Keys sind in Lobby-Listen für Nicht-Mitglieder sichtbar. */
+  publicSettingKeys?: string[];
+  /** Keys (Regex-Strings, auf den ganzen Key angewendet), die nur der Game-Subprocess schreiben darf. */
+  serverKeys?: string[];
 }
 
 // ─── IPC: Hub ↔ Game-Subprocess ─────────────────────────────────────────────
@@ -89,9 +104,13 @@ export type IpcHubToGame =
   | { type: 'PLAYER_ACTION'; payload: { userId: string; action: string; data: unknown } }
   /** Neuer Spieler hat die Lobby betreten (nach dem initialen Spawn) */
   | { type: 'PLAYER_JOIN'; payload: { userId: string; username: string } }
+  /** Verbindung des Spielers ist weggebrochen; er bleibt für die Reconnect-Gnadenfrist Lobby-Mitglied.
+   *  Folgt entweder PLAYER_RECONNECT oder (nach Ablauf) PLAYER_LEAVE. */
   | { type: 'PLAYER_DISCONNECT'; payload: { userId: string } }
-  /** Spieler hat die Lobby endgültig verlassen (explizites leaveLobby oder kickPlayer) —
-   *  im Gegensatz zu PLAYER_DISCONNECT gibt es keine Reconnect-Gnadenfrist. */
+  /** Spieler hat sich innerhalb der Gnadenfrist wieder verbunden. */
+  | { type: 'PLAYER_RECONNECT'; payload: { userId: string; username: string } }
+  /** Spieler hat die Lobby endgültig verlassen (explizites leaveLobby, kickPlayer oder Ablauf
+   *  der Reconnect-Gnadenfrist) — im Gegensatz zu PLAYER_DISCONNECT gibt es keine Rückkehr mehr. */
   | { type: 'PLAYER_LEAVE'; payload: { userId: string } }
   /** Antwort auf GET_USER_DATA */
   | { type: 'USER_DATA_RESPONSE'; payload: { requestId: string; userId: string; gameId: string; data: Record<string, unknown> } };
@@ -109,7 +128,7 @@ export type IpcGameToHub =
    * Wird z.B. nach Spielende aufgerufen um Ergebnisse dauerhaft zu speichern.
    * `data` wird mit den vorhandenen Metadaten zusammengeführt (merge).
    */
-  | { type: 'SAVE_META'; payload: { userId: string; gameId: string; entries: Array<{ key: string; value: unknown; visibility?: DataVisibility }> } }
+  | { type: 'SAVE_META'; payload: { userId: string; gameId: string; entries: Array<{ key: string; value: unknown; visibility?: DataVisibility; writeScope?: DataWriteScope }> } }
   | { type: 'LOG'; payload: string }
   /** Subprocess möchte User-Daten aus dem Hub lesen */
   | { type: 'GET_USER_DATA'; payload: { requestId: string; userId: string; gameId: string } };
@@ -125,7 +144,13 @@ export interface UserDataEntry {
   value: unknown;
   visibility: DataVisibility;
   updatedAt: number; // unix ms
+  /** 'client' = Besitzer darf schreiben; 'server' = nur der Game-Subprocess (read-only für den Client) */
+  writeScope: DataWriteScope;
+  /** Wird bei jedem Schreiben erhöht (Basis für spätere optimistische Concurrency) */
+  version: number;
 }
+
+export type DataWriteScope = 'client' | 'server';
 
 // ─── Presence ────────────────────────────────────────────────────────────────
 
@@ -174,161 +199,5 @@ export interface PanelAction {
   onClick: () => void;
 }
 
-// ─── Socket.io Events ────────────────────────────────────────────────────────
-
-/** Events vom Client zum Haupt-Server */
-export interface ClientToServerEvents {
-  /** Neue Lobby erstellen – maxPlayers kommt aus der Game-Registry, nicht vom Client */
-  createLobby: (data: {
-    gameId: string;
-    name: string;
-    isPrivate?: boolean;
-    settings?: Record<string, unknown>;
-  }) => void;
-
-  /** Einer bestehenden Lobby beitreten */
-  joinLobby: (data: { lobbyId: string }) => void;
-
-  /** Einer privaten Lobby per Einladungscode beitreten */
-  joinLobbyByCode: (data: { code: string }) => void;
-
-  /** Aktuelle Lobby verlassen */
-  leaveLobby: () => void;
-
-  /** Liste aller offenen Lobbys für ein bestimmtes Spiel abrufen */
-  listLobbies: (gameId: string) => void;
-
-  /** Spielaktion an den laufenden Game-Subprocess weiterleiten */
-  gameAction: (data: { type: string; payload: unknown }) => void;
-
-  /** Snapshot des aktuellen Lobby-Zustands abrufen */
-  getLobbyInfo: () => void;
-
-  /** Host: Spieler aus der Lobby entfernen */
-  kickPlayer: (data: { playerId: string }) => void;
-
-  /** Host: Host-Rolle an anderen Spieler übertragen */
-  transferHost: (data: { playerId: string }) => void;
-
-  /** Host: Lobby sperren — Beitritt (auch per Invite-Code) erfordert danach eine Anfrage */
-  lockLobby: () => void;
-
-  /** Host: Lobby wieder entsperren — normaler Beitritt funktioniert wieder direkt */
-  unlockLobby: () => void;
-
-  /** Beitritt zu einer gesperrten Lobby anfragen (per Lobby-ID) */
-  requestJoinLobby: (data: { lobbyId: string }) => void;
-
-  /** Beitritt zu einer gesperrten Lobby anfragen (per Invite-Code) */
-  requestJoinLobbyByCode: (data: { code: string }) => void;
-
-  /** Eigene, noch offene Beitrittsanfrage zurückziehen */
-  cancelJoinRequest: (data: { lobbyId: string }) => void;
-
-  /** Host: eine eingegangene Beitrittsanfrage annehmen oder ablehnen */
-  respondJoinRequest: (data: { requesterId: string; accept: boolean }) => void;
-
-  /** Nachricht an alle anderen Spieler in der Lobby senden (Relay) */
-  sendToLobby: (data: { type: string; payload: unknown }) => void;
-
-  /** Binäre Nachricht an alle anderen Spieler in der Lobby senden (Relay) */
-  sendToLobbyBinary: (data: { typeCode: number; payload: Uint8Array }) => void;
-
-  /** Nachricht direkt an einen einzelnen Spieler senden (Relay) */
-  sendToPlayer: (data: { playerId: string; type: string; payload: unknown }) => void;
-
-  /** Binäre Nachricht direkt an einen einzelnen Spieler senden (Relay) */
-  sendToPlayerBinary: (data: { playerId: string; typeCode: number; payload: Uint8Array }) => void;
-
-  /** User-Daten für ein Spiel abrufen (Alternative zu REST GET /userdata/:gameId) */
-  getUserData: (gameId: string) => void;
-
-  /** Sichtbare Daten eines anderen Spielers abrufen (Alternative zu REST GET /players/:id/data/:gameId) */
-  getPlayerData: (data: { playerId: string; gameId: string }) => void;
-
-  /** Aktuelle Online-Präsenz-Liste anfordern */
-  'presence:list': () => void;
-}
-
-/** Events vom Haupt-Server zum Client */
-export interface ServerToClientEvents {
-  /** Lobby wurde erstellt (Bestätigung für den Host) */
-  lobbyCreated: (lobby: Lobby) => void;
-
-  /** Lobby-Zustand hat sich geändert (Spieler beigetreten/verlassen) */
-  lobbyUpdated: (lobby: Lobby) => void;
-
-  /** Aktuelle Lobby-Liste als Antwort auf listLobbies */
-  lobbyList: (lobbies: Lobby[]) => void;
-
-  /**
-   * Spiel startet – Client wechselt in die Game-Szene.
-   * Spielkommunikation läuft weiterhin über denselben Hub-Socket.
-   */
-  gameStarting: (data: { lobbyId: string; gameId: string }) => void;
-
-  /** Vollständiger Spielzustand vom Subprocess (nach jeder Aktion gebroadcastet) */
-  gameState: (state: unknown) => void;
-
-  /** Einzelnes Spielereignis (z.B. Karteneffekt-Animation) */
-  gameEvent: (event: { type: string; data: unknown }) => void;
-
-  /** Spiel ist beendet */
-  gameOver: (result: unknown) => void;
-
-  /** Fehlermeldung vom Server */
-  error: (message: string) => void;
-
-  /** Snapshot der aktuellen Lobby (Antwort auf getLobbyInfo) */
-  lobbyInfo: (lobby: Lobby) => void;
-
-  /** Du wurdest von einem Host aus der Lobby entfernt */
-  playerKicked: (data: { lobbyId: string }) => void;
-
-  /** Eingehende Relay-Nachricht von einem anderen Spieler */
-  message: (data: RelayMessage) => void;
-
-  /** Eingehende binäre Relay-Nachricht von einem anderen Spieler */
-  messageBinary: (data: RelayBinaryMessage) => void;
-
-  /** Antwort auf getUserData — eigene Daten als Key-Value-Liste */
-  userData: (data: { gameId: string; entries: UserDataEntry[] }) => void;
-
-  /** Antwort auf getPlayerData — sichtbare Daten eines anderen Spielers */
-  playerData: (data: { playerId: string; gameId: string; entries: UserDataEntry[] }) => void;
-
-  /** Ein neuer User hat sich verbunden (Presence) */
-  'presence:joined': (user: PresenceUser) => void;
-
-  /** Ein User hat die Verbindung getrennt (Presence) */
-  'presence:left': (data: { userId: string }) => void;
-
-  /** Antwort auf presence:list — alle aktuell verbundenen User */
-  'presence:list': (users: PresenceUser[]) => void;
-
-  /** Host: eine neue Beitrittsanfrage ist eingegangen */
-  joinRequestReceived: (data: { lobbyId: string; requesterId: string; username: string }) => void;
-
-  /** Bestätigung an den Anfragenden: die Anfrage wurde gesendet und wartet auf den Host */
-  joinRequestPending: (data: { lobbyId: string }) => void;
-
-  /** Der Host hat die Anfrage angenommen — Beitritt wurde bereits serverseitig vollzogen */
-  joinRequestAccepted: (data: { lobby: Lobby }) => void;
-
-  /** Die Anfrage wurde beendet, ohne dass beigetreten wurde */
-  joinRequestRejected: (data: { lobbyId: string; reason: JoinRequestRejectReason }) => void;
-
-  /** Host: eine Anfrage wurde zurückgezogen oder ist ausgelaufen, bevor der Host reagiert hat */
-  joinRequestWithdrawn: (data: { requesterId: string; reason: 'cancelled' | 'timeout' }) => void;
-}
-
-/** Interne Socket-Daten pro verbundenem Client */
-export interface SocketData {
-  userId: string;
-  username: string;
-  currentLobbyId?: string;
-  /** 'game' = Spielclient; 'panel' = Social-Panel (selber User, selbes Gerät) */
-  clientType: 'game' | 'panel';
-}
-
-
+export * from './events';
+export * from './errors';

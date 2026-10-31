@@ -99,6 +99,7 @@ Each game can store arbitrary JSON values per user, per key. Keys have a `visibi
 | [C# SDK](sdk-csharp.md) | `EthernalCosmos.Client` .NET 8 SDK — for C# game servers |
 | [REST API](rest-api.md) | HTTP endpoints — auth, user data, leaderboard |
 | [Socket Events](socket-events.md) | All socket.io events — client→server and server→client |
+| [Server Feature Spec](server-feature-spec.md) | As-is behaviour catalogue (IDs, quirks, gaps, test plan) for matching against requirements |
 
 ---
 
