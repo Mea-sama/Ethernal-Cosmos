@@ -319,10 +319,15 @@ Emitted to the creating client after `createLobby`. Lobby object:
   isPrivate:   boolean;
   inviteCode?: string;      // 6-char code, e.g. "A1B2C3"; only present when isPrivate=true
   hostId:      string;
-  players:     Array<{ userId: string; username: string; isHost: boolean }>;
+  players:     Array<{ userId: string; username: string; isHost: boolean; connected?: boolean; disconnectedAt?: number }>;
   maxPlayers:  number;      // Set by the game registry; client cannot override
-  status:      'open' | 'full' | 'closed';
+  status:      LobbyStatus; // open | full | in_progress | closed  (see enums.md#lobbystatus)
   settings:    Record<string, unknown>;  // Game-defined config passed at creation
+  locked?:     boolean;     // join requests required
+  server?:     { serverId: string; region?: string };  // bound game server (members only)
+  serverStatus?: LobbyServerStatus;  // ok | lost | draining (see enums.md#lobbyserverstatus)
+  serverBound?: boolean;    // listings only: a game server is bound (server id is hidden)
+  region?:     string;      // listings only
   createdAt:   number;      // Unix ms timestamp
 }
 ```
@@ -332,10 +337,13 @@ Emitted to the creating client after `createLobby`. Lobby object:
 #### `lobbyUpdated`
 
 ```ts
-socket.on('lobbyUpdated', (lobby: Lobby) => { ... });
+socket.on('lobbyUpdated', (lobby: Lobby, reason?: LobbyChangeReason) => { ... });
 ```
 
-Emitted to all lobby members when someone joins or leaves.
+Emitted to all lobby members whenever the lobby changes. `reason` is a [`LobbyChangeReason`](enums.md#lobbychangereason)
+(`player_joined`, `host_transferred`, `settings_changed`, `server_lost`, `server_rebound`, ...) and tells you *why*, so clients can react
+without diffing. Node SDK: `client.on('lobbyUpdated', (lobby, reason) => reason === LobbyChangeReason.ServerLost)`;
+C#: `client.LobbyChanged += (lobby, reason) => ...`.
 
 ---
 
@@ -402,7 +410,7 @@ The host accepted — you have already been added to the lobby server-side, no f
 ```ts
 socket.on('joinRequestRejected', (data: {
   lobbyId: string;
-  reason: 'declined' | 'timeout' | 'host_changed' | 'lobby_closed';
+  reason: JoinRequestRejectReason; // see enums.md#joinrequestrejectreason
 }) => { ... });
 ```
 
@@ -411,10 +419,10 @@ socket.on('joinRequestRejected', (data: {
 #### `joinRequestWithdrawn` _(to host)_
 
 ```ts
-socket.on('joinRequestWithdrawn', (data: { requesterId: string; reason: 'cancelled' | 'timeout' }) => { ... });
+socket.on('joinRequestWithdrawn', (data: { requesterId: string; reason: JoinRequestWithdrawReason }) => { ... });
 ```
 
-A pending request disappeared before you responded (requester cancelled, or it timed out).
+A pending request disappeared before you responded (requester cancelled, or it timed out; see [`JoinRequestWithdrawReason`](enums.md#joinrequestwithdrawreason)).
 
 ---
 
@@ -463,6 +471,18 @@ socket.on('gameOver', (result: unknown) => { ... });
 ```
 
 Emitted when the game ends. `result` is game-specific.
+
+---
+
+#### `gameCrashed`
+
+```ts
+socket.on('gameCrashed', (data: { lobbyId: string; code: number | null }) => { ... });
+```
+
+The game process or its game server was lost and the lobby was closed. `code` is the process exit code, or `null` when a game server was lost
+and no replacement took over. Not emitted for regular exits (after `gameOver`) and not when a lobby is rebound to another server
+(you get `lobbyUpdated` with reason `server_rebound` instead).
 
 ---
 

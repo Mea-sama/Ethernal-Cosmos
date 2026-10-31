@@ -3,168 +3,168 @@
 
 /** Lifecycle state of a lobby. */
 export const LobbyStatus = {
-  Open: 'open',
-  Full: 'full',
-  InProgress: 'in_progress',
-  Closed: 'closed',
+  Open: 'open', // accepting players
+  Full: 'full', // no free slot
+  InProgress: 'in_progress', // game running (late join only if the game allows it)
+  Closed: 'closed', // ended; kept briefly, then removed
 } as const;
 export type LobbyStatus = (typeof LobbyStatus)[keyof typeof LobbyStatus];
 
 /** Why a lobby changed; second argument of `lobbyUpdated` (and `lobby:updated` for game servers). */
 export const LobbyChangeReason = {
-  PlayerJoined: 'player_joined',
-  PlayerLeft: 'player_left',
-  HostLeft: 'host_left',
-  HostTransferred: 'host_transferred',
-  PlayerDisconnected: 'player_disconnected',
-  PlayerReconnected: 'player_reconnected',
-  StateChanged: 'state_changed',
-  Locked: 'locked',
-  Unlocked: 'unlocked',
-  Kicked: 'kicked',
-  SettingsChanged: 'settings_changed',
-  ServerLost: 'server_lost',
-  ServerResumed: 'server_resumed',
-  ServerDraining: 'server_draining',
-  ServerRebound: 'server_rebound',
+  PlayerJoined: 'player_joined', // a player joined
+  PlayerLeft: 'player_left', // a player left voluntarily
+  HostLeft: 'host_left', // the host left and the lobby was closed or migrated (see game host-migration policy)
+  HostTransferred: 'host_transferred', // host role passed to another player
+  PlayerDisconnected: 'player_disconnected', // a player lost connection and is in the reconnect grace period
+  PlayerReconnected: 'player_reconnected', // a disconnected player came back
+  StateChanged: 'state_changed', // lobby status changed (e.g. open to in_progress or closed)
+  Locked: 'locked', // host locked the lobby (join requests required)
+  Unlocked: 'unlocked', // host unlocked the lobby
+  Kicked: 'kicked', // a player was kicked
+  SettingsChanged: 'settings_changed', // lobby settings were changed
+  ServerLost: 'server_lost', // the game server connection was lost (resume grace running); after the grace the lobby is rebound, closed or continues serverless
+  ServerResumed: 'server_resumed', // the lost game server reconnected in time
+  ServerDraining: 'server_draining', // the game server started or stopped draining (see serverStatus)
+  ServerRebound: 'server_rebound', // the lobby moved to another game server after the previous one was lost
 } as const;
 export type LobbyChangeReason = (typeof LobbyChangeReason)[keyof typeof LobbyChangeReason];
 
 /** Health of the game server bound to a lobby (`Lobby.serverStatus`). */
 export const LobbyServerStatus = {
-  Ok: 'ok',
-  Lost: 'lost',
-  Draining: 'draining',
+  Ok: 'ok', // server connected and accepting
+  Lost: 'lost', // server connection lost, resume grace running
+  Draining: 'draining', // server finishes existing lobbies and accepts no new ones
 } as const;
 export type LobbyServerStatus = (typeof LobbyServerStatus)[keyof typeof LobbyServerStatus];
 
 /** Whether a game uses game servers (`GameInfo.serverSupport`). */
 export const ServerSupport = {
-  None: 'none',
-  Optional: 'optional',
-  Required: 'required',
+  None: 'none', // game never uses a game server
+  Optional: 'optional', // lobbies may use a game server if one is available (client can opt out)
+  Required: 'required', // lobbies need a game server; creation fails without one
 } as const;
 export type ServerSupport = (typeof ServerSupport)[keyof typeof ServerSupport];
 
 /** Why a game server is asked to take a lobby (`lobby:assigned`). `server_rebound` = takeover of a lobby whose previous server was lost; the lobby already has state, settings and players. */
 export const LobbyAssignReason = {
-  NewLobby: 'new_lobby',
-  ServerRebound: 'server_rebound',
+  NewLobby: 'new_lobby', // fresh lobby that was just created
+  ServerRebound: 'server_rebound', // takeover of a lobby whose previous server was lost: the lobby already has state, settings and players; `previousServerId` and `lostAt` are set and the game state must be recovered or restarted
 } as const;
 export type LobbyAssignReason = (typeof LobbyAssignReason)[keyof typeof LobbyAssignReason];
 
 /** Why the hub tells a game server that a lobby ended (`lobby:closed`). */
 export const LobbyClosedReason = {
-  Closed: 'closed',
-  Dissolved: 'dissolved',
-  HostLeft: 'host_left',
-  Reassigned: 'reassigned',
+  Closed: 'closed', // lobby closed normally
+  Dissolved: 'dissolved', // last player left
+  HostLeft: 'host_left', // host left and policy closes the lobby
+  Reassigned: 'reassigned', // lobby moved to another server
 } as const;
 export type LobbyClosedReason = (typeof LobbyClosedReason)[keyof typeof LobbyClosedReason];
 
 /** Why a player left a lobby (`player:left` for game servers). */
 export const PlayerLeftReason = {
-  Left: 'left',
-  Kicked: 'kicked',
-  Timeout: 'timeout',
+  Left: 'left', // player left voluntarily
+  Kicked: 'kicked', // player was kicked
+  Timeout: 'timeout', // reconnect grace expired
 } as const;
 export type PlayerLeftReason = (typeof PlayerLeftReason)[keyof typeof PlayerLeftReason];
 
 /** Reason of `session:replaced`. */
 export const SessionReplacedReason = {
-  NewSession: 'new_session',
+  NewSession: 'new_session', // the same account connected from a new session
 } as const;
 export type SessionReplacedReason = (typeof SessionReplacedReason)[keyof typeof SessionReplacedReason];
 
 /** Why a join request was rejected or ended. */
 export const JoinRequestRejectReason = {
-  Declined: 'declined',
-  Timeout: 'timeout',
-  HostChanged: 'host_changed',
-  LobbyClosed: 'lobby_closed',
-  Unlocked: 'unlocked',
-  AlreadyInLobby: 'already_in_lobby',
-  LobbyFull: 'lobby_full',
-  Superseded: 'superseded',
+  Declined: 'declined', // host declined
+  Timeout: 'timeout', // host did not answer in time
+  HostChanged: 'host_changed', // the host changed; request must be repeated
+  LobbyClosed: 'lobby_closed', // lobby closed
+  Unlocked: 'unlocked', // lobby was unlocked (join directly)
+  AlreadyInLobby: 'already_in_lobby', // requester joined another lobby
+  LobbyFull: 'lobby_full', // no free slot
+  Superseded: 'superseded', // replaced by a newer request
 } as const;
 export type JoinRequestRejectReason = (typeof JoinRequestRejectReason)[keyof typeof JoinRequestRejectReason];
 
 /** Why a join request was withdrawn (`joinRequestWithdrawn`). */
 export const JoinRequestWithdrawReason = {
-  Cancelled: 'cancelled',
-  Timeout: 'timeout',
+  Cancelled: 'cancelled', // requester cancelled
+  Timeout: 'timeout', // request expired
 } as const;
 export type JoinRequestWithdrawReason = (typeof JoinRequestWithdrawReason)[keyof typeof JoinRequestWithdrawReason];
 
 /** Who can read a user data entry. */
 export const DataVisibility = {
-  Private: 'private',
-  Lobby: 'lobby',
-  Public: 'public',
+  Private: 'private', // only the owner
+  Lobby: 'lobby', // owner and lobby members
+  Public: 'public', // everyone (also on leaderboards)
 } as const;
 export type DataVisibility = (typeof DataVisibility)[keyof typeof DataVisibility];
 
 /** Who may write a user data entry. */
 export const DataWriteScope = {
-  Client: 'client',
-  Server: 'server',
+  Client: 'client', // owner client may write
+  Server: 'server', // only the game server may write
 } as const;
 export type DataWriteScope = (typeof DataWriteScope)[keyof typeof DataWriteScope];
 
 /** How a friend request was initiated. */
 export const FriendRequestSource = {
-  Name: 'name',
-  Lobby: 'lobby',
+  Name: 'name', // sent by username
+  Lobby: 'lobby', // sent to a player in the same lobby
 } as const;
 export type FriendRequestSource = (typeof FriendRequestSource)[keyof typeof FriendRequestSource];
 
 /** Answer to a friend request by name (never reveals more). */
 export const FriendRequestResult = {
-  RequestSent: 'REQUEST_SENT',
-  NoSuchPlayer: 'NO_SUCH_PLAYER',
+  RequestSent: 'REQUEST_SENT', // request recorded (also returned for existing players, duplicates and self-requests)
+  NoSuchPlayer: 'NO_SUCH_PLAYER', // no player with that name
 } as const;
 export type FriendRequestResult = (typeof FriendRequestResult)[keyof typeof FriendRequestResult];
 
 /** Status a user can set for themselves. */
 export const OwnPresenceStatus = {
-  Online: 'online',
-  Away: 'away',
-  Busy: 'busy',
-  Invisible: 'invisible',
+  Online: 'online', // visible as online
+  Away: 'away', // visible as away
+  Busy: 'busy', // visible as busy
+  Invisible: 'invisible', // appears offline to friends
 } as const;
 export type OwnPresenceStatus = (typeof OwnPresenceStatus)[keyof typeof OwnPresenceStatus];
 
 /** Status of a friend as seen by others. */
 export const FriendPresenceStatus = {
-  Online: 'online',
-  Away: 'away',
-  Busy: 'busy',
-  Offline: 'offline',
+  Online: 'online', // friend is online
+  Away: 'away', // friend is away
+  Busy: 'busy', // friend is busy
+  Offline: 'offline', // friend is offline or invisible
 } as const;
 export type FriendPresenceStatus = (typeof FriendPresenceStatus)[keyof typeof FriendPresenceStatus];
 
 /** Why a lobby invite ended (`lobby:inviteCancelled`). */
 export const LobbyInviteCancelReason = {
-  Cancelled: 'cancelled',
-  Expired: 'expired',
-  LobbyClosed: 'lobby_closed',
-  LobbyFull: 'lobby_full',
-  Left: 'left',
-  Unfriended: 'unfriended',
+  Cancelled: 'cancelled', // sender cancelled
+  Expired: 'expired', // invite timed out
+  LobbyClosed: 'lobby_closed', // lobby closed
+  LobbyFull: 'lobby_full', // lobby has no free slot
+  Left: 'left', // sender left the lobby
+  Unfriended: 'unfriended', // friendship ended
 } as const;
 export type LobbyInviteCancelReason = (typeof LobbyInviteCancelReason)[keyof typeof LobbyInviteCancelReason];
 
 /** Type of a persisted notification. */
 export const NotificationType = {
-  FriendRequest: 'friend_request',
-  FriendAccepted: 'friend_accepted',
-  FriendRemoved: 'friend_removed',
-  Dm: 'dm',
-  LobbyInvite: 'lobby_invite',
-  LobbyInviteCancelled: 'lobby_invite_cancelled',
-  FriendOnline: 'friend_online',
-  Kicked: 'kicked',
-  System: 'system',
+  FriendRequest: 'friend_request', // incoming friend request
+  FriendAccepted: 'friend_accepted', // your request was accepted
+  FriendRemoved: 'friend_removed', // a friend removed you
+  Dm: 'dm', // direct message (collapsed per conversation)
+  LobbyInvite: 'lobby_invite', // invited to a lobby
+  LobbyInviteCancelled: 'lobby_invite_cancelled', // an invite ended
+  FriendOnline: 'friend_online', // a friend came online (only sent while you are online)
+  Kicked: 'kicked', // you were kicked from a lobby
+  System: 'system', // hub announcement
 } as const;
 export type NotificationType = (typeof NotificationType)[keyof typeof NotificationType];
 
