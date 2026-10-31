@@ -2,13 +2,34 @@ import type {
   Lobby,
   GameInfo,
   JoinRequestRejectReason,
-  PresenceUser,
+  LobbyChangeReason,
   RelayMessage,
   RelayBinaryMessage,
   UserDataEntry,
   DataVisibility,
 } from './index';
 import type { Ack, HubErrorPayload } from './errors';
+import type { ServerPreference } from './gameserver';
+import type {
+  FriendInfo,
+  FriendRequestInfo,
+  FriendRequestResult,
+  FriendRequestsResult,
+  FriendPresence,
+  SocialSettings,
+  SocialSnapshot,
+  HubNotification,
+  NotificationBacklog,
+  NotificationCounts,
+  NotificationListResult,
+  NotificationType,
+  DirectMessage,
+  DmConversation,
+  DmHistoryResult,
+  LobbyInvite,
+  LobbyInviteCancelReason,
+  FriendLobbyInfo,
+} from './social';
 
 /** Aktuelle Protokollversion; wird im `hello`-Event mitgeschickt. Bei Breaking Changes erhöhen. */
 export const PROTOCOL_VERSION = 2;
@@ -19,7 +40,8 @@ export type ServerCapability =
   | 'gameRegistration'
   | 'reconnect'
   | 'userDataWriteScope'
-  | 'userDataSocketWrite';
+  | 'userDataSocketWrite'
+  | 'social';
 
 export interface HelloPayload {
   protocolVersion: number;
@@ -60,12 +82,15 @@ export interface ClientToServerEvents {
     ack?: Ack<{ game: GameInfo; state: SessionState }>
   ) => void;
 
+  /** Access-Token erneuern, ohne die Verbindung zu verlieren (sonst AUTH_EXPIRED + Disconnect nach Gnadenfrist) */
+  'auth:refresh': (data: { token: string }, ack?: Ack<{ expiresAt: number }>) => void;
+
   /** Aktuellen Session-Zustand abrufen (Pull-Variante zu `hello`/`session:resumed`) */
   'session:getState': (ack?: Ack<{ state: SessionState; lobby?: Lobby }>) => void;
 
   /** Neue Lobby für das registrierte Spiel erstellen – maxPlayers kommt aus der Game-Registry */
   createLobby: (
-    data: { name: string; isPrivate?: boolean; settings?: Record<string, unknown>; requestId?: string },
+    data: { name: string; isPrivate?: boolean; settings?: Record<string, unknown>; serverPreference?: ServerPreference; requestId?: string },
     ack?: Ack<{ lobby: Lobby }>
   ) => void;
 
@@ -95,6 +120,9 @@ export interface ClientToServerEvents {
 
   /** Host: Lobby sperren — Beitritt (auch per Invite-Code) erfordert danach eine Anfrage */
   lockLobby: (ack?: Ack) => void;
+
+  /** Host: Lobby-Zustand setzen (für Relay-Spiele ohne Subprocess): in_progress oder closed */
+  setLobbyState: (data: { state: 'in_progress' | 'closed'; requestId?: string }, ack?: Ack<{ lobby: Lobby }>) => void;
 
   /** Host: Lobby wieder entsperren */
   unlockLobby: (ack?: Ack) => void;
@@ -144,8 +172,40 @@ export interface ClientToServerEvents {
     ack?: Ack<{ playerId: string; gameId: string; entries: UserDataEntry[] }>
   ) => void;
 
-  /** Aktuelle Online-Präsenz-Liste anfordern */
-  'presence:list': (ack?: Ack<{ users: PresenceUser[] }>) => void;
+  // ── Social (siehe docs/social-api.md) ──
+  /** Freundschaftsanfrage per Username ODER (nur Lobby-Mitglieder) per userId */
+  'friend:request': (data: { username?: string; userId?: string; requestId?: string }, ack?: Ack<{ result: FriendRequestResult }>) => void;
+  'friend:respond': (data: { requestId: string; accept: boolean }, ack?: Ack) => void;
+  'friend:cancel': (data: { requestId: string }, ack?: Ack) => void;
+  'friend:remove': (data: { friendId: string }, ack?: Ack) => void;
+  'friend:list': (ack?: Ack<{ friends: FriendInfo[] }>) => void;
+  'friend:requests': (ack?: Ack<FriendRequestsResult>) => void;
+  /** Aktuelle Presence aller Freunde (Pull-Variante zu `friend:presence`) */
+  'presence:friends': (ack?: Ack<{ presence: FriendPresence[] }>) => void;
+  'social:getSettings': (ack?: Ack<{ settings: SocialSettings }>) => void;
+  'social:setSettings': (
+    data: Partial<Omit<SocialSettings, 'mutedNotificationTypes'>> & { mutedNotificationTypes?: NotificationType[] },
+    ack?: Ack<{ settings: SocialSettings }>
+  ) => void;
+  'social:sync': (data?: { etag?: string } | Ack<SocialSnapshot | { notModified: true; etag: string }>, ack?: Ack<SocialSnapshot | { notModified: true; etag: string }>) => void;
+  'social:friendLobby': (data: { friendId: string }, ack?: Ack<{ lobby: FriendLobbyInfo | null }>) => void;
+  'notification:list': (
+    data: { since?: number; unreadOnly?: boolean; limit?: number; cursor?: string } | Ack<NotificationListResult>,
+    ack?: Ack<NotificationListResult>
+  ) => void;
+  'notification:markRead': (data: { ids?: string[]; upTo?: number }, ack?: Ack<{ marked: number; unread: number }>) => void;
+  'notification:counts': (ack?: Ack<NotificationCounts>) => void;
+  'dm:send': (data: { toUserId: string; text: string }, ack?: Ack<{ message: DirectMessage }>) => void;
+  'dm:history': (data: { withUserId: string; before?: number; limit?: number }, ack?: Ack<DmHistoryResult>) => void;
+  'dm:conversations': (ack?: Ack<{ conversations: DmConversation[] }>) => void;
+  'dm:markRead': (data: { withUserId: string }, ack?: Ack<{ marked: number }>) => void;
+  'dm:typing': (data: { toUserId: string }, ack?: Ack) => void;
+  'lobby:invite': (data: { friendId: string }, ack?: Ack<{ invite: LobbyInvite }>) => void;
+  'lobby:cancelInvite': (data: { inviteId: string }, ack?: Ack) => void;
+  'lobby:acceptInvite': (data: { inviteId: string }, ack?: Ack<{ lobby: Lobby }>) => void;
+  'lobby:declineInvite': (data: { inviteId: string }, ack?: Ack) => void;
+  'lobby:invites': (ack?: Ack<{ invites: LobbyInvite[] }>) => void;
+  'lobby:joinFriend': (data: { friendId: string }, ack?: Ack<{ pending: boolean; lobby?: Lobby }>) => void;
 }
 
 /** Events vom Haupt-Server zum Client */
@@ -164,7 +224,10 @@ export interface ServerToClientEvents {
   lobbyCreated: (lobby: Lobby) => void;
 
   /** Lobby-Zustand hat sich geändert (Spieler beigetreten/verlassen/getrennt, Host, Lock …) */
-  lobbyUpdated: (lobby: Lobby) => void;
+  lobbyUpdated: (lobby: Lobby, reason?: LobbyChangeReason) => void;
+
+  /** Der Game-Subprocess ist abgestürzt; die Lobby wird geschlossen und nach einer TTL freigegeben */
+  gameCrashed: (data: { lobbyId: string; code: number | null }) => void;
 
   /** Aktuelle Lobby-Liste als Antwort auf listLobbies */
   lobbyList: (lobbies: Lobby[]) => void;
@@ -205,14 +268,22 @@ export interface ServerToClientEvents {
   /** Antwort auf getPlayerData — sichtbare Daten eines anderen Spielers */
   playerData: (data: { playerId: string; gameId: string; entries: UserDataEntry[] }) => void;
 
-  /** Ein User hat sich verbunden / seinen Lobby-Kontext geändert (Presence) */
-  'presence:joined': (user: PresenceUser) => void;
-
-  /** Ein User hat die Verbindung getrennt (Presence) */
-  'presence:left': (data: { userId: string }) => void;
-
-  /** Antwort auf presence:list */
-  'presence:list': (users: PresenceUser[]) => void;
+  /** Presence-Änderung eines Freundes (nur an Freunde; ersetzt die globalen presence:* Events) */
+  'friend:presence': (presence: FriendPresence) => void;
+  'friend:requestReceived': (data: { request: FriendRequestInfo }) => void;
+  'friend:requestAccepted': (data: { friend: FriendInfo; requestId?: string }) => void;
+  'friend:requestDeclined': (data: { requestId: string; user: FriendInfo }) => void;
+  'friend:requestCancelled': (data: { requestId: string }) => void;
+  'friend:removed': (data: { userId: string }) => void;
+  notification: (notification: HubNotification) => void;
+  'notification:backlog': (data: NotificationBacklog) => void;
+  'dm:received': (message: DirectMessage) => void;
+  'dm:delivered': (data: { byUserId: string; messageIds: string[] }) => void;
+  'dm:read': (data: { byUserId: string; upToSeq: number }) => void;
+  'dm:typing': (data: { fromUserId: string }) => void;
+  'lobby:inviteReceived': (invite: LobbyInvite) => void;
+  'lobby:inviteCancelled': (data: { inviteId: string; lobbyId: string; reason: LobbyInviteCancelReason }) => void;
+  'lobby:inviteDeclined': (data: { inviteId: string; userId: string }) => void;
 
   /** Host: eine neue Beitrittsanfrage ist eingegangen */
   joinRequestReceived: (data: { lobbyId: string; requesterId: string; username: string }) => void;
@@ -237,4 +308,6 @@ export interface SocketData {
   sessionId: string;
   /** 'game' = Spielclient; 'panel' = Social-Panel (selber User, selbes Gerät) */
   clientType: 'game' | 'panel';
+  /** Ablaufzeit des Access-Tokens (ms seit Epoch) */
+  tokenExpiresAt?: number;
 }

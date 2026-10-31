@@ -92,7 +92,7 @@ describe('Lobby-Workflow (#17)', () => {
     c.close();
   });
 
-  it('private Lobby: Beitritt per ID verboten, per Code erlaubt; nicht in Liste und nicht in Presence', async () => {
+  it('private Lobby: Beitritt per ID verboten, per Code erlaubt; nicht in Liste und nicht in Presence-Broadcasts', async () => {
     const host = await connectRegistered(hub, await registerUser(hub), 'relay');
     const guest = await connectRegistered(hub, await registerUser(hub), 'relay');
     const spy = await connectRegistered(hub, await registerUser(hub), 'relay');
@@ -104,10 +104,10 @@ describe('Lobby-Workflow (#17)', () => {
     expect((await guest.emitAck('joinLobby', { lobbyId: created.lobby.id })).error.code).toBe('LOBBY_PRIVATE');
     expect((await guest.emitAck('requestJoinLobby', { lobbyId: created.lobby.id })).error.code).toBe('LOBBY_PRIVATE');
 
-    const { users } = await spy.emitAck('presence:list');
-    const hostPresence = users.find((p: any) => p.userId === host.user.userId);
-    expect(hostPresence.lobbyId).toBeUndefined();
-    expect(hostPresence.lobbyStatus).toBeUndefined();
+    // Presence geht nur noch an Freunde — der Fremde erhält weder Events noch die Lobby-ID
+    await new Promise((r) => setTimeout(r, 150));
+    expect(spy.events.some((e) => e.event.startsWith('presence:') || e.event === 'friend:presence')).toBe(false);
+    expect(JSON.stringify(spy.events)).not.toContain(created.lobby.id);
 
     const joined = await guest.emitAck('joinLobbyByCode', { code: created.lobby.inviteCode.toLowerCase() });
     expect(joined.ok).toBe(true);
@@ -201,7 +201,7 @@ describe('Relay (#11)', () => {
     await b.emitAck('joinLobby', { lobbyId: lobby.id });
 
     expect((await a.emitAck('sendToLobby', { type: 'hi', payload: 1 })).ok).toBe(true);
-    expect(await b.waitFor('message')).toEqual({ from: a.user.userId, type: 'hi', payload: 1 });
+    expect(await b.waitFor('message')).toMatchObject({ from: a.user.userId, type: 'hi', payload: 1 });
     expect(a.count('message')).toBe(0);
 
     expect((await a.emitAck('sendToPlayer', { playerId: b.user.userId, type: 'dm', payload: 2 })).ok).toBe(true);
@@ -219,6 +219,35 @@ describe('Relay (#11)', () => {
     expect((await a.emitAck('sendToLobbyBinary', { typeCode: 1, payload: new Uint8Array(5000) })).error.code).toBe('BINARY_PAYLOAD_TOO_LARGE');
     expect((await a.emitAck('sendToLobbyBinary', { typeCode: 1, payload: new Uint8Array([1, 2]) })).ok).toBe(true);
     expect((await b.waitFor('messageBinary')).typeCode).toBe(1);
+    a.close(); b.close();
+  });
+});
+
+describe('P1 Lobby-Lebenszyklus & Relay-Härtung', () => {
+  it('setLobbyState: nur Host, in_progress sperrt Beitritt, closed ist final', async () => {
+    const host = await connectRegistered(hub, await registerUser(hub), 'relay');
+    const other = await connectRegistered(hub, await registerUser(hub), 'relay');
+    const { lobby } = await host.emitAck('createLobby', { name: 'st' });
+    await other.emitAck('joinLobby', { lobbyId: lobby.id });
+    expect((await other.emitAck('setLobbyState', { state: 'in_progress' })).ok).toBe(false);
+    const res = await host.emitAck('setLobbyState', { state: 'in_progress' });
+    expect(res.lobby.status).toBe('in_progress');
+    expect((await host.emitAck('setLobbyState', { state: 'in_progress' })).error.code).toBe('INVALID_STATE');
+    expect((await host.emitAck('setLobbyState', { state: 'closed' })).lobby.status).toBe('closed');
+    host.close(); other.close();
+  });
+
+  it('Relay: ungültiger Typ, zu großer Payload, Self-Target, seq', async () => {
+    const a = await connectRegistered(hub, await registerUser(hub), 'relay');
+    const b = await connectRegistered(hub, await registerUser(hub), 'relay');
+    const { lobby } = await a.emitAck('createLobby', { name: 'rl' });
+    await b.emitAck('joinLobby', { lobbyId: lobby.id });
+    expect((await a.emitAck('sendToLobby', { type: 'bad type!', payload: 1 })).error.code).toBe('INVALID_MESSAGE_TYPE');
+    expect((await a.emitAck('sendToLobby', { type: 't', payload: 'x'.repeat(20000) })).error.code).toBe('PAYLOAD_TOO_LARGE');
+    expect((await a.emitAck('sendToPlayer', { playerId: a.user.userId, type: 't', payload: 1 })).error.code).toBe('CANNOT_TARGET_SELF');
+    const r1 = await a.emitAck('sendToLobby', { type: 't', payload: 1 });
+    const r2 = await a.emitAck('sendToLobby', { type: 't', payload: 2 });
+    expect(r2.seq).toBe(r1.seq + 1);
     a.close(); b.close();
   });
 });

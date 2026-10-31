@@ -7,7 +7,6 @@ export type {
   Lobby,
   UserDataEntry,
   DataVisibility,
-  PresenceUser,
   RelayMessage,
   RelayBinaryMessage,
   ErrorCode,
@@ -16,4 +15,8 @@ export type {
   SessionState,
   HelloPayload,
   BulkDataEntry,
+  FriendInfo, FriendRequestInfo, FriendRequestResult, FriendRequestsResult, FriendPresence, FriendPresenceStatus,
+  OwnPresenceStatus, SocialSettings, SocialSnapshot, HubNotification, NotificationType, NotificationBacklog,
+  NotificationCounts, NotificationListResult, DirectMessage, DmConversation, DmHistoryResult, LobbyInvite,
+  LobbyInviteCancelReason, FriendLobbyInfo,
 } from './EthernalClient';

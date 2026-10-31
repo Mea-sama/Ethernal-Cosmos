@@ -29,7 +29,10 @@ export interface AuthResult {
 
 // ─── Lobby ───────────────────────────────────────────────────────────────────
 
-export type LobbyStatus = 'open' | 'full' | 'closed';
+export type LobbyStatus = 'open' | 'full' | 'in_progress' | 'closed';
+
+/** Grund einer Lobby-Änderung (zweites Argument von `lobbyUpdated`) */
+export type LobbyChangeReason = 'player_joined' | 'player_left' | 'host_left' | 'host_transferred' | 'player_disconnected' | 'player_reconnected' | 'state_changed' | 'locked' | 'unlocked' | 'kicked' | 'settings_changed';
 
 export interface LobbyPlayer {
   userId: string;
@@ -56,6 +59,14 @@ export interface Lobby {
   inviteCode?: string;
   /** Spiel-spezifische Einstellungen, die der Host beim Erstellen setzt */
   settings: Record<string, unknown>;
+  /** Nur in Listings: kann man derzeit beitreten? */
+  joinable?: boolean;
+  /** Game-Server dieser Lobby (nur für Mitglieder; in Listings ersetzt durch serverBound/region) */
+  server?: LobbyServerBinding;
+  /** Nur in Listings: läuft die Lobby auf einem Game-Server? */
+  serverBound?: boolean;
+  /** Nur in Listings: Region des Game-Servers */
+  region?: string;
   /** true = serverseitig verwaltetes Spiel; false = externe App */
   hosted: boolean;
   /** true = Beitritt (auch per Invite-Code) erfordert eine vom Host angenommene Beitrittsanfrage */
@@ -64,7 +75,8 @@ export interface Lobby {
 }
 
 /** Grund, warum eine Beitrittsanfrage abgelehnt/beendet wurde */
-export type JoinRequestRejectReason = 'declined' | 'timeout' | 'host_changed' | 'lobby_closed';
+export type JoinRequestRejectReason =
+  | 'declined' | 'timeout' | 'host_changed' | 'lobby_closed' | 'unlocked' | 'already_in_lobby' | 'lobby_full' | 'superseded';
 
 // ─── Game Registry ───────────────────────────────────────────────────────────
 
@@ -95,12 +107,34 @@ export interface GameInfo {
   publicSettingKeys?: string[];
   /** Keys (Regex-Strings, auf den ganzen Key angewendet), die nur der Game-Subprocess schreiben darf. */
   serverKeys?: string[];
+  /** Darf man einer Lobby im Status in_progress beitreten? Default false. */
+  joinInProgress?: boolean;
+  /** Was passiert, wenn der Host geht: 'transfer' (Default, bevorzugt verbundene Spieler), 'next_connected' (nur verbundene, sonst auflösen), 'dissolve'. */
+  hostMigration?: 'transfer' | 'next_connected' | 'dissolve';
+  /** Max. Größe binärer Relay-Nachrichten in Bytes (überschreibt den Hub-Default). */
+  maxBinaryBytes?: number;
+  /** Zusätzliche Umgebungsvariablen, die an den Subprocess durchgereicht werden dürfen. */
+  envPassthrough?: string[];
+  /** Unterstützt das Spiel Game-Server-Anwendungen? 'none' (Default): nie; 'optional': Lobby darf mit oder ohne Server laufen; 'required': Lobbys brauchen immer einen Server. */
+  serverSupport?: ServerSupport;
+  /** Bekannte Regionen für Game-Server (nur sinnvoll bei serverSupport != 'none'). */
+  regions?: string[];
+}
+
+export type ServerSupport = 'none' | 'optional' | 'required';
+
+/** Bindung einer Lobby an einen Game-Server (0..1 pro Lobby). Mitglieder sehen die serverId, Listings nicht. */
+export interface LobbyServerBinding {
+  serverId: string;
+  region?: string;
 }
 
 // ─── IPC: Hub ↔ Game-Subprocess ─────────────────────────────────────────────
 
 /** Nachrichten vom Hub an den Game-Subprocess (via IPC) */
 export type IpcHubToGame =
+  /** Erste Nachricht nach dem Spawn: Lobby-Kontext (ersetzt die Env-Variablen als Quelle der Wahrheit) */
+  | { type: 'INIT'; payload: { lobbyId: string; gameId: string; settings: Record<string, unknown>; players: Array<{ userId: string; username: string }> } }
   | { type: 'PLAYER_ACTION'; payload: { userId: string; action: string; data: unknown } }
   /** Neuer Spieler hat die Lobby betreten (nach dem initialen Spawn) */
   | { type: 'PLAYER_JOIN'; payload: { userId: string; username: string } }
@@ -122,6 +156,8 @@ export type IpcGameToHub =
   /** Wie GAME_STATE, aber nur an den Socket dieses einen Users gesendet (nicht an den ganzen Raum) */
   | { type: 'GAME_STATE_FOR_USER'; payload: { userId: string; state: unknown } }
   | { type: 'GAME_EVENT'; payload: { type: string; data: unknown } }
+  /** Das Spiel hat begonnen: Lobby wechselt in den Status in_progress */
+  | { type: 'GAME_STARTED' }
   | { type: 'GAME_OVER'; payload: unknown }
   /**
    * Subprocess schreibt Zusammenfassungsdaten für einen Spieler in die Hub-DB.
@@ -169,12 +205,15 @@ export interface PresenceUser {
 
 export interface RelayMessage<TPayload = unknown> {
   from: string;
+  /** Fortlaufende Nummer pro Lobby (Reihenfolge-Erkennung); fehlt bei Replays nicht */
+  seq?: number;
   type: string;
   payload: TPayload;
 }
 
 export interface RelayBinaryMessage<TPayload = Uint8Array> {
   from: string;
+  seq?: number;
   typeCode: number;
   payload: TPayload;
 }
@@ -201,3 +240,5 @@ export interface PanelAction {
 
 export * from './events';
 export * from './errors';
+export * from './social';
+export * from './gameserver';

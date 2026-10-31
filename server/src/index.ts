@@ -16,6 +16,11 @@ import { authRouter } from './auth/auth.router';
 import { userDataRouter, playerDataRouter, leaderboardRouter } from './user-data/userdata.router';
 import { dudgQuestionsRouter } from './games/dudg/dudg-questions.router';
 import { registerSocketAuth, registerLobbyHandlers, registerIpcRouting } from './lobby/lobby.socket';
+import { registerSocialHandlers } from './social/social.socket';
+import { registerGameServerNamespace } from './gameserver/gameserver.socket';
+import { gameServerAdminRouter } from './gameserver/admin.router';
+import { socialRouter } from './social/social.router';
+import { registerSocialJobs } from './social/social.jobs';
 import { listGames } from './games/game.registry';
 import { ALLOWED_ORIGINS, HOST, IS_PRODUCTION, PORT, isAllowedOrigin } from './config/env';
 import { serverLimits } from './config/limits';
@@ -121,6 +126,8 @@ const io = new Server<ClientToServerEvents, ServerToClientEvents, Record<string,
 registerSocketAuth(io);
 registerIpcRouting(io);
 registerLobbyHandlers(io);
+registerSocialHandlers(io);
+registerGameServerNamespace(io);
 
 // ─── REST Routes ─────────────────────────────────────────────────────────────
 
@@ -211,6 +218,8 @@ app.use('/auth', authRouter);
 app.use('/userdata', userDataRouter);
 app.use('/players', playerDataRouter);
 app.use('/leaderboard', leaderboardRouter);
+app.use('/social', socialRouter);
+app.use('/admin/game-servers', gameServerAdminRouter);
 app.use('/dudg/api/questions', dudgQuestionsRouter);
 
 // ─── Start ───────────────────────────────────────────────────────────────────
@@ -218,6 +227,7 @@ app.use('/dudg/api/questions', dudgQuestionsRouter);
 async function start(): Promise<void> {
   await initDatabase();
   registerMaintenanceJobs();
+  registerSocialJobs();
   startScheduler();
   httpServer.listen(PORT, HOST, () => {
     console.log(`[Server] Ethernal Cosmos Hub läuft auf ${HOST}:${PORT} (intern — HTTPS via Caddy auf :12346)`);

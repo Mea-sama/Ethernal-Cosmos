@@ -176,19 +176,6 @@ public sealed class JoinRequestWithdrawnData
     [JsonPropertyName("reason")]      public string Reason      { get; init; } = "";
 }
 
-public sealed class PresenceUser
-{
-    [JsonPropertyName("userId")]      public string  UserId      { get; init; } = "";
-    [JsonPropertyName("username")]    public string  Username    { get; init; } = "";
-    /// <summary>Lobby the user is currently in. Null when in Hub without a lobby.</summary>
-    [JsonPropertyName("lobbyId")]     public string? LobbyId     { get; init; }
-    /// <summary>Game the user is playing. Null when not in a game.</summary>
-    [JsonPropertyName("gameId")]      public string? GameId      { get; init; }
-    /// <summary>Status of the lobby the user is in. Only set when LobbyId is present.
-    /// "open" = joinable, "full" / "closed" = not joinable.</summary>
-    [JsonPropertyName("lobbyStatus")] public string? LobbyStatus { get; init; }
-}
-
 public sealed class HubErrorPayload
 {
     [JsonPropertyName("code")]         public string  Code         { get; init; } = "INTERNAL";

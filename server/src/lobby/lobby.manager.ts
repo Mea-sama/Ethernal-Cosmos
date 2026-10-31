@@ -1,6 +1,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import type { Lobby, LobbyPlayer, LobbyStatus } from '@ethernal/shared';
 import { HubError } from '../errors';
+import { getGame } from '../games/game.registry';
 
 const RECENT_LOBBY_TTL_MS = 60_000;
 
@@ -82,14 +83,14 @@ export class LobbyManager {
     if (!lobby) throw new HubError('LOBBY_NOT_FOUND');
     if (opts.gameId && lobby.gameId !== opts.gameId) throw new HubError('GAME_MISMATCH');
     if (lobby.isPrivate && !opts.viaCode) throw new HubError('LOBBY_PRIVATE');
-    if (lobby.status === 'closed') throw new HubError('LOBBY_CLOSED');
+    this.assertStatusJoinable(lobby);
     if (lobby.locked && !opts.bypassLock) throw new HubError('LOBBY_LOCKED');
     if (lobby.players.length >= lobby.maxPlayers) throw new HubError('LOBBY_FULL');
 
     lobby.players.push({ userId, username, isHost: false, connected: true });
     this.userLobbyIndex.set(userId, lobbyId);
     this.participants.get(lobbyId)?.add(userId);
-    if (lobby.players.length >= lobby.maxPlayers) {
+    if (lobby.status === 'open' && lobby.players.length >= lobby.maxPlayers) {
       lobby.status = 'full';
     }
     console.log(`[Lobby] "${username}" trat Lobby "${lobby.name}" bei`);
@@ -101,8 +102,13 @@ export class LobbyManager {
     if (this.userLobbyIndex.has(userId)) throw new HubError('ALREADY_IN_LOBBY');
     if (opts.gameId && lobby.gameId !== opts.gameId) throw new HubError('GAME_MISMATCH');
     if (lobby.isPrivate && !opts.viaCode) throw new HubError('LOBBY_PRIVATE');
-    if (lobby.status === 'closed') throw new HubError('LOBBY_CLOSED');
+    this.assertStatusJoinable(lobby);
     if (lobby.players.length >= lobby.maxPlayers) throw new HubError('LOBBY_FULL');
+  }
+
+  private assertStatusJoinable(lobby: Lobby): void {
+    if (lobby.status === 'closed') throw new HubError('LOBBY_CLOSED');
+    if (lobby.status === 'in_progress' && !getGame(lobby.gameId)?.joinInProgress) throw new HubError('LOBBY_IN_PROGRESS');
   }
 
   // ─── Verlassen / Entfernen ─────────────────────────────────────────────────
@@ -111,7 +117,7 @@ export class LobbyManager {
    * Entfernt den User aus seiner aktuellen Lobby.
    * Gibt die aktualisierte Lobby zurück, oder dissolved=true wenn die Lobby aufgelöst wurde.
    */
-  leaveLobby(userId: string): { lobby: Lobby | null; dissolved: boolean; lobbyId?: string } {
+  leaveLobby(userId: string): { lobby: Lobby | null; dissolved: boolean; lobbyId?: string; hostChanged?: boolean; evicted?: LobbyPlayer[] } {
     const lobbyId = this.userLobbyIndex.get(userId);
     if (!lobbyId) return { lobby: null, dissolved: false };
 
@@ -126,9 +132,18 @@ export class LobbyManager {
       return { lobby: null, dissolved: true, lobbyId };
     }
 
-    // Host-Rolle weitergeben — bevorzugt an einen verbundenen Spieler
+    // Host-Rolle weitergeben (Policy pro Spiel)
+    let hostChanged = false;
     if (lobby.hostId === userId) {
-      const newHost = lobby.players.find((p) => p.connected !== false) ?? lobby.players[0];
+      const policy = getGame(lobby.gameId)?.hostMigration ?? 'transfer';
+      const connected = lobby.players.find((p) => p.connected !== false);
+      if (policy === 'dissolve' || (policy === 'next_connected' && !connected)) {
+        const evicted = lobby.players;
+        this.removeLobby(lobbyId);
+        return { lobby: null, dissolved: true, lobbyId, evicted };
+      }
+      hostChanged = true;
+      const newHost = connected ?? lobby.players[0];
       newHost.isHost = true;
       lobby.hostId = newHost.userId;
       console.log(`[Lobby] Host-Übergabe an "${newHost.username}" in "${lobby.name}"`);
@@ -138,7 +153,7 @@ export class LobbyManager {
       lobby.status = 'open';
     }
 
-    return { lobby, dissolved: false, lobbyId };
+    return { lobby, dissolved: false, lobbyId, hostChanged };
   }
 
   /** Löscht eine Lobby vollständig (Auflösung oder Rollback bei fehlgeschlagenem Start). */
@@ -174,7 +189,36 @@ export class LobbyManager {
 
   setStatus(lobbyId: string, status: LobbyStatus): void {
     const lobby = this.lobbies.get(lobbyId);
-    if (lobby) lobby.status = status;
+    if (!lobby || lobby.status === 'closed') return;
+    lobby.status = status;
+  }
+
+  setServer(lobbyId: string, server: Lobby['server'] | undefined): void {
+    const lobby = this.lobbies.get(lobbyId);
+    if (lobby) lobby.server = server;
+  }
+
+  setSettings(lobbyId: string, settings: Record<string, unknown>): Lobby | null {
+    const lobby = this.lobbies.get(lobbyId);
+    if (!lobby || lobby.status === 'closed') return null;
+    lobby.settings = settings;
+    return lobby;
+  }
+
+  allLobbies(): Lobby[] {
+    return [...this.lobbies.values()];
+  }
+
+  /** Host setzt den Lobby-Zustand (Relay-Spiele): open/full → in_progress → closed; closed ist endgültig. */
+  setStateByHost(requesterId: string, state: 'in_progress' | 'closed'): Lobby {
+    const lobby = this.getLobbyByUserId(requesterId);
+    if (!lobby) throw new HubError('NOT_IN_LOBBY');
+    if (lobby.hostId !== requesterId) throw new HubError('NOT_HOST', 'Nur der Host kann den Lobby-Zustand ändern');
+    if (lobby.status === 'closed' || (state === 'in_progress' && lobby.status === 'in_progress')) {
+      throw new HubError('INVALID_STATE', 'Ungültiger Zustandswechsel');
+    }
+    lobby.status = state;
+    return lobby;
   }
 
   // ─── Abfragen ──────────────────────────────────────────────────────────────
@@ -190,7 +234,11 @@ export class LobbyManager {
 
   listLobbies(gameId: string): Lobby[] {
     return Array.from(this.lobbies.values()).filter(
-      (l) => l.gameId === gameId && l.status === 'open' && !l.isPrivate
+      (l) =>
+        l.gameId === gameId &&
+        !l.isPrivate &&
+        (l.status === 'open' ||
+          (l.status === 'in_progress' && !!getGame(gameId)?.joinInProgress && l.players.length < l.maxPlayers))
     );
   }
 

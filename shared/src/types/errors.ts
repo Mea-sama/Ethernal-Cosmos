@@ -40,6 +40,18 @@ export type ErrorCode =
   | 'CANNOT_KICK_SELF'
   | 'PLAYER_NOT_FOUND'
   | 'LOBBY_START_FAILED'
+  | 'LOBBY_IN_PROGRESS'
+  | 'INSTANCE_LIMIT'
+  | 'INVALID_STATE'
+  | 'CANNOT_TARGET_SELF'
+  | 'PAYLOAD_TOO_LARGE'
+  | 'INVALID_MESSAGE_TYPE'
+  | 'AUTH_EXPIRED'
+  | 'INVALID_SERVER_KEY'
+  | 'GAME_SERVER_NOT_ALLOWED'
+  | 'NO_GAME_SERVER_AVAILABLE'
+  | 'NOT_LOBBY_SERVER'
+  | 'SERVER_UNAVAILABLE'
   | 'SETTINGS_TOO_LARGE'
   | 'JOIN_REQUEST_NOT_FOUND'
   // Relay
@@ -54,7 +66,16 @@ export type ErrorCode =
   | 'DATA_READ_ONLY'
   | 'DATA_QUOTA_EXCEEDED'
   | 'DATA_VALUE_TOO_LARGE'
-  | 'DATA_KEY_NOT_FOUND';
+  | 'DATA_KEY_NOT_FOUND'
+  // Social
+  | 'NOT_FRIENDS'
+  | 'FRIEND_REQUEST_NOT_FOUND'
+  | 'FRIEND_LIMIT_REACHED'
+  | 'REQUEST_LIMIT_REACHED'
+  | 'FRIEND_OFFLINE'
+  | 'FRIEND_NOT_IN_LOBBY'
+  | 'INVITE_NOT_FOUND'
+  | 'MESSAGE_TOO_LONG';
 
 /** Fehlerobjekt, wie es in Acks, `errorDetail`-Events und REST-Antworten (`code`) vorkommt */
 export interface HubErrorPayload {

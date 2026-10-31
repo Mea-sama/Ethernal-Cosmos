@@ -7,7 +7,7 @@ import type { AuthPayload, AuthResult, PublicUser } from '@ethernal/shared';
 import { db } from '../db/database';
 import { BCRYPT_ROUNDS, JWT_SECRET } from '../config/env';
 
-const JWT_EXPIRES_IN = '1h';
+const JWT_EXPIRES_IN_SECONDS = Number(process.env.ACCESS_TOKEN_TTL_SECONDS) > 0 ? Number(process.env.ACCESS_TOKEN_TTL_SECONDS) : 3600;
 const REFRESH_TOKEN_EXPIRES_DAYS = 30;
 
 // ─── Validierungsschemas ─────────────────────────────────────────────────────
@@ -41,8 +41,8 @@ export async function registerUser(
 
   try {
     await db.execute({
-      sql: 'INSERT INTO users (id, username, password_hash, created_at) VALUES (?, ?, ?, ?)',
-      args: [id, username, passwordHash, createdAt],
+      sql: 'INSERT INTO users (id, username, username_lower, password_hash, created_at) VALUES (?, ?, ?, ?, ?)',
+      args: [id, username, username.toLowerCase(), passwordHash, createdAt],
     });
   } catch (err: unknown) {
     if (err instanceof Error && err.message.includes('UNIQUE constraint')) {
@@ -53,7 +53,7 @@ export async function registerUser(
 
   const user: PublicUser = { id, username };
   const payload: AuthPayload = { userId: id, username };
-  const accessToken = jwt.sign(payload, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
+  const accessToken = jwt.sign(payload, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN_SECONDS });
   const refreshToken = await createRefreshToken(id);
 
   return { user, accessToken, refreshToken };
@@ -64,8 +64,8 @@ export async function loginUser(
   password: string
 ): Promise<AuthResult> {
   const result = await db.execute({
-    sql: 'SELECT id, username, password_hash FROM users WHERE username = ?',
-    args: [username],
+    sql: 'SELECT id, username, password_hash FROM users WHERE username_lower = ?',
+    args: [username.toLowerCase()],
   });
 
   if (result.rows.length === 0) {
@@ -83,18 +83,18 @@ export async function loginUser(
     username: row.username as string,
   };
   const payload: AuthPayload = { userId: user.id, username: user.username };
-  const accessToken = jwt.sign(payload, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
+  const accessToken = jwt.sign(payload, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN_SECONDS });
   const refreshToken = await createRefreshToken(user.id);
 
   return { user, accessToken, refreshToken };
 }
 
 export function signToken(payload: AuthPayload): string {
-  return jwt.sign(payload, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
+  return jwt.sign(payload, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN_SECONDS });
 }
 
-export function verifyToken(token: string): AuthPayload {
-  return jwt.verify(token, JWT_SECRET) as AuthPayload;
+export function verifyToken(token: string): AuthPayload & { exp?: number } {
+  return jwt.verify(token, JWT_SECRET) as AuthPayload & { exp?: number };
 }
 
 // ─── Refresh-Token Verwaltung ────────────────────────────────────────────────
@@ -146,7 +146,7 @@ export async function rotateRefreshToken(rawToken: string): Promise<AuthResult> 
 
   const user: PublicUser = { id: userRow.id as string, username: userRow.username as string };
   const payload: AuthPayload = { userId: user.id, username: user.username };
-  const accessToken = jwt.sign(payload, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
+  const accessToken = jwt.sign(payload, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN_SECONDS });
   const refreshToken = await createRefreshToken(user.id);
 
   return { user, accessToken, refreshToken };
@@ -158,4 +158,27 @@ export async function revokeRefreshToken(rawToken: string): Promise<void> {
     sql: 'UPDATE refresh_tokens SET revoked = 1 WHERE token_hash = ?',
     args: [hash],
   });
+}
+
+/** Widerruft das Refresh-Token und liefert die zugehörige userId (null, wenn unbekannt). */
+export async function revokeRefreshTokenReturningUser(rawToken: string): Promise<string | null> {
+  const hash = hashToken(rawToken);
+  const res = await db.execute({ sql: 'SELECT user_id FROM refresh_tokens WHERE token_hash = ?', args: [hash] });
+  if (res.rows.length === 0) return null;
+  await db.execute({ sql: 'UPDATE refresh_tokens SET revoked = 1 WHERE token_hash = ?', args: [hash] });
+  return res.rows[0].user_id as string;
+}
+
+export async function revokeAllRefreshTokens(userId: string): Promise<void> {
+  await db.execute({ sql: 'UPDATE refresh_tokens SET revoked = 1 WHERE user_id = ?', args: [userId] });
+}
+
+type SessionTerminator = (userId: string) => void;
+let terminator: SessionTerminator = () => undefined;
+/** Vom Socket-Layer gesetzt: trennt alle Sockets eines Users (Logout/Revoke). */
+export function setSessionTerminator(fn: SessionTerminator): void {
+  terminator = fn;
+}
+export function terminateUserSessions(userId: string): void {
+  terminator(userId);
 }

@@ -72,13 +72,24 @@ public sealed class EthernalClient : IAsyncDisposable
     /// <summary>Host: a pending request was withdrawn (requester cancelled or it timed out).</summary>
     public event Action<JoinRequestWithdrawnData>? JoinRequestWithdrawn;
 
-    // Presence
-    /// <summary>A user connected or their presence info changed (lobby joined/left, game started).</summary>
-    public event Action<PresenceUser>?          PresenceJoined;
-    /// <summary>A user disconnected. Argument is the userId.</summary>
-    public event Action<string>?                PresenceLeft;
-    /// <summary>Response to <see cref="ListPresenceAsync"/>: full list of online users.</summary>
-    public event Action<PresenceUser[]>?        PresenceList;
+    // Social
+    public event Action<FriendPresence>?          FriendPresenceChanged;
+    public event Action<FriendRequestInfo>?       FriendRequestReceived;
+    public event Action<FriendRequestAccepted>?   FriendRequestAccepted;
+    public event Action<FriendRequestDeclined>?   FriendRequestDeclined;
+    /// <summary>Argument is the request id.</summary>
+    public event Action<string>?                  FriendRequestCancelled;
+    /// <summary>Argument is the userId of the former friend.</summary>
+    public event Action<string>?                  FriendRemoved;
+    public event Action<HubNotification>?         NotificationReceived;
+    public event Action<NotificationBacklog>?     NotificationBacklogReceived;
+    public event Action<DirectMessage>?           DirectMessageReceived;
+    public event Action<DmDeliveredData>?         DirectMessageDelivered;
+    public event Action<DmReadData>?              DirectMessageRead;
+    public event Action<DmTypingData>?            DirectMessageTyping;
+    public event Action<LobbyInvite>?             LobbyInviteReceived;
+    public event Action<LobbyInviteCancelledData>? LobbyInviteCancelled;
+    public event Action<LobbyInviteDeclinedData>?  LobbyInviteDeclined;
 
     // ─── Fields ───────────────────────────────────────────────────────────────
 
@@ -131,6 +142,27 @@ public sealed class EthernalClient : IAsyncDisposable
         return result;
     }
 
+    /// <summary>Revoke all refresh tokens of this account and disconnect every session.</summary>
+    public async Task LogoutAllAsync(CancellationToken ct = default)
+    {
+        await AuthedFetchAsync(HttpMethod.Post, "/auth/logout-all", new { }, ct);
+        await LogoutLocalAsync();
+    }
+
+    /// <summary>Renew the access token and hand it to the live socket (<c>auth:refresh</c>).</summary>
+    public async Task RefreshSocketAuthAsync(CancellationToken ct = default)
+    {
+        await DoRefreshAsync(ct);
+        await CallAsync<object?>("auth:refresh", new { token = _accessToken }, ct);
+    }
+
+    private async Task LogoutLocalAsync()
+    {
+        if (_socket is not null) { await _socket.DisconnectAsync(); _socket = null; }
+        _accessToken = null;
+        _refreshToken = null;
+    }
+
     /// <summary>Log out: revoke the refresh token and disconnect the socket.</summary>
     public async Task LogoutAsync(CancellationToken ct = default)
     {
@@ -175,8 +207,14 @@ public sealed class EthernalClient : IAsyncDisposable
         string name,
         bool isPrivate = false,
         Dictionary<string, object?>? settings = null,
-        CancellationToken ct = default) =>
-        (await CallAsync<LobbyResult>("createLobby", new { name, isPrivate, settings = settings ?? [] }, ct)).Lobby;
+        CancellationToken ct = default,
+        string? serverMode = null,
+        string? serverRegion = null) =>
+        (await CallAsync<LobbyResult>("createLobby", new
+        {
+            name, isPrivate, settings = settings ?? [],
+            serverPreference = serverMode == null && serverRegion == null ? null : new { mode = serverMode, region = serverRegion },
+        }, ct)).Lobby;
 
     /// <summary>Join a public lobby of the registered game by ID.</summary>
     public async Task<Lobby> JoinLobbyAsync(string lobbyId, CancellationToken ct = default) =>
@@ -209,6 +247,9 @@ public sealed class EthernalClient : IAsyncDisposable
     public Task LockLobbyAsync(CancellationToken ct = default) => CallAsync<object?>("lockLobby", null, ct);
 
     /// <summary>(Host only) Unlock the lobby.</summary>
+    /// <summary>Host: sets lobby state ("in_progress" or "closed").</summary>
+    public Task SetLobbyStateAsync(string state, CancellationToken ct = default) => CallAsync<object?>("setLobbyState", new { state }, ct);
+
     public Task UnlockLobbyAsync(CancellationToken ct = default) => CallAsync<object?>("unlockLobby", null, ct);
 
     /// <summary>
@@ -288,11 +329,92 @@ public sealed class EthernalClient : IAsyncDisposable
     public Task DeleteUserDataAsync(string gameId, string key, CancellationToken ct = default) =>
         CallAsync<object?>("deleteUserData", new { gameId, key }, ct);
 
-    // ─── Presence ─────────────────────────────────────────────────────────────
+    // ─── Social ───────────────────────────────────────────────────────────────
 
-    /// <summary>Request the current list of online users.</summary>
-    public async Task<PresenceUser[]> ListPresenceAsync(CancellationToken ct = default) =>
-        (await CallAsync<PresenceResult>("presence:list", null, ct)).Users;
+    /// <summary>Send a friend request by username. Returns "REQUEST_SENT" or "NO_SUCH_PLAYER" only.</summary>
+    public async Task<string> RequestFriendByNameAsync(string username, CancellationToken ct = default) =>
+        (await CallAsync<ResultAck>("friend:request", new { username }, ct)).Result;
+
+    /// <summary>Send a friend request to a player in your current lobby.</summary>
+    public async Task<string> RequestFriendFromLobbyAsync(string userId, CancellationToken ct = default) =>
+        (await CallAsync<ResultAck>("friend:request", new { userId }, ct)).Result;
+
+    public Task RespondFriendRequestAsync(string requestId, bool accept, CancellationToken ct = default) =>
+        CallAsync<object?>("friend:respond", new { requestId, accept }, ct);
+
+    public Task CancelFriendRequestAsync(string requestId, CancellationToken ct = default) =>
+        CallAsync<object?>("friend:cancel", new { requestId }, ct);
+
+    public Task RemoveFriendAsync(string friendId, CancellationToken ct = default) =>
+        CallAsync<object?>("friend:remove", new { friendId }, ct);
+
+    public async Task<FriendInfo[]> ListFriendsAsync(CancellationToken ct = default) =>
+        (await CallAsync<FriendsAck>("friend:list", null, ct)).Friends;
+
+    public Task<FriendRequestsResult> ListFriendRequestsAsync(CancellationToken ct = default) =>
+        CallAsync<FriendRequestsResult>("friend:requests", null, ct);
+
+    public async Task<FriendPresence[]> GetFriendsPresenceAsync(CancellationToken ct = default) =>
+        (await CallAsync<PresenceAck>("presence:friends", null, ct)).Presence;
+
+    public async Task<SocialSettings> GetSocialSettingsAsync(CancellationToken ct = default) =>
+        (await CallAsync<SettingsAck>("social:getSettings", null, ct)).Settings;
+
+    /// <summary>Update own settings; only non-null arguments are changed.</summary>
+    public async Task<SocialSettings> SetSocialSettingsAsync(string? status = null, bool? showLastSeen = null,
+        bool? dmReadReceipts = null, string[]? mutedNotificationTypes = null, CancellationToken ct = default) =>
+        (await CallAsync<SettingsAck>("social:setSettings",
+            new { status, showLastSeen, dmReadReceipts, mutedNotificationTypes }, ct)).Settings;
+
+    /// <summary>Full social state. Pass the previous etag to get <c>NotModified</c> when nothing changed.</summary>
+    public Task<SocialSnapshot> SyncSocialAsync(string? etag = null, CancellationToken ct = default) =>
+        CallAsync<SocialSnapshot>("social:sync", new { etag }, ct);
+
+    public async Task<FriendLobbyInfo?> GetFriendLobbyAsync(string friendId, CancellationToken ct = default) =>
+        (await CallAsync<FriendLobbyAck>("social:friendLobby", new { friendId }, ct)).Lobby;
+
+    public Task<NotificationListResult> ListNotificationsAsync(int? limit = null, string? cursor = null, bool? unreadOnly = null, CancellationToken ct = default) =>
+        CallAsync<NotificationListResult>("notification:list", new { limit, cursor, unreadOnly }, ct);
+
+    public Task<NotificationMarkResult> MarkNotificationsReadAsync(string[]? ids = null, long? upTo = null, CancellationToken ct = default) =>
+        CallAsync<NotificationMarkResult>("notification:markRead", new { ids, upTo }, ct);
+
+    public Task<NotificationCounts> GetNotificationCountsAsync(CancellationToken ct = default) =>
+        CallAsync<NotificationCounts>("notification:counts", null, ct);
+
+    public async Task<DirectMessage> SendDirectMessageAsync(string toUserId, string text, CancellationToken ct = default) =>
+        (await CallAsync<MessageAck>("dm:send", new { toUserId, text }, ct)).Message;
+
+    public Task<DmHistoryResult> GetDmHistoryAsync(string withUserId, long? before = null, int? limit = null, CancellationToken ct = default) =>
+        CallAsync<DmHistoryResult>("dm:history", new { withUserId, before, limit }, ct);
+
+    public async Task<DmConversation[]> ListConversationsAsync(CancellationToken ct = default) =>
+        (await CallAsync<ConversationsAck>("dm:conversations", null, ct)).Conversations;
+
+    /// <summary>Mark a conversation read; returns the number of messages marked.</summary>
+    public async Task<int> MarkConversationReadAsync(string withUserId, CancellationToken ct = default) =>
+        (await CallAsync<MarkedAck>("dm:markRead", new { withUserId }, ct)).Marked;
+
+    public Task SendTypingAsync(string toUserId, CancellationToken ct = default) =>
+        CallAsync<object?>("dm:typing", new { toUserId }, ct);
+
+    public async Task<LobbyInvite> InviteFriendAsync(string friendId, CancellationToken ct = default) =>
+        (await CallAsync<InviteAck>("lobby:invite", new { friendId }, ct)).Invite;
+
+    public Task CancelLobbyInviteAsync(string inviteId, CancellationToken ct = default) =>
+        CallAsync<object?>("lobby:cancelInvite", new { inviteId }, ct);
+
+    public async Task<Lobby> AcceptLobbyInviteAsync(string inviteId, CancellationToken ct = default) =>
+        (await CallAsync<LobbyResult>("lobby:acceptInvite", new { inviteId }, ct)).Lobby;
+
+    public Task DeclineLobbyInviteAsync(string inviteId, CancellationToken ct = default) =>
+        CallAsync<object?>("lobby:declineInvite", new { inviteId }, ct);
+
+    public async Task<LobbyInvite[]> ListLobbyInvitesAsync(CancellationToken ct = default) =>
+        (await CallAsync<InvitesAck>("lobby:invites", null, ct)).Invites;
+
+    public Task<JoinFriendResult> JoinFriendAsync(string friendId, CancellationToken ct = default) =>
+        CallAsync<JoinFriendResult>("lobby:joinFriend", new { friendId }, ct);
 
     // ─── User Data (REST) ─────────────────────────────────────────────────────
 
@@ -400,7 +522,16 @@ public sealed class EthernalClient : IAsyncDisposable
         RegisterEvent<HelloPayload>(socket,        "hello",            d => Hello?.Invoke(d));
         RegisterEvent<SessionResumedData>(socket,  "session:resumed",  d => SessionResumed?.Invoke(d));
         RegisterEvent<SessionReplacedData>(socket, "session:replaced", d => SessionReplaced?.Invoke(d));
-        RegisterEvent<HubErrorPayload>(socket,     "errorDetail",      d => ErrorDetail?.Invoke(d));
+        RegisterEvent<HubErrorPayload>(socket,     "errorDetail",      d =>
+        {
+            ErrorDetail?.Invoke(d);
+            if (d.Code == "AUTH_EXPIRED" && _refreshToken is not null)
+                _ = Task.Run(async () =>
+                {
+                    try { await RefreshSocketAuthAsync(); }
+                    catch { AuthError?.Invoke("Token konnte nicht erneuert werden"); }
+                });
+        });
         RegisterEvent<Lobby>(socket,     "lobbyCreated",  d => LobbyCreated?.Invoke(d));
         RegisterEvent<Lobby>(socket,     "lobbyUpdated",  d => LobbyUpdated?.Invoke(d));
         RegisterEvent<Lobby[]>(socket,   "lobbyList",     d => LobbyList?.Invoke(d));
@@ -428,24 +559,22 @@ public sealed class EthernalClient : IAsyncDisposable
             catch { /* ignore malformed errors */ }
         });
 
-        // Presence
-        RegisterEvent<PresenceUser>(socket,   "presence:joined", d => PresenceJoined?.Invoke(d));
-        RegisterEvent<PresenceUser[]>(socket, "presence:list",   d => PresenceList?.Invoke(d));
-        // presence:left sends { userId: string }, extract the string
-        socket.On("presence:left", response =>
-        {
-            lock (_pendingLock)
-            {
-                if (_pending.TryGetValue("presence:left", out var q) && q.Count > 0)
-                { q.Dequeue().TrySetResult(response); return; }
-            }
-            try
-            {
-                var userId = response.GetValue<JsonElement>(0).GetProperty("userId").GetString() ?? "";
-                PresenceLeft?.Invoke(userId);
-            }
-            catch { /* ignore */ }
-        });
+        // Social
+        RegisterEvent<FriendPresence>(socket,          "friend:presence",         d => FriendPresenceChanged?.Invoke(d));
+        RegisterEvent<FriendRequestReceivedData>(socket, "friend:requestReceived", d => FriendRequestReceived?.Invoke(d.Request));
+        RegisterEvent<FriendRequestAccepted>(socket,   "friend:requestAccepted",  d => FriendRequestAccepted?.Invoke(d));
+        RegisterEvent<FriendRequestDeclined>(socket,   "friend:requestDeclined",  d => FriendRequestDeclined?.Invoke(d));
+        RegisterEvent<RequestIdData>(socket,           "friend:requestCancelled", d => FriendRequestCancelled?.Invoke(d.RequestId));
+        RegisterEvent<UserIdData>(socket,              "friend:removed",          d => FriendRemoved?.Invoke(d.UserId));
+        RegisterEvent<HubNotification>(socket,         "notification",            d => NotificationReceived?.Invoke(d));
+        RegisterEvent<NotificationBacklog>(socket,     "notification:backlog",    d => NotificationBacklogReceived?.Invoke(d));
+        RegisterEvent<DirectMessage>(socket,           "dm:received",             d => DirectMessageReceived?.Invoke(d));
+        RegisterEvent<DmDeliveredData>(socket,         "dm:delivered",            d => DirectMessageDelivered?.Invoke(d));
+        RegisterEvent<DmReadData>(socket,              "dm:read",                 d => DirectMessageRead?.Invoke(d));
+        RegisterEvent<DmTypingData>(socket,            "dm:typing",               d => DirectMessageTyping?.Invoke(d));
+        RegisterEvent<LobbyInvite>(socket,             "lobby:inviteReceived",    d => LobbyInviteReceived?.Invoke(d));
+        RegisterEvent<LobbyInviteCancelledData>(socket, "lobby:inviteCancelled",  d => LobbyInviteCancelled?.Invoke(d));
+        RegisterEvent<LobbyInviteDeclinedData>(socket,  "lobby:inviteDeclined",   d => LobbyInviteDeclined?.Invoke(d));
 
         _socket = socket;
         _pending.Clear();
@@ -556,7 +685,19 @@ public sealed class EthernalClient : IAsyncDisposable
 
     private sealed class LobbyResult   { [JsonPropertyName("lobby")]   public Lobby   Lobby   { get; init; } = new(); }
     private sealed class LobbiesResult { [JsonPropertyName("lobbies")] public Lobby[] Lobbies { get; init; } = []; }
-    private sealed class PresenceResult { [JsonPropertyName("users")]  public PresenceUser[] Users { get; init; } = []; }
+    private sealed class ResultAck { [JsonPropertyName("result")] public string Result { get; init; } = ""; }
+    private sealed class FriendsAck { [JsonPropertyName("friends")] public FriendInfo[] Friends { get; init; } = []; }
+    private sealed class PresenceAck { [JsonPropertyName("presence")] public FriendPresence[] Presence { get; init; } = []; }
+    private sealed class SettingsAck { [JsonPropertyName("settings")] public SocialSettings Settings { get; init; } = new(); }
+    private sealed class FriendLobbyAck { [JsonPropertyName("lobby")] public FriendLobbyInfo? Lobby { get; init; } }
+    private sealed class MessageAck { [JsonPropertyName("message")] public DirectMessage Message { get; init; } = new(); }
+    private sealed class ConversationsAck { [JsonPropertyName("conversations")] public DmConversation[] Conversations { get; init; } = []; }
+    private sealed class MarkedAck { [JsonPropertyName("marked")] public int Marked { get; init; } }
+    private sealed class InviteAck { [JsonPropertyName("invite")] public LobbyInvite Invite { get; init; } = new(); }
+    private sealed class InvitesAck { [JsonPropertyName("invites")] public LobbyInvite[] Invites { get; init; } = []; }
+    private sealed class FriendRequestReceivedData { [JsonPropertyName("request")] public FriendRequestInfo Request { get; init; } = new(); }
+    private sealed class RequestIdData { [JsonPropertyName("requestId")] public string RequestId { get; init; } = ""; }
+    private sealed class UserIdData { [JsonPropertyName("userId")] public string UserId { get; init; } = ""; }
     private sealed class JoinRequestAck
     {
         [JsonPropertyName("pending")] public bool   Pending { get; init; }
