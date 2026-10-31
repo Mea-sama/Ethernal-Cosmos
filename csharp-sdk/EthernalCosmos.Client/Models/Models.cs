@@ -3,10 +3,6 @@ using System.Text.Json.Serialization;
 
 namespace EthernalCosmos.Client.Models;
 
-public enum LobbyStatus { Open, Full, Closed }
-
-public enum DataVisibility { Private, Lobby, Public }
-
 public sealed class LobbyPlayer
 {
     [JsonPropertyName("userId")]   public string UserId   { get; init; } = "";
@@ -24,7 +20,7 @@ public sealed class Lobby
     [JsonPropertyName("hostId")]     public string       HostId     { get; init; } = "";
     [JsonPropertyName("players")]    public LobbyPlayer[] Players   { get; init; } = [];
     [JsonPropertyName("maxPlayers")] public int          MaxPlayers { get; init; }
-    [JsonPropertyName("status")]     public string       Status     { get; init; } = "open";
+    [JsonPropertyName("status")]     public LobbyStatus  Status     { get; init; } = LobbyStatus.Open;
     [JsonPropertyName("isPrivate")]  public bool         IsPrivate  { get; init; }
     [JsonPropertyName("hosted")]     public bool         Hosted     { get; init; }
     [JsonPropertyName("inviteCode")] public string?      InviteCode { get; init; }
@@ -33,8 +29,8 @@ public sealed class Lobby
     [JsonPropertyName("createdAt")]  public long         CreatedAt  { get; init; }
     /// <summary>Game server binding (members only); null = no game server.</summary>
     [JsonPropertyName("server")]       public LobbyServerBinding? Server       { get; init; }
-    /// <summary>ok | lost | draining — only meaningful when a game server is bound.</summary>
-    [JsonPropertyName("serverStatus")] public string?             ServerStatus { get; init; }
+    /// <summary>Health of the bound game server; null when no server is bound.</summary>
+    [JsonPropertyName("serverStatus")] public LobbyServerStatus?  ServerStatus { get; init; }
     /// <summary>Listings only: a game server is bound.</summary>
     [JsonPropertyName("serverBound")]  public bool?               ServerBound  { get; init; }
     [JsonPropertyName("region")]       public string?             Region       { get; init; }
@@ -51,9 +47,9 @@ public sealed class UserDataEntry
 {
     [JsonPropertyName("key")]        public string         Key        { get; init; } = "";
     [JsonPropertyName("value")]      public object?        Value      { get; init; }
-    [JsonPropertyName("visibility")] public string         Visibility { get; init; } = "private";
+    [JsonPropertyName("visibility")] public DataVisibility Visibility { get; init; } = DataVisibility.Private;
     [JsonPropertyName("updatedAt")]  public long           UpdatedAt  { get; init; }
-    [JsonPropertyName("writeScope")] public string         WriteScope { get; init; } = "client";
+    [JsonPropertyName("writeScope")] public DataWriteScope WriteScope { get; init; } = DataWriteScope.Client;
     [JsonPropertyName("version")]    public int            Version    { get; init; } = 1;
 }
 
@@ -74,7 +70,7 @@ public sealed class LeaderboardEntry
 {
     [JsonPropertyName("key")]        public string  Key        { get; init; } = "";
     [JsonPropertyName("value")]      public object? Value      { get; init; }
-    [JsonPropertyName("visibility")] public string  Visibility { get; init; } = "public";
+    [JsonPropertyName("visibility")] public DataVisibility Visibility { get; init; } = DataVisibility.Public;
     [JsonPropertyName("updatedAt")]  public long    UpdatedAt  { get; init; }
 }
 
@@ -151,15 +147,6 @@ public sealed class PlayerKickedData
     [JsonPropertyName("lobbyId")] public string LobbyId { get; init; } = "";
 }
 
-/// <summary>Reason a join request ended without the requester joining.</summary>
-public enum JoinRequestRejectReason
-{
-    Declined,
-    Timeout,
-    HostChanged,
-    LobbyClosed,
-}
-
 public sealed class JoinRequestReceivedData
 {
     [JsonPropertyName("lobbyId")]     public string LobbyId     { get; init; } = "";
@@ -180,19 +167,20 @@ public sealed class JoinRequestAcceptedData
 public sealed class JoinRequestRejectedData
 {
     [JsonPropertyName("lobbyId")] public string LobbyId { get; init; } = "";
-    /// <summary>One of: "declined", "timeout", "host_changed", "lobby_closed" — see <see cref="JoinRequestRejectReason"/>.</summary>
-    [JsonPropertyName("reason")]  public string Reason  { get; init; } = "";
+    [JsonPropertyName("reason")]  public JoinRequestRejectReason Reason { get; init; }
 }
 
 public sealed class JoinRequestWithdrawnData
 {
     [JsonPropertyName("requesterId")] public string RequesterId { get; init; } = "";
-    [JsonPropertyName("reason")]      public string Reason      { get; init; } = "";
+    [JsonPropertyName("reason")]      public JoinRequestWithdrawReason Reason { get; init; }
 }
 
 public sealed class HubErrorPayload
 {
+    /// <summary>Raw wire code; see <see cref="Error"/> for the enum.</summary>
     [JsonPropertyName("code")]         public string  Code         { get; init; } = "INTERNAL";
+    [JsonIgnore] public ErrorCode Error => WireEnumConverter<ErrorCode>.Parse(Code);
     [JsonPropertyName("message")]      public string  Message      { get; init; } = "";
     [JsonPropertyName("event")]        public string? Event        { get; init; }
     [JsonPropertyName("requestId")]    public string? RequestId    { get; init; }
@@ -202,11 +190,15 @@ public sealed class HubErrorPayload
 /// <summary>Thrown by every SDK call that fails; <see cref="Code"/> is a stable server error code (e.g. GAME_MISMATCH).</summary>
 public sealed class EthernalException : Exception
 {
+    /// <summary>Raw wire code (stable even for codes this SDK version does not know).</summary>
     public string Code { get; }
+    /// <summary>Typed error code; <c>Unknown</c> for codes this SDK version does not know.</summary>
+    public ErrorCode Error { get; }
     public int? RetryAfterMs { get; }
     public EthernalException(string code, string message, int? retryAfterMs = null) : base(message)
     {
         Code = code;
+        Error = WireEnumConverter<ErrorCode>.Parse(code);
         RetryAfterMs = retryAfterMs;
     }
 }
@@ -238,7 +230,7 @@ public sealed class SessionResumedData
 
 public sealed class SessionReplacedData
 {
-    [JsonPropertyName("reason")] public string Reason { get; init; } = "new_session";
+    [JsonPropertyName("reason")] public SessionReplacedReason Reason { get; init; } = SessionReplacedReason.NewSession;
 }
 
 public sealed class GameInfo
@@ -250,6 +242,9 @@ public sealed class GameInfo
     [JsonPropertyName("hosted")]           public bool    Hosted           { get; init; }
     [JsonPropertyName("reconnectGraceMs")] public int?    ReconnectGraceMs { get; init; }
     [JsonPropertyName("minClientVersion")] public string? MinClientVersion { get; init; }
+    /// <summary>Whether this game uses game servers (none | optional | required).</summary>
+    [JsonPropertyName("serverSupport")]    public ServerSupport ServerSupport { get; init; } = ServerSupport.None;
+    [JsonPropertyName("regions")]          public string[]? Regions        { get; init; }
 }
 
 public sealed class RegisterGameResult

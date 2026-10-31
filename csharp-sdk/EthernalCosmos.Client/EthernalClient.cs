@@ -50,7 +50,7 @@ public sealed class EthernalClient : IAsyncDisposable
     public event Action<Lobby>?                 LobbyCreated;
     public event Action<Lobby>?                 LobbyUpdated;
     /// <summary>Lobby changed, with the reason (e.g. player_joined, server_lost, server_rebound).</summary>
-    public event Action<Lobby, string?>?        LobbyChanged;
+    public event Action<Lobby, LobbyChangeReason?>? LobbyChanged;
     public event Action<Lobby[]>?               LobbyList;
     public event Action<Lobby>?                 LobbyInfo;
     public event Action<GameStartingData>?      GameStarting;
@@ -333,13 +333,13 @@ public sealed class EthernalClient : IAsyncDisposable
 
     // ─── Social ───────────────────────────────────────────────────────────────
 
-    /// <summary>Send a friend request by username. Returns "REQUEST_SENT" or "NO_SUCH_PLAYER" only.</summary>
-    public async Task<string> RequestFriendByNameAsync(string username, CancellationToken ct = default) =>
-        (await CallAsync<ResultAck>("friend:request", new { username }, ct)).Result;
+    /// <summary>Send a friend request by username. Returns <see cref="FriendRequestResult.RequestSent"/> or <see cref="FriendRequestResult.NoSuchPlayer"/> only.</summary>
+    public async Task<FriendRequestResult> RequestFriendByNameAsync(string username, CancellationToken ct = default) =>
+        WireEnumConverter<FriendRequestResult>.Parse((await CallAsync<ResultAck>("friend:request", new { username }, ct)).Result);
 
     /// <summary>Send a friend request to a player in your current lobby.</summary>
-    public async Task<string> RequestFriendFromLobbyAsync(string userId, CancellationToken ct = default) =>
-        (await CallAsync<ResultAck>("friend:request", new { userId }, ct)).Result;
+    public async Task<FriendRequestResult> RequestFriendFromLobbyAsync(string userId, CancellationToken ct = default) =>
+        WireEnumConverter<FriendRequestResult>.Parse((await CallAsync<ResultAck>("friend:request", new { userId }, ct)).Result);
 
     public Task RespondFriendRequestAsync(string requestId, bool accept, CancellationToken ct = default) =>
         CallAsync<object?>("friend:respond", new { requestId, accept }, ct);
@@ -363,10 +363,10 @@ public sealed class EthernalClient : IAsyncDisposable
         (await CallAsync<SettingsAck>("social:getSettings", null, ct)).Settings;
 
     /// <summary>Update own settings; only non-null arguments are changed.</summary>
-    public async Task<SocialSettings> SetSocialSettingsAsync(string? status = null, bool? showLastSeen = null,
-        bool? dmReadReceipts = null, string[]? mutedNotificationTypes = null, CancellationToken ct = default) =>
+    public async Task<SocialSettings> SetSocialSettingsAsync(OwnPresenceStatus? status = null, bool? showLastSeen = null,
+        bool? dmReadReceipts = null, NotificationType[]? mutedNotificationTypes = null, CancellationToken ct = default) =>
         (await CallAsync<SettingsAck>("social:setSettings",
-            new { status, showLastSeen, dmReadReceipts, mutedNotificationTypes }, ct)).Settings;
+            new { status = status?.Wire(), showLastSeen, dmReadReceipts, mutedNotificationTypes = mutedNotificationTypes?.Select(t => t.Wire()) }, ct)).Settings;
 
     /// <summary>Full social state. Pass the previous etag to get <c>NotModified</c> when nothing changed.</summary>
     public Task<SocialSnapshot> SyncSocialAsync(string? etag = null, CancellationToken ct = default) =>
@@ -527,7 +527,7 @@ public sealed class EthernalClient : IAsyncDisposable
         RegisterEvent<HubErrorPayload>(socket,     "errorDetail",      d =>
         {
             ErrorDetail?.Invoke(d);
-            if (d.Code == "AUTH_EXPIRED" && _refreshToken is not null)
+            if (d.Error == ErrorCode.AuthExpired && _refreshToken is not null)
                 _ = Task.Run(async () =>
                 {
                     try { await RefreshSocketAuthAsync(); }
@@ -540,8 +540,8 @@ public sealed class EthernalClient : IAsyncDisposable
             try
             {
                 var lobby = response.GetValue<Lobby>(0);
-                string? reason = null;
-                try { reason = response.GetValue<string?>(1); } catch { /* reason is optional */ }
+                LobbyChangeReason? reason = null;
+                try { reason = WireEnumConverter<LobbyChangeReason>.Parse(response.GetValue<string?>(1)); } catch { /* reason is optional */ }
                 LobbyUpdated?.Invoke(lobby);
                 LobbyChanged?.Invoke(lobby, reason);
             }

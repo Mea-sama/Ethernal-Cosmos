@@ -36,14 +36,14 @@ import type {
 
 // ─── Types ───────────────────────────────────────────────────────
 
-export type { Lobby, LobbyChangeReason, UserDataEntry, DataVisibility, JoinRequestRejectReason } from '@ethernal/shared';
+export type { Lobby, UserDataEntry } from '@ethernal/shared';
 export type {
-  FriendInfo, FriendRequestInfo, FriendRequestResult, FriendRequestsResult, FriendPresence, FriendPresenceStatus,
-  OwnPresenceStatus, SocialSettings, SocialSnapshot, HubNotification, NotificationType, NotificationBacklog,
+  FriendInfo, FriendRequestInfo, FriendRequestsResult, FriendPresence,
+  SocialSettings, SocialSnapshot, HubNotification, NotificationBacklog,
   NotificationCounts, NotificationListResult, DirectMessage, DmConversation, DmHistoryResult, LobbyInvite,
-  LobbyInviteCancelReason, FriendLobbyInfo,
+  FriendLobbyInfo,
 } from '@ethernal/shared';
-export type { RelayMessage, RelayBinaryMessage, ErrorCode, HubErrorPayload, GameInfo, SessionState, HelloPayload, BulkDataEntry } from '@ethernal/shared';
+export type { RelayMessage, RelayBinaryMessage, HubErrorPayload, GameInfo, SessionState, HelloPayload, BulkDataEntry } from '@ethernal/shared';
 
 /** Error thrown by every SDK call; `code` is a stable machine-readable value (see ErrorCode). */
 export class EthernalError extends Error {

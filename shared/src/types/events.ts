@@ -1,19 +1,19 @@
 import type {
-  Lobby,
-  GameInfo,
-  JoinRequestRejectReason,
-  LobbyChangeReason,
-  RelayMessage,
-  RelayBinaryMessage,
-  UserDataEntry,
   DataVisibility,
-} from './index';
+  FriendRequestResult,
+  JoinRequestRejectReason,
+  JoinRequestWithdrawReason,
+  LobbyChangeReason,
+  LobbyInviteCancelReason,
+  NotificationType,
+  SessionReplacedReason,
+} from './enums';
+import type { Lobby, GameInfo, RelayMessage, RelayBinaryMessage, UserDataEntry } from './index';
 import type { Ack, HubErrorPayload } from './errors';
 import type { ServerPreference } from './gameserver';
 import type {
   FriendInfo,
   FriendRequestInfo,
-  FriendRequestResult,
   FriendRequestsResult,
   FriendPresence,
   SocialSettings,
@@ -22,12 +22,10 @@ import type {
   NotificationBacklog,
   NotificationCounts,
   NotificationListResult,
-  NotificationType,
   DirectMessage,
   DmConversation,
   DmHistoryResult,
   LobbyInvite,
-  LobbyInviteCancelReason,
   FriendLobbyInfo,
 } from './social';
 
@@ -218,7 +216,7 @@ export interface ServerToClientEvents {
   'session:resumed': (data: { state: SessionState; lobby: Lobby }) => void;
 
   /** Diese Session wurde durch eine neuere Game-Session desselben Users ersetzt (danach Disconnect) */
-  'session:replaced': (data: { reason: 'new_session' }) => void;
+  'session:replaced': (data: { reason: SessionReplacedReason }) => void;
 
   /** Lobby wurde erstellt (Bestätigung für den Host) */
   lobbyCreated: (lobby: Lobby) => void;
@@ -298,7 +296,7 @@ export interface ServerToClientEvents {
   joinRequestRejected: (data: { lobbyId: string; reason: JoinRequestRejectReason }) => void;
 
   /** Host: eine Anfrage wurde zurückgezogen oder ist ausgelaufen */
-  joinRequestWithdrawn: (data: { requesterId: string; reason: 'cancelled' | 'timeout' }) => void;
+  joinRequestWithdrawn: (data: { requesterId: string; reason: JoinRequestWithdrawReason }) => void;
 }
 
 /** Interne Socket-Daten pro verbundenem Client */

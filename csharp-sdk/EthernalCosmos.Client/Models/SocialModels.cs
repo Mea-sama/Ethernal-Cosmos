@@ -14,8 +14,7 @@ public sealed class FriendRequestInfo
     [JsonPropertyName("id")]        public string     Id        { get; init; } = "";
     /// <summary>Sender for incoming requests, recipient for outgoing ones.</summary>
     [JsonPropertyName("user")]      public FriendInfo User      { get; init; } = new();
-    /// <summary>"name" or "lobby".</summary>
-    [JsonPropertyName("source")]    public string     Source    { get; init; } = "";
+    [JsonPropertyName("source")]    public FriendRequestSource Source { get; init; }
     [JsonPropertyName("createdAt")] public long       CreatedAt { get; init; }
     [JsonPropertyName("expiresAt")] public long       ExpiresAt { get; init; }
 }
@@ -44,8 +43,7 @@ public sealed class FriendPresence
     [JsonPropertyName("userId")]        public string  UserId        { get; init; } = "";
     [JsonPropertyName("username")]      public string  Username      { get; init; } = "";
     [JsonPropertyName("online")]        public bool    Online        { get; init; }
-    /// <summary>"online" | "away" | "busy" | "offline".</summary>
-    [JsonPropertyName("status")]        public string  Status        { get; init; } = "offline";
+    [JsonPropertyName("status")]        public FriendPresenceStatus Status { get; init; } = FriendPresenceStatus.Offline;
     [JsonPropertyName("gameId")]        public string? GameId        { get; init; }
     /// <summary>Set only when the friend is in a lobby.</summary>
     [JsonPropertyName("lobbyJoinable")] public bool?   LobbyJoinable { get; init; }
@@ -54,17 +52,16 @@ public sealed class FriendPresence
 
 public sealed class SocialSettings
 {
-    /// <summary>"online" | "away" | "busy" | "invisible".</summary>
-    [JsonPropertyName("status")]                 public string   Status                 { get; init; } = "online";
+    [JsonPropertyName("status")]                 public OwnPresenceStatus Status        { get; init; } = OwnPresenceStatus.Online;
     [JsonPropertyName("showLastSeen")]           public bool     ShowLastSeen           { get; init; } = true;
     [JsonPropertyName("dmReadReceipts")]         public bool     DmReadReceipts         { get; init; } = true;
-    [JsonPropertyName("mutedNotificationTypes")] public string[] MutedNotificationTypes { get; init; } = [];
+    [JsonPropertyName("mutedNotificationTypes")] public NotificationType[] MutedNotificationTypes { get; init; } = [];
 }
 
 public sealed class HubNotification
 {
     [JsonPropertyName("id")]        public string      Id        { get; init; } = "";
-    [JsonPropertyName("type")]      public string      Type      { get; init; } = "";
+    [JsonPropertyName("type")]      public NotificationType Type     { get; init; }
     [JsonPropertyName("payload")]   public JsonElement Payload   { get; init; }
     [JsonPropertyName("createdAt")] public long        CreatedAt { get; init; }
     [JsonPropertyName("readAt")]    public long?       ReadAt    { get; init; }
@@ -157,8 +154,7 @@ public sealed class LobbyInviteCancelledData
 {
     [JsonPropertyName("inviteId")] public string InviteId { get; init; } = "";
     [JsonPropertyName("lobbyId")]  public string LobbyId  { get; init; } = "";
-    /// <summary>cancelled | expired | lobby_closed | lobby_full | left | unfriended.</summary>
-    [JsonPropertyName("reason")]   public string Reason   { get; init; } = "";
+    [JsonPropertyName("reason")]   public LobbyInviteCancelReason Reason { get; init; }
 }
 
 public sealed class LobbyInviteDeclinedData
@@ -198,7 +194,7 @@ public sealed class SocialSnapshot
     [JsonPropertyName("notModified")]         public bool                   NotModified         { get; init; }
     [JsonPropertyName("etag")]                public string                 Etag                { get; init; } = "";
     [JsonPropertyName("serverTime")]          public long                   ServerTime          { get; init; }
-    [JsonPropertyName("status")]              public string                 Status              { get; init; } = "online";
+    [JsonPropertyName("status")]              public OwnPresenceStatus      Status              { get; init; } = OwnPresenceStatus.Online;
     [JsonPropertyName("settings")]            public SocialSettings         Settings            { get; init; } = new();
     [JsonPropertyName("friends")]             public FriendInfo[]           Friends             { get; init; } = [];
     [JsonPropertyName("presence")]            public FriendPresence[]       Presence            { get; init; } = [];

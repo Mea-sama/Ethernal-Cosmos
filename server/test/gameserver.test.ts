@@ -87,6 +87,8 @@ describe('Lobby–Server-Bindung (#52, #53)', () => {
     expect(created.lobby.server).toMatchObject({ region: 'eu' });
     const assigned = await s.waitFor('lobby:assigned');
     expect(assigned.lobby.id).toBe(created.lobby.id);
+    expect(assigned).toMatchObject({ reason: 'new_lobby' });
+    expect(assigned.previousServerId).toBeUndefined();
     const other = await connectRegistered(hub, await registerUser(hub), 'gs-req');
     const listing = (await other.emitAck('listLobbies')).lobbies.find((l: any) => l.id === created.lobby.id);
     expect(listing).toMatchObject({ serverBound: true, region: 'eu' });
@@ -280,7 +282,8 @@ describe('Server-Verlust, Rebind, Draining (#56)', () => {
     const b = await server('gs-req');
     a.close();
     const re = await b.waitFor('lobby:assigned', (d) => d.lobby.id === lobby.id, 5000);
-    expect(re.rebind).toBe(true);
+    expect(re).toMatchObject({ reason: 'server_rebound', previousServerId: expect.any(String), lostAt: expect.any(Number) });
+    expect(re.lobby.status).not.toBe('closed');
     await updated(u, 'server_rebound');
     expect((await u.emitAck('session:getState')).lobby.status).not.toBe('closed');
     u.close(); b.close();
