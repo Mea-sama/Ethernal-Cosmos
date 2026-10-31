@@ -61,6 +61,11 @@ const MESSAGES: Record<ErrorCode, string> = {
   PAYLOAD_TOO_LARGE: 'Payload zu groß',
   INVALID_MESSAGE_TYPE: 'Ungültiger Nachrichtentyp',
   AUTH_EXPIRED: 'Sitzung abgelaufen',
+  INVALID_SERVER_KEY: 'Ungültiger Game-Server-Schlüssel',
+  GAME_SERVER_NOT_ALLOWED: 'Dieses Spiel erlaubt keine Game-Server',
+  NO_GAME_SERVER_AVAILABLE: 'Kein Game-Server verfügbar',
+  NOT_LOBBY_SERVER: 'Diese Lobby gehört nicht zu diesem Game-Server',
+  SERVER_UNAVAILABLE: 'Game-Server nicht erreichbar',
 };
 
 /** Fehler mit stabilem Code; wird von Socket-Handlern (Ack/errorDetail) und REST (`code`) ausgewertet. */
@@ -117,6 +122,11 @@ const HTTP_STATUS: Partial<Record<ErrorCode, number>> = {
   PAYLOAD_TOO_LARGE: 413,
   INVALID_MESSAGE_TYPE: 400,
   AUTH_EXPIRED: 401,
+  INVALID_SERVER_KEY: 401,
+  GAME_SERVER_NOT_ALLOWED: 403,
+  NO_GAME_SERVER_AVAILABLE: 503,
+  NOT_LOBBY_SERVER: 403,
+  SERVER_UNAVAILABLE: 503,
   USERNAME_TAKEN: 409,
   DATA_VALUE_TOO_LARGE: 413,
   DATA_QUOTA_EXCEEDED: 413,

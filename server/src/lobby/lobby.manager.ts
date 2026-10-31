@@ -193,6 +193,22 @@ export class LobbyManager {
     lobby.status = status;
   }
 
+  setServer(lobbyId: string, server: Lobby['server'] | undefined): void {
+    const lobby = this.lobbies.get(lobbyId);
+    if (lobby) lobby.server = server;
+  }
+
+  setSettings(lobbyId: string, settings: Record<string, unknown>): Lobby | null {
+    const lobby = this.lobbies.get(lobbyId);
+    if (!lobby || lobby.status === 'closed') return null;
+    lobby.settings = settings;
+    return lobby;
+  }
+
+  allLobbies(): Lobby[] {
+    return [...this.lobbies.values()];
+  }
+
   /** Host setzt den Lobby-Zustand (Relay-Spiele): open/full → in_progress → closed; closed ist endgültig. */
   setStateByHost(requesterId: string, state: 'in_progress' | 'closed'): Lobby {
     const lobby = this.getLobbyByUserId(requesterId);

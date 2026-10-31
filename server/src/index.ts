@@ -17,6 +17,8 @@ import { userDataRouter, playerDataRouter, leaderboardRouter } from './user-data
 import { dudgQuestionsRouter } from './games/dudg/dudg-questions.router';
 import { registerSocketAuth, registerLobbyHandlers, registerIpcRouting } from './lobby/lobby.socket';
 import { registerSocialHandlers } from './social/social.socket';
+import { registerGameServerNamespace } from './gameserver/gameserver.socket';
+import { gameServerAdminRouter } from './gameserver/admin.router';
 import { socialRouter } from './social/social.router';
 import { registerSocialJobs } from './social/social.jobs';
 import { listGames } from './games/game.registry';
@@ -125,6 +127,7 @@ registerSocketAuth(io);
 registerIpcRouting(io);
 registerLobbyHandlers(io);
 registerSocialHandlers(io);
+registerGameServerNamespace(io);
 
 // ─── REST Routes ─────────────────────────────────────────────────────────────
 
@@ -216,6 +219,7 @@ app.use('/userdata', userDataRouter);
 app.use('/players', playerDataRouter);
 app.use('/leaderboard', leaderboardRouter);
 app.use('/social', socialRouter);
+app.use('/admin/game-servers', gameServerAdminRouter);
 app.use('/dudg/api/questions', dudgQuestionsRouter);
 
 // ─── Start ───────────────────────────────────────────────────────────────────

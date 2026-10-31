@@ -123,6 +123,22 @@ export const MIGRATIONS: Migration[] = [
       `CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_lower ON users(username_lower)`,
     ],
   },
+  {
+    version: 5,
+    name: 'game-server-keys',
+    statements: [
+      // Nur der Hash wird gespeichert; revoked_at != NULL = widerrufen (Rotation = neuer Key + alten widerrufen)
+      `CREATE TABLE IF NOT EXISTS game_server_keys (
+        id         TEXT PRIMARY KEY,
+        game_id    TEXT NOT NULL,
+        key_hash   TEXT NOT NULL UNIQUE,
+        label      TEXT NOT NULL DEFAULT '',
+        created_at INTEGER NOT NULL,
+        revoked_at INTEGER
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_game_server_keys_game ON game_server_keys(game_id)`,
+    ],
+  },
 ];
 
 export async function runMigrations(db: Client, migrations: Migration[] = MIGRATIONS): Promise<number[]> {

@@ -11,6 +11,8 @@ import { serverLimits } from '../config/limits';
 import { HubError, isHubError } from '../errors';
 import { sessionManager, userRoom, gameRoom } from '../session/session.manager';
 import { presenceChanged } from '../social/presence.service';
+import { gsHooks } from '../gameserver/hooks';
+import { bindGameServer, releaseServerSlot } from '../gameserver/gameserver.socket';
 import {
   PROTOCOL_VERSION,
   type ClientToServerEvents,
@@ -24,7 +26,7 @@ import {
   type HelloPayload,
 } from '@ethernal/shared';
 
-type AppServer = Server<ClientToServerEvents, ServerToClientEvents, Record<string, never>, SocketData>;
+export type AppServer = Server<ClientToServerEvents, ServerToClientEvents, Record<string, never>, SocketData>;
 type AppSocket = Socket<ClientToServerEvents, ServerToClientEvents, Record<string, never>, SocketData>;
 
 // ─── Rate Limiting ────────────────────────────────────────────────────────────
@@ -175,14 +177,14 @@ function maxBinaryBytesFor(userId: string): number {
   return override && override > 0 ? Math.min(override, MAX_BINARY_HARD_CAP) : MAX_BINARY_PAYLOAD_BYTES;
 }
 
-function validateMessageType(type: unknown): string {
+export function validateMessageType(type: unknown): string {
   if (typeof type !== 'string' || !MESSAGE_TYPE_RE.test(type)) {
     throw new HubError('INVALID_MESSAGE_TYPE', 'Ungültiger Nachrichtentyp (1–64 Zeichen: A-Z a-z 0-9 _ . : -)');
   }
   return type;
 }
 
-function validateJsonPayloadSize(payload: unknown): void {
+export function validateJsonPayloadSize(payload: unknown): void {
   let size: number;
   try {
     size = Buffer.byteLength(JSON.stringify(payload ?? null));
@@ -240,17 +242,17 @@ function compareVersions(a: string, b: string): number {
 }
 
 /** Lobby für Nicht-Mitglieder (Listen): ohne Invite-Code, Settings ggf. auf publicSettingKeys reduziert. */
-function toListing(lobby: Lobby): Lobby {
+export function toListing(lobby: Lobby): Lobby {
   const game = getGame(lobby.gameId);
   const keys = game?.publicSettingKeys;
   const settings = keys
     ? Object.fromEntries(Object.entries(lobby.settings).filter(([k]) => keys.includes(k)))
     : lobby.settings;
   const joinable = lobby.status === 'open' || (lobby.status === 'in_progress' && !!game?.joinInProgress);
-  return { ...lobby, inviteCode: undefined, settings, joinable };
+  return { ...lobby, inviteCode: undefined, settings, joinable, server: undefined, serverBound: !!lobby.server, region: lobby.server?.region };
 }
 
-function jsonDepth(value: unknown, depth = 0): number {
+export function jsonDepth(value: unknown, depth = 0): number {
   if (depth > 16 || value === null || typeof value !== 'object') return depth;
   let max = depth;
   for (const v of Object.values(value as Record<string, unknown>)) max = Math.max(max, jsonDepth(v, depth + 1));
@@ -261,6 +263,9 @@ const CreateLobbySchema = z.object({
   name: z.string().trim().min(1).max(64),
   isPrivate: z.boolean().optional().default(false),
   settings: z.record(z.unknown()).optional().default({}),
+  serverPreference: z
+    .object({ mode: z.enum(['any', 'none']).optional(), region: z.string().max(32).optional() })
+    .optional(),
 });
 
 const InviteCodeSchema = z.string().trim().length(6).transform((c) => c.toUpperCase());
@@ -278,8 +283,10 @@ function broadcastPresence(_io: AppServer, userId: string): void {
   presenceChanged(userId);
 }
 
-function broadcastLobbyChange(io: AppServer, lobby: Lobby, reason?: LobbyChangeReason): void {
+export function broadcastLobbyChange(io: AppServer, lobby: Lobby, reason?: LobbyChangeReason): void {
   io.to(lobby.id).emit('lobbyUpdated', lobby, reason);
+  gsHooks.lobbyUpdated(lobby, reason);
+  if (lobby.status === 'closed') gsHooks.lobbyClosed(lobby.id, lobby.server?.serverId, 'closed');
   for (const p of lobby.players) broadcastPresence(io, p.userId);
 }
 
@@ -334,7 +341,7 @@ function redeliverJoinRequests(target: { emit: (...a: any[]) => unknown }, lobby
 // ─── Relay: Reihenfolge & Pufferung für Mitglieder in der Reconnect-Gnadenfrist ─
 
 const relaySeq = new Map<string, number>();
-function nextSeq(lobbyId: string): number {
+export function nextSeq(lobbyId: string): number {
   const n = (relaySeq.get(lobbyId) ?? 0) + 1;
   relaySeq.set(lobbyId, n);
   return n;
@@ -370,7 +377,7 @@ function replayBuffered(socket: AppSocket, lobbyId: string): void {
 
 const closedReleaseTimers = new Map<string, NodeJS.Timeout>();
 
-function scheduleClosedRelease(io: AppServer, lobbyId: string): void {
+export function scheduleClosedRelease(io: AppServer, lobbyId: string): void {
   if (closedReleaseTimers.has(lobbyId)) return;
   const timer = setTimeout(() => {
     closedReleaseTimers.delete(lobbyId);
@@ -387,10 +394,12 @@ function scheduleClosedRelease(io: AppServer, lobbyId: string): void {
 
 // ─── Lobby verlassen (gemeinsamer Pfad für Leave, Disconnect-Ablauf, Kick) ────
 
-function leaveLobbyFlow(io: AppServer, userId: string, opts: { notifyInstance?: boolean } = {}): void {
+export function leaveLobbyFlow(io: AppServer, userId: string, opts: { notifyInstance?: boolean; reason?: 'left' | 'kicked' | 'timeout' } = {}): void {
   sessionManager.clearGrace(userId);
+  const serverId = lobbyManager.getLobbyByUserId(userId)?.server?.serverId;
   const { lobby, dissolved, lobbyId, hostChanged, evicted } = lobbyManager.leaveLobby(userId);
   if (!lobbyId) return;
+  gsHooks.playerLeft(lobbyId, serverId, userId, opts.reason ?? 'left');
 
   io.in(userRoom(userId)).socketsLeave(lobbyId);
   if (opts.notifyInstance !== false && instanceManager.isRunning(lobbyId)) {
@@ -405,6 +414,7 @@ function leaveLobbyFlow(io: AppServer, userId: string, opts: { notifyInstance?: 
     clearTimeout(closedReleaseTimers.get(lobbyId));
     closedReleaseTimers.delete(lobbyId);
     rejectAllJoinRequests(io, lobbyId, 'lobby_closed');
+    gsHooks.lobbyClosed(lobbyId, serverId, 'dissolved');
     // Host-Policy 'dissolve': verbleibende Mitglieder werden aus der aufgelösten Lobby entfernt
     for (const p of evicted ?? []) {
       if (p.userId === userId) continue;
@@ -437,6 +447,7 @@ export function afterJoin(io: AppServer, userId: string, username: string, lobby
   if (instanceManager.isRunning(lobby.id)) {
     instanceManager.sendToInstance(lobby.id, { type: 'PLAYER_JOIN', payload: { userId, username } });
   }
+  gsHooks.playerJoined(lobby, userId, username);
 }
 
 // ─── Disconnect / Reconnect ───────────────────────────────────────────────────
@@ -463,7 +474,10 @@ function handleLastSessionGone(io: AppServer, userId: string): void {
   if (instanceManager.isRunning(lobby.id)) {
     instanceManager.sendToInstance(lobby.id, { type: 'PLAYER_DISCONNECT', payload: { userId } });
   }
-  if (updated) io.to(lobby.id).emit('lobbyUpdated', updated, 'player_disconnected');
+  if (updated) {
+    io.to(lobby.id).emit('lobbyUpdated', updated, 'player_disconnected');
+    gsHooks.playerDisconnected(updated, userId);
+  }
 
   sessionManager.startGrace(userId, grace, () => {
     console.log(`[Session] Reconnect-Gnadenfrist abgelaufen für ${userId}`);
@@ -485,7 +499,10 @@ function resumeIntoLobby(io: AppServer, socket: AppSocket, lobby: Lobby): void {
       payload: { userId, username: socket.data.username },
     });
   }
-  if (wasInGrace) io.to(lobby.id).emit('lobbyUpdated', updated, 'player_reconnected');
+  if (wasInGrace) {
+    io.to(lobby.id).emit('lobbyUpdated', updated, 'player_reconnected');
+    gsHooks.playerReconnected(updated, userId);
+  }
   if (lobby.hostId === userId) redeliverJoinRequests(socket, lobby.id);
   if (socket.data.clientType === 'game') replayBuffered(socket, lobby.id);
   socket.emit('session:resumed', { state: sessionManager.stateFor(userId, socket.data.sessionId, lobby.id), lobby: updated });
@@ -672,7 +689,7 @@ export function registerLobbyHandlers(io: AppServer): void {
     // ── createLobby ─────────────────────────────────────────────────────────
     handle(socket, 'createLobby', { limit: 'createLobby' }, async (data) => {
       const game = requireGame(userId);
-      const { name, isPrivate, settings } = parseInput(CreateLobbySchema, data);
+      const { name, isPrivate, settings, serverPreference } = parseInput(CreateLobbySchema, data);
       const maxBytes = game.maxSettingsBytes ?? 8192;
       if (Buffer.byteLength(JSON.stringify(settings)) > maxBytes) throw new HubError('SETTINGS_TOO_LARGE');
       if (jsonDepth(settings) > 8) throw new HubError('INVALID_INPUT', 'Lobby-Einstellungen zu tief verschachtelt');
@@ -680,14 +697,18 @@ export function registerLobbyHandlers(io: AppServer): void {
       const lobby = lobbyManager.createLobby(userId, username, game.id, name, game.maxPlayers, game.hosted, isPrivate, settings);
       bindUserToLobby(io, userId, lobby.id);
       try {
-        await instanceManager.startInstance(lobby);
+        // Game-Server hat Vorrang vor dem eingebetteten Subprocess; ohne Server läuft der Subprocess (falls vorhanden)
+        const bound = await bindGameServer(io, lobby, game, serverPreference);
+        if (!bound) await instanceManager.startInstance(lobby);
       } catch (err) {
         // Kein Ghost-Lobby: bei Startfehler komplett zurückrollen
         console.error(`[createLobby] Start fehlgeschlagen (${game.id}):`, err);
         io.in(userRoom(userId)).socketsLeave(lobby.id);
+        releaseServerSlot(lobby.id, lobby.server?.serverId);
         lobbyManager.removeLobby(lobby.id);
         instanceManager.stopInstance(lobby.id);
-        throw isHubError(err) && err.code === 'INSTANCE_LIMIT' ? err : new HubError('LOBBY_START_FAILED');
+        if (isHubError(err) && ['INSTANCE_LIMIT', 'NO_GAME_SERVER_AVAILABLE'].includes(err.code)) throw err;
+        throw new HubError('LOBBY_START_FAILED');
       }
       socket.emit('lobbyCreated', lobby);
       broadcastPresence(io, userId);
@@ -732,6 +753,7 @@ export function registerLobbyHandlers(io: AppServer): void {
     handle(socket, 'kickPlayer', { limit: 'kickPlayer' }, (data) => {
       const { playerId } = parseInput(z.object({ playerId: z.string().min(1).max(64) }), data);
       const lobby = lobbyManager.kickPlayer(userId, playerId);
+      gsHooks.playerLeft(lobby.id, lobby.server?.serverId, playerId, 'kicked');
       io.to(userRoom(playerId)).emit('playerKicked', { lobbyId: lobby.id });
       io.in(userRoom(playerId)).socketsLeave(lobby.id);
       sessionManager.clearGrace(playerId);
@@ -935,9 +957,13 @@ export function registerLobbyHandlers(io: AppServer): void {
     // ── gameAction ───────────────────────────────────────────────────────────
     handle(socket, 'gameAction', { limit: 'gameAction', quiet: true }, (data) => {
       const lobby = requireLobby(userId);
-      if (!instanceManager.isRunning(lobby.id)) throw new HubError('GAME_NOT_RUNNING');
+      if (!lobby.server && !instanceManager.isRunning(lobby.id)) throw new HubError('GAME_NOT_RUNNING');
       assertLobbyLimit(lobby.id, 'gameAction');
       const { type, payload } = parseInput(z.object({ type: z.string().min(1).max(64), payload: z.unknown() }), data);
+      if (lobby.server) {
+        gsHooks.action(lobby, userId, type, payload);
+        return;
+      }
       instanceManager.sendToInstance(lobby.id, {
         type: 'PLAYER_ACTION',
         payload: { userId, action: type, data: payload },

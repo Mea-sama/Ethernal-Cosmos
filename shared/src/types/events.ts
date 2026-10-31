@@ -9,6 +9,7 @@ import type {
   DataVisibility,
 } from './index';
 import type { Ack, HubErrorPayload } from './errors';
+import type { ServerPreference } from './gameserver';
 import type {
   FriendInfo,
   FriendRequestInfo,
@@ -89,7 +90,7 @@ export interface ClientToServerEvents {
 
   /** Neue Lobby für das registrierte Spiel erstellen – maxPlayers kommt aus der Game-Registry */
   createLobby: (
-    data: { name: string; isPrivate?: boolean; settings?: Record<string, unknown>; requestId?: string },
+    data: { name: string; isPrivate?: boolean; settings?: Record<string, unknown>; serverPreference?: ServerPreference; requestId?: string },
     ack?: Ack<{ lobby: Lobby }>
   ) => void;
 

@@ -31,6 +31,8 @@ const TEST_GAMES = [
   { id: 'relay-nograce', name: 'Relay no grace', maxPlayers: 4, reconnectGraceMs: 0 },
   { id: 'broken', name: 'Broken', maxPlayers: 2, entryScript: '/nonexistent/game.js' },
   { id: 'other', name: 'Other', maxPlayers: 4, reconnectGraceMs: 1500 },
+  { id: 'gs-opt', name: 'GS optional', maxPlayers: 4, reconnectGraceMs: 1500, serverSupport: 'optional', regions: ['eu', 'us'] },
+  { id: 'gs-req', name: 'GS required', maxPlayers: 4, reconnectGraceMs: 1500, serverSupport: 'required', regions: ['eu', 'us'] },
 ];
 
 /** Großzügige Limits, damit Tests nicht in Rate-Limits laufen; einzelne Tests überschreiben via `limits`. */
@@ -72,6 +74,9 @@ export async function startHub(opts: { limits?: Record<string, unknown>; env?: R
       LIMITS_CONFIG_PATH: limitsPath,
       BCRYPT_ROUNDS: '4',
       JWT_SECRET: 'test-secret',
+      ADMIN_TOKEN: 'admin-test',
+      SERVER_RESUME_GRACE_MS: '1500',
+      SERVER_ASSIGN_TIMEOUT_MS: '800',
       ...opts.env,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -197,3 +202,67 @@ export async function connectRegistered(hub: TestHub, user: TestUser, gameId: st
 }
 
 export const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+// ─── Game-Server-Client (Namespace /gameserver) ──────────────────────────────
+
+export async function issueServerKey(hub: TestHub, gameId: string): Promise<{ id: string; key: string }> {
+  const res = await fetch(`${hub.url}/admin/game-servers/${gameId}/keys`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer admin-test' },
+    body: JSON.stringify({ label: 'test' }),
+  });
+  if (res.status !== 201) throw new Error(`issue key failed: ${res.status} ${await res.text()}`);
+  return res.json();
+}
+
+export class GsClient {
+  readonly events: Array<{ event: string; args: any[] }> = [];
+  /** Verhalten bei lobby:assigned: true = annehmen, false = ablehnen, 'ignore' = nie antworten */
+  assignBehaviour: boolean | 'ignore' = true;
+  constructor(readonly socket: Socket) {
+    socket.onAny((event, ...args) => this.events.push({ event, args }));
+    socket.on('lobby:assigned', (_data: unknown, ack: (r: { accept: boolean }) => void) => {
+      if (this.assignBehaviour !== 'ignore') ack({ accept: this.assignBehaviour });
+    });
+  }
+  emitAck<T = any>(event: string, data?: unknown): Promise<T> {
+    return new Promise((resolve) => this.socket.emit(event, data, resolve));
+  }
+  async waitFor<T = any>(event: string, pred: (arg: T) => boolean = () => true, timeoutMs = 5000): Promise<T> {
+    const deadline = Date.now() + timeoutMs;
+    let idx = 0;
+    for (;;) {
+      for (; idx < this.events.length; idx++) {
+        const e = this.events[idx];
+        if (e.event === event && pred(e.args[0])) return e.args[0];
+      }
+      if (Date.now() > deadline) throw new Error(`GS timeout waiting for "${event}"; got: ${this.events.map((e) => e.event).join(',')}`);
+      await sleep(20);
+    }
+  }
+  count(event: string, pred: (arg: any) => boolean = () => true): number {
+    return this.events.filter((e) => e.event === event && pred(e.args[0])).length;
+  }
+  close(): void {
+    this.socket.close();
+  }
+}
+
+export async function connectGameServer(
+  hub: TestHub,
+  auth: { serverKey: string; gameId: string; serverId: string; region?: string; capacity?: number },
+): Promise<GsClient> {
+  const socket = connect(`${hub.url}/gameserver`, {
+    auth: { ...auth, capacity: auth.capacity ?? 2 },
+    transports: ['websocket'],
+    forceNew: true,
+    reconnection: false,
+  });
+  const client = new GsClient(socket);
+  await new Promise<void>((resolve, reject) => {
+    socket.once('connect', () => resolve());
+    socket.once('connect_error', (e) => reject(e));
+  });
+  await client.waitFor('hello');
+  return client;
+}

@@ -43,6 +43,14 @@ function loadConfiguredGames(): GameInfo[] {
   const file = process.env.GAMES_CONFIG_PATH;
   if (!file) return [];
   const raw = JSON.parse(fs.readFileSync(path.resolve(file), 'utf8')) as Array<Partial<GameInfo>>;
+  for (const g of raw) {
+    if (g.serverSupport !== undefined && !['none', 'optional', 'required'].includes(g.serverSupport)) {
+      throw new Error(`[Registry] Ungültiges serverSupport "${String(g.serverSupport)}" für Spiel "${String(g.id)}"`);
+    }
+    if (g.regions !== undefined && (!Array.isArray(g.regions) || g.regions.some((r) => typeof r !== 'string' || !r))) {
+      throw new Error(`[Registry] Ungültige regions für Spiel "${String(g.id)}"`);
+    }
+  }
   return raw.map((g) => ({
     id: String(g.id),
     name: g.name ?? String(g.id),
@@ -57,6 +65,7 @@ function loadConfiguredGames(): GameInfo[] {
 const ALL_GAMES: GameInfo[] = [...HOSTED_GAMES, ...EXTERNAL_GAMES, ...loadConfiguredGames()].map((g) => ({
   ...g,
   reconnectGraceMs: g.reconnectGraceMs ?? DEFAULT_RECONNECT_GRACE_MS,
+  serverSupport: g.serverSupport ?? 'none',
 }));
 
 const registryMap = new Map<string, GameInfo>(ALL_GAMES.map((g) => [g.id, g]));
