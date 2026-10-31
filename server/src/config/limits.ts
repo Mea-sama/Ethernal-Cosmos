@@ -17,6 +17,12 @@ export interface ServerLimits {
     maxPayloadBytes: number;
   };
   rateLimitNoticeCooldownMs: number;
+  /** Max. Größe von JSON-Relay-Payloads in Bytes */
+  maxJsonPayloadBytes: number;
+  /** Wie lange der Host auf eine Beitrittsanfrage antworten darf */
+  joinRequestTimeoutMs: number;
+  /** Nach dieser Zeit werden Mitglieder einer geschlossenen Lobby automatisch freigegeben */
+  closedLobbyTtlMs: number;
   /** Token-Buckets pro Socket und Event-Name */
   socketLimits: Record<string, LimitRule>;
   /** Token-Buckets pro Lobby und Event-Name */
@@ -33,7 +39,11 @@ const defaultLimits: ServerLimits = {
     maxPayloadBytes: 1000,
   },
   rateLimitNoticeCooldownMs: 2000,
+  maxJsonPayloadBytes: 16 * 1024,
+  joinRequestTimeoutMs: 15_000,
+  closedLobbyTtlMs: 60_000,
   socketLimits: {
+    setLobbyState: { refillPerSecond: 0.5, burst: 3 },
     createLobby: { refillPerSecond: 0.1, burst: 2 },
     joinLobby: { refillPerSecond: 0.25, burst: 4 },
     joinLobbyByCode: { refillPerSecond: 0.25, burst: 4 },
@@ -61,6 +71,17 @@ const defaultLimits: ServerLimits = {
     bulkSetUserData: { refillPerSecond: 2, burst: 6 },
     deleteUserData: { refillPerSecond: 8, burst: 30 },
     leaveLobby: { refillPerSecond: 1, burst: 5 },
+    // Social
+    friendRequestByName: { refillPerSecond: 0.1, burst: 10 },
+    friendRequest: { refillPerSecond: 0.5, burst: 10 },
+    friendAction: { refillPerSecond: 1, burst: 10 },
+    socialRead: { refillPerSecond: 5, burst: 20 },
+    socialSettings: { refillPerSecond: 1, burst: 10 },
+    notificationWrite: { refillPerSecond: 2, burst: 10 },
+    dmSend: { refillPerSecond: 1, burst: 8 },
+    dmTyping: { refillPerSecond: 1, burst: 3 },
+    lobbyInvite: { refillPerSecond: 0.5, burst: 6 },
+    lobbyInviteAction: { refillPerSecond: 1, burst: 10 },
   },
   lobbyLimits: {
     sendToLobby: { refillPerSecond: 1200, burst: 2400 },
@@ -134,6 +155,11 @@ function authRule(value: unknown, fallback: AuthLimitRule): AuthLimitRule {
   return { windowMs, max, message };
 }
 
+function posNum(value: unknown, fallback: number): number {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
 function mergeLimits(base: ServerLimits, override: Partial<ServerLimits>): ServerLimits {
   const socketOverrides = override.socketLimits ?? {};
   const lobbyOverrides = override.lobbyLimits ?? {};
@@ -150,6 +176,9 @@ function mergeLimits(base: ServerLimits, override: Partial<ServerLimits>): Serve
       Number.isFinite(Number(override.rateLimitNoticeCooldownMs)) && Number(override.rateLimitNoticeCooldownMs) >= 0
         ? Number(override.rateLimitNoticeCooldownMs)
         : base.rateLimitNoticeCooldownMs,
+    maxJsonPayloadBytes: posNum(override.maxJsonPayloadBytes, base.maxJsonPayloadBytes),
+    joinRequestTimeoutMs: posNum(override.joinRequestTimeoutMs, base.joinRequestTimeoutMs),
+    closedLobbyTtlMs: posNum(override.closedLobbyTtlMs, base.closedLobbyTtlMs),
     socketLimits: mergeRuleMap(base.socketLimits, socketOverrides),
     lobbyLimits: mergeRuleMap(base.lobbyLimits, lobbyOverrides),
     authRateLimits: {

@@ -10,15 +10,17 @@ import { GameIdSchema, KeySchema, VisibilitySchema, BulkEntriesSchema } from '..
 import { serverLimits } from '../config/limits';
 import { HubError, isHubError } from '../errors';
 import { sessionManager, userRoom, gameRoom } from '../session/session.manager';
+import { presenceChanged } from '../social/presence.service';
 import {
   PROTOCOL_VERSION,
   type ClientToServerEvents,
   type ServerToClientEvents,
   type SocketData,
   type IpcGameToHub,
-  type PresenceUser,
   type Lobby,
   type GameInfo,
+  type LobbyChangeReason,
+  type JoinRequestRejectReason,
   type HelloPayload,
 } from '@ethernal/shared';
 
@@ -91,6 +93,8 @@ interface HandleOptions {
   limit: string;
   /** Fehler ohne Ack nicht als Legacy-`error`/`errorDetail`-Event senden (für hochfrequente Events) */
   quiet?: boolean;
+  /** Rate-Limit pro User statt pro Socket (mehrere Sessions vervielfachen das Kontingent nicht) */
+  perUser?: boolean;
 }
 
 type AnyAck = (result: unknown) => void;
@@ -115,7 +119,7 @@ function handle(
         ? ((data as { requestId: string }).requestId.slice(0, 64))
         : undefined;
     try {
-      assertSocketLimit(socket.id, opts.limit);
+      assertSocketLimit(opts.perUser ? socket.data.userId : socket.id, opts.limit);
       const result = await fn(data);
       ack?.({ ok: true, ...(result ?? {}) });
     } catch (err) {
@@ -162,14 +166,49 @@ function asBinaryPayload(payload: unknown): Uint8Array | null {
   return null;
 }
 
-function validateBinaryRelayInput(data: { typeCode: number; payload: unknown }): { typeCode: number; payload: Uint8Array } {
+const BASE64_RE = /^[A-Za-z0-9+/]*={0,2}$/;
+const MESSAGE_TYPE_RE = /^[A-Za-z0-9_.:\-]{1,64}$/;
+const MAX_BINARY_HARD_CAP = 64 * 1024;
+
+function maxBinaryBytesFor(userId: string): number {
+  const override = getGame(sessionManager.getGameId(userId) ?? '')?.maxBinaryBytes;
+  return override && override > 0 ? Math.min(override, MAX_BINARY_HARD_CAP) : MAX_BINARY_PAYLOAD_BYTES;
+}
+
+function validateMessageType(type: unknown): string {
+  if (typeof type !== 'string' || !MESSAGE_TYPE_RE.test(type)) {
+    throw new HubError('INVALID_MESSAGE_TYPE', 'Ungültiger Nachrichtentyp (1–64 Zeichen: A-Z a-z 0-9 _ . : -)');
+  }
+  return type;
+}
+
+function validateJsonPayloadSize(payload: unknown): void {
+  let size: number;
+  try {
+    size = Buffer.byteLength(JSON.stringify(payload ?? null));
+  } catch {
+    throw new HubError('INVALID_INPUT', 'Payload nicht serialisierbar');
+  }
+  if (size > serverLimits.maxJsonPayloadBytes) {
+    throw new HubError('PAYLOAD_TOO_LARGE', `Payload zu groß (max ${serverLimits.maxJsonPayloadBytes} Bytes)`);
+  }
+}
+
+function validateBinaryRelayInput(data: { typeCode: number; payload: unknown }, maxBytes = MAX_BINARY_PAYLOAD_BYTES): { typeCode: number; payload: Uint8Array } {
   if (!Number.isInteger(data?.typeCode) || data.typeCode < 0 || data.typeCode > 65535) {
     throw new HubError('INVALID_BINARY_TYPECODE');
   }
+  // Länge vor dem Dekodieren prüfen und ungültiges Base64 explizit ablehnen
+  if (typeof data.payload === 'string') {
+    if (data.payload.length > Math.ceil((maxBytes * 4) / 3) + 4) {
+      throw new HubError('BINARY_PAYLOAD_TOO_LARGE', `Binary-Payload zu groß (max ${maxBytes} Bytes)`);
+    }
+    if (data.payload.length % 4 !== 0 || !BASE64_RE.test(data.payload)) throw new HubError('INVALID_BINARY_PAYLOAD');
+  }
   const payload = asBinaryPayload(data.payload);
   if (!payload) throw new HubError('INVALID_BINARY_PAYLOAD');
-  if (payload.byteLength > MAX_BINARY_PAYLOAD_BYTES) {
-    throw new HubError('BINARY_PAYLOAD_TOO_LARGE', `Binary-Payload zu groß (max ${MAX_BINARY_PAYLOAD_BYTES} Bytes)`);
+  if (payload.byteLength > maxBytes) {
+    throw new HubError('BINARY_PAYLOAD_TOO_LARGE', `Binary-Payload zu groß (max ${maxBytes} Bytes)`);
   }
   return { typeCode: data.typeCode, payload };
 }
@@ -207,7 +246,8 @@ function toListing(lobby: Lobby): Lobby {
   const settings = keys
     ? Object.fromEntries(Object.entries(lobby.settings).filter(([k]) => keys.includes(k)))
     : lobby.settings;
-  return { ...lobby, inviteCode: undefined, settings };
+  const joinable = lobby.status === 'open' || (lobby.status === 'in_progress' && !!game?.joinInProgress);
+  return { ...lobby, inviteCode: undefined, settings, joinable };
 }
 
 function jsonDepth(value: unknown, depth = 0): number {
@@ -233,26 +273,13 @@ function parseInput<T>(schema: z.ZodType<T, z.ZodTypeDef, unknown>, data: unknow
 
 // ─── Presence (abgeleitet aus Session- und Lobby-Zustand) ─────────────────────
 
-function presenceFor(userId: string): PresenceUser | undefined {
-  const u = sessionManager.get(userId);
-  if (!u || !sessionManager.hasGameSession(userId)) return undefined;
-  const lobby = lobbyManager.getLobbyByUserId(userId);
-  const base: PresenceUser = { userId, username: u.username, gameId: u.gameId };
-  // Private Lobbys dürfen nicht über Presence auffindbar sein
-  if (lobby && !lobby.isPrivate) {
-    base.lobbyId = lobby.id;
-    base.lobbyStatus = lobby.status;
-  }
-  return base;
+/** Presence geht nur noch an Freunde (siehe social/presence.service.ts) — kein globaler Broadcast. */
+function broadcastPresence(_io: AppServer, userId: string): void {
+  presenceChanged(userId);
 }
 
-function broadcastPresence(io: AppServer, userId: string): void {
-  const p = presenceFor(userId);
-  if (p) io.emit('presence:joined', p);
-}
-
-function broadcastLobbyChange(io: AppServer, lobby: Lobby): void {
-  io.to(lobby.id).emit('lobbyUpdated', lobby);
+function broadcastLobbyChange(io: AppServer, lobby: Lobby, reason?: LobbyChangeReason): void {
+  io.to(lobby.id).emit('lobbyUpdated', lobby, reason);
   for (const p of lobby.players) broadcastPresence(io, p.userId);
 }
 
@@ -260,7 +287,7 @@ function broadcastLobbyChange(io: AppServer, lobby: Lobby): void {
 
 // lobbyId → (requesterId → ausstehende Anfrage mit Auto-Reject-Timer)
 const joinRequests = new Map<string, Map<string, { username: string; viaCode: boolean; timer: NodeJS.Timeout }>>();
-const JOIN_REQUEST_TIMEOUT_MS = 15_000;
+const JOIN_REQUEST_TIMEOUT_MS = serverLimits.joinRequestTimeoutMs;
 
 function clearJoinRequest(lobbyId: string, requesterId: string): void {
   const reqs = joinRequests.get(lobbyId);
@@ -272,7 +299,7 @@ function clearJoinRequest(lobbyId: string, requesterId: string): void {
 }
 
 /** Bricht alle offenen Anfragen einer Lobby ab (Host gewechselt oder Lobby geschlossen). */
-function rejectAllJoinRequests(io: AppServer, lobbyId: string, reason: 'host_changed' | 'lobby_closed'): void {
+function rejectAllJoinRequests(io: AppServer, lobbyId: string, reason: JoinRequestRejectReason): void {
   const reqs = joinRequests.get(lobbyId);
   if (!reqs) return;
   for (const requesterId of [...reqs.keys()]) {
@@ -282,22 +309,87 @@ function rejectAllJoinRequests(io: AppServer, lobbyId: string, reason: 'host_cha
 }
 
 /** Entfernt alle offenen Anfragen eines Users (z.B. bei Disconnect) und informiert die jeweiligen Hosts. */
-function withdrawAllRequestsFor(io: AppServer, requesterId: string, reason: 'cancelled' | 'timeout'): void {
+function withdrawAllRequestsFor(
+  io: AppServer,
+  requesterId: string,
+  reason: 'cancelled' | 'timeout',
+  opts: { exceptLobbyId?: string; notifyRequester?: boolean } = {},
+): void {
   for (const [lobbyId, reqs] of [...joinRequests.entries()]) {
-    if (!reqs.has(requesterId)) continue;
+    if (!reqs.has(requesterId) || lobbyId === opts.exceptLobbyId) continue;
     clearJoinRequest(lobbyId, requesterId);
+    if (opts.notifyRequester) io.to(userRoom(requesterId)).emit('joinRequestRejected', { lobbyId, reason: 'superseded' });
     const lobby = lobbyManager.getLobby(lobbyId);
     if (lobby) io.to(userRoom(lobby.hostId)).emit('joinRequestWithdrawn', { requesterId, reason });
   }
 }
 
+/** Stellt dem (neuen) Host alle offenen Beitrittsanfragen zu — nach Host-Wechsel oder Reconnect. */
+function redeliverJoinRequests(target: { emit: (...a: any[]) => unknown }, lobbyId: string): void {
+  for (const [requesterId, entry] of joinRequests.get(lobbyId) ?? []) {
+    target.emit('joinRequestReceived', { lobbyId, requesterId, username: entry.username });
+  }
+}
+
+// ─── Relay: Reihenfolge & Pufferung für Mitglieder in der Reconnect-Gnadenfrist ─
+
+const relaySeq = new Map<string, number>();
+function nextSeq(lobbyId: string): number {
+  const n = (relaySeq.get(lobbyId) ?? 0) + 1;
+  relaySeq.set(lobbyId, n);
+  return n;
+}
+
+const GRACE_BUFFER_MAX = 50;
+const GRACE_BUFFER_MAX_AGE_MS = 30_000;
+const graceBuffers = new Map<string, Array<{ at: number; event: 'message' | 'messageBinary'; msg: unknown }>>();
+
+/** Lobby-Broadcasts für getrennte Mitglieder kurz puffern (begrenzt) und beim Resume nachliefern. */
+function bufferForGrace(lobby: Lobby, senderId: string, event: 'message' | 'messageBinary', msg: unknown): void {
+  const now = Date.now();
+  for (const p of lobby.players) {
+    if (p.userId === senderId || p.connected !== false) continue;
+    const buf = (graceBuffers.get(p.userId) ?? []).filter((e) => now - e.at <= GRACE_BUFFER_MAX_AGE_MS);
+    buf.push({ at: now, event, msg });
+    if (buf.length > GRACE_BUFFER_MAX) buf.shift();
+    graceBuffers.set(p.userId, buf);
+  }
+}
+
+function replayBuffered(socket: AppSocket, lobbyId: string): void {
+  const buf = graceBuffers.get(socket.data.userId);
+  graceBuffers.delete(socket.data.userId);
+  if (!buf || lobbyManager.getLobbyByUserId(socket.data.userId)?.id !== lobbyId) return;
+  const now = Date.now();
+  for (const e of buf) {
+    if (now - e.at <= GRACE_BUFFER_MAX_AGE_MS) (socket as unknown as { emit: (...a: unknown[]) => void }).emit(e.event, e.msg);
+  }
+}
+
+// ─── Geschlossene Lobbys: automatische Freigabe der Mitglieder ─────────────────
+
+const closedReleaseTimers = new Map<string, NodeJS.Timeout>();
+
+function scheduleClosedRelease(io: AppServer, lobbyId: string): void {
+  if (closedReleaseTimers.has(lobbyId)) return;
+  const timer = setTimeout(() => {
+    closedReleaseTimers.delete(lobbyId);
+    const lobby = lobbyManager.getLobby(lobbyId);
+    if (!lobby || lobby.status !== 'closed') return;
+    for (const p of [...lobby.players]) {
+      leaveLobbyFlow(io, p.userId, { notifyInstance: false });
+      sessionManager.dropIfIdle(p.userId);
+    }
+  }, serverLimits.closedLobbyTtlMs);
+  timer.unref();
+  closedReleaseTimers.set(lobbyId, timer);
+}
+
 // ─── Lobby verlassen (gemeinsamer Pfad für Leave, Disconnect-Ablauf, Kick) ────
 
 function leaveLobbyFlow(io: AppServer, userId: string, opts: { notifyInstance?: boolean } = {}): void {
-  const before = lobbyManager.getLobbyByUserId(userId);
-  const wasHost = before?.hostId === userId;
   sessionManager.clearGrace(userId);
-  const { lobby, dissolved, lobbyId } = lobbyManager.leaveLobby(userId);
+  const { lobby, dissolved, lobbyId, hostChanged, evicted } = lobbyManager.leaveLobby(userId);
   if (!lobbyId) return;
 
   io.in(userRoom(userId)).socketsLeave(lobbyId);
@@ -309,10 +401,24 @@ function leaveLobbyFlow(io: AppServer, userId: string, opts: { notifyInstance?: 
     // Subprocess beenden — sonst leakt pro aufgelöster Lobby ein Prozess
     instanceManager.stopInstance(lobbyId);
     lobbyBuckets.delete(lobbyId);
+    relaySeq.delete(lobbyId);
+    clearTimeout(closedReleaseTimers.get(lobbyId));
+    closedReleaseTimers.delete(lobbyId);
     rejectAllJoinRequests(io, lobbyId, 'lobby_closed');
+    // Host-Policy 'dissolve': verbleibende Mitglieder werden aus der aufgelösten Lobby entfernt
+    for (const p of evicted ?? []) {
+      if (p.userId === userId) continue;
+      io.to(userRoom(p.userId)).emit('playerKicked', { lobbyId });
+      io.in(userRoom(p.userId)).socketsLeave(lobbyId);
+      sessionManager.clearGrace(p.userId);
+      broadcastPresence(io, p.userId);
+      sessionManager.dropIfIdle(p.userId);
+    }
   } else if (lobby) {
-    broadcastLobbyChange(io, lobby);
-    if (wasHost && lobby.hostId !== userId) rejectAllJoinRequests(io, lobbyId, 'host_changed');
+    broadcastLobbyChange(io, lobby, hostChanged ? 'host_left' : 'player_left');
+    if (hostChanged) {
+      redeliverJoinRequests(io.to(userRoom(lobby.hostId)), lobbyId);
+    }
   }
   broadcastPresence(io, userId);
 }
@@ -322,9 +428,10 @@ function bindUserToLobby(io: AppServer, userId: string, lobbyId: string): void {
   io.in(userRoom(userId)).socketsJoin(lobbyId);
 }
 
-function afterJoin(io: AppServer, userId: string, username: string, lobby: Lobby): void {
+export function afterJoin(io: AppServer, userId: string, username: string, lobby: Lobby): void {
+  withdrawAllRequestsFor(io, userId, 'cancelled');
   bindUserToLobby(io, userId, lobby.id);
-  broadcastLobbyChange(io, lobby);
+  broadcastLobbyChange(io, lobby, 'player_joined');
   if (instanceManager.isRunning(lobby.id)) {
     instanceManager.sendToInstance(lobby.id, { type: 'PLAYER_JOIN', payload: { userId, username } });
   }
@@ -334,7 +441,8 @@ function afterJoin(io: AppServer, userId: string, username: string, lobby: Lobby
 
 function handleLastSessionGone(io: AppServer, userId: string): void {
   withdrawAllRequestsFor(io, userId, 'cancelled');
-  io.emit('presence:left', { userId });
+  socketBuckets.delete(userId);
+  presenceChanged(userId);
 
   const lobby = lobbyManager.getLobbyByUserId(userId);
   if (!lobby) {
@@ -353,7 +461,7 @@ function handleLastSessionGone(io: AppServer, userId: string): void {
   if (instanceManager.isRunning(lobby.id)) {
     instanceManager.sendToInstance(lobby.id, { type: 'PLAYER_DISCONNECT', payload: { userId } });
   }
-  if (updated) io.to(lobby.id).emit('lobbyUpdated', updated);
+  if (updated) io.to(lobby.id).emit('lobbyUpdated', updated, 'player_disconnected');
 
   sessionManager.startGrace(userId, grace, () => {
     console.log(`[Session] Reconnect-Gnadenfrist abgelaufen für ${userId}`);
@@ -375,7 +483,9 @@ function resumeIntoLobby(io: AppServer, socket: AppSocket, lobby: Lobby): void {
       payload: { userId, username: socket.data.username },
     });
   }
-  if (wasInGrace) io.to(lobby.id).emit('lobbyUpdated', updated);
+  if (wasInGrace) io.to(lobby.id).emit('lobbyUpdated', updated, 'player_reconnected');
+  if (lobby.hostId === userId) redeliverJoinRequests(socket, lobby.id);
+  if (socket.data.clientType === 'game') replayBuffered(socket, lobby.id);
   socket.emit('session:resumed', { state: sessionManager.stateFor(userId, socket.data.sessionId, lobby.id), lobby: updated });
 }
 
@@ -413,6 +523,13 @@ export function registerSocketAuth(io: AppServer): void {
  * Socket.io-Events an alle Spieler im jeweiligen Lobby-Room weiter.
  */
 export function registerIpcRouting(io: AppServer): void {
+  instanceManager.setExitCallback((lobbyId, code) => {
+    const lobby = lobbyManager.getLobby(lobbyId);
+    if (!lobby) return;
+    io.to(lobbyId).emit('gameCrashed', { lobbyId, code });
+    broadcastLobbyChange(io, lobby, 'state_changed');
+    scheduleClosedRelease(io, lobbyId);
+  });
   instanceManager.setMessageCallback((lobbyId: string, msg: IpcGameToHub) => {
     switch (msg.type) {
       case 'GAME_STATE':
@@ -428,11 +545,21 @@ export function registerIpcRouting(io: AppServer): void {
       case 'GAME_EVENT':
         io.to(lobbyId).emit('gameEvent', msg.payload);
         break;
+      case 'GAME_STARTED': {
+        const before = lobbyManager.getLobby(lobbyId);
+        if (!before || before.status === 'closed' || before.status === 'in_progress') break;
+        lobbyManager.setStatus(lobbyId, 'in_progress');
+        broadcastLobbyChange(io, before, 'state_changed');
+        break;
+      }
       case 'GAME_OVER': {
         io.to(lobbyId).emit('gameOver', msg.payload);
         lobbyManager.setStatus(lobbyId, 'closed');
         const lobby = lobbyManager.getLobby(lobbyId);
-        if (lobby) for (const p of lobby.players) broadcastPresence(io, p.userId);
+        if (lobby) {
+          broadcastLobbyChange(io, lobby, 'state_changed');
+          scheduleClosedRelease(io, lobbyId);
+        }
         break;
       }
       case 'SAVE_META': {
@@ -492,7 +619,7 @@ export function registerLobbyHandlers(io: AppServer): void {
       protocolVersion: PROTOCOL_VERSION,
       serverTime: Date.now(),
       sessionId,
-      capabilities: ['acks', 'gameRegistration', 'reconnect', 'userDataWriteScope', 'userDataSocketWrite'],
+      capabilities: ['acks', 'gameRegistration', 'reconnect', 'userDataWriteScope', 'userDataSocketWrite', 'social'],
       gameId: sessionManager.getGameId(userId),
       lobbyId: existingLobby?.id,
     };
@@ -528,13 +655,6 @@ export function registerLobbyHandlers(io: AppServer): void {
       return { state: sessionManager.stateFor(userId, sessionId, lobby?.id), lobby };
     });
 
-    // ── presence:list ────────────────────────────────────────────────────────
-    handle(socket, 'presence:list', { limit: 'presenceList' }, () => {
-      const users = sessionManager.onlineGameUsers().map((u) => presenceFor(u.userId)!).filter(Boolean);
-      socket.emit('presence:list', users);
-      return { users };
-    });
-
     // ── listLobbies ─────────────────────────────────────────────────────────
     handle(socket, 'listLobbies', { limit: 'listLobbies' }, () => {
       const game = requireGame(userId);
@@ -561,7 +681,7 @@ export function registerLobbyHandlers(io: AppServer): void {
         io.in(userRoom(userId)).socketsLeave(lobby.id);
         lobbyManager.removeLobby(lobby.id);
         instanceManager.stopInstance(lobby.id);
-        throw new HubError('LOBBY_START_FAILED');
+        throw isHubError(err) && err.code === 'INSTANCE_LIMIT' ? err : new HubError('LOBBY_START_FAILED');
       }
       socket.emit('lobbyCreated', lobby);
       broadcastPresence(io, userId);
@@ -598,6 +718,7 @@ export function registerLobbyHandlers(io: AppServer): void {
     handle(socket, 'getLobbyInfo', { limit: 'getLobbyInfo' }, () => {
       const lobby = requireLobby(userId);
       socket.emit('lobbyInfo', lobby);
+      if (lobby.hostId === userId) redeliverJoinRequests(socket, lobby.id);
       return { lobby };
     });
 
@@ -611,7 +732,7 @@ export function registerLobbyHandlers(io: AppServer): void {
       if (instanceManager.isRunning(lobby.id)) {
         instanceManager.sendToInstance(lobby.id, { type: 'PLAYER_LEAVE', payload: { userId: playerId } });
       }
-      broadcastLobbyChange(io, lobby);
+      broadcastLobbyChange(io, lobby, 'kicked');
       broadcastPresence(io, playerId);
       if (!sessionManager.isConnected(playerId)) sessionManager.dropIfIdle(playerId);
       return { lobby };
@@ -621,19 +742,31 @@ export function registerLobbyHandlers(io: AppServer): void {
     handle(socket, 'transferHost', { limit: 'transferHost' }, (data) => {
       const { playerId } = parseInput(z.object({ playerId: z.string().min(1).max(64) }), data);
       const lobby = lobbyManager.transferHost(userId, playerId);
-      broadcastLobbyChange(io, lobby);
+      broadcastLobbyChange(io, lobby, 'host_transferred');
+      redeliverJoinRequests(io.to(userRoom(playerId)), lobby.id);
       return { lobby };
     });
 
     // ── lockLobby / unlockLobby ───────────────────────────────────────────────
     handle(socket, 'lockLobby', { limit: 'lockLobby' }, () => {
       const lobby = lobbyManager.setLocked(userId, true);
-      broadcastLobbyChange(io, lobby);
+      broadcastLobbyChange(io, lobby, 'locked');
       return { lobby };
     });
     handle(socket, 'unlockLobby', { limit: 'unlockLobby' }, () => {
       const lobby = lobbyManager.setLocked(userId, false);
-      broadcastLobbyChange(io, lobby);
+      broadcastLobbyChange(io, lobby, 'unlocked');
+      // Offene Anfragen sind hinfällig: Anfragende sollen normal beitreten
+      rejectAllJoinRequests(io, lobby.id, 'unlocked');
+      return { lobby };
+    });
+
+    // ── setLobbyState (Host; für Relay-Spiele ohne Subprocess) ────────────────
+    handle(socket, 'setLobbyState', { limit: 'setLobbyState' }, (data) => {
+      const { state } = parseInput(z.object({ state: z.enum(['in_progress', 'closed']) }), data);
+      const lobby = lobbyManager.setStateByHost(userId, state);
+      broadcastLobbyChange(io, lobby, 'state_changed');
+      if (state === 'closed') scheduleClosedRelease(io, lobby.id);
       return { lobby };
     });
 
@@ -688,9 +821,12 @@ export function registerLobbyHandlers(io: AppServer): void {
         });
         afterJoin(io, requesterId, entry.username, updated);
         io.to(userRoom(requesterId)).emit('joinRequestAccepted', { lobby: updated });
-      } catch {
-        io.to(userRoom(requesterId)).emit('joinRequestRejected', { lobbyId: lobby.id, reason: 'lobby_closed' });
-        throw new HubError('LOBBY_CLOSED', 'Beitritt nicht mehr möglich (Lobby voll/geschlossen oder Spieler nicht mehr verfügbar)');
+      } catch (err) {
+        const code = isHubError(err) ? err.code : 'LOBBY_CLOSED';
+        const reason: JoinRequestRejectReason =
+          code === 'ALREADY_IN_LOBBY' ? 'already_in_lobby' : code === 'LOBBY_FULL' ? 'lobby_full' : 'lobby_closed';
+        io.to(userRoom(requesterId)).emit('joinRequestRejected', { lobbyId: lobby.id, reason });
+        throw isHubError(err) ? err : new HubError('LOBBY_CLOSED');
       }
     });
 
@@ -702,36 +838,50 @@ export function registerLobbyHandlers(io: AppServer): void {
       const target = targetLobby.players.find((p) => p.userId === playerId);
       if (target?.connected === false || !sessionManager.hasGameSession(playerId)) throw new HubError('PLAYER_UNREACHABLE');
     };
+    const RelayBase = { type: z.string(), payload: z.unknown(), echo: z.boolean().optional() };
 
-    handle(socket, 'sendToLobby', { limit: 'sendToLobby' }, (data) => {
+    handle(socket, 'sendToLobby', { limit: 'sendToLobby', perUser: true }, (data) => {
       const lobby = requireLobby(userId);
       assertLobbyLimit(lobby.id, 'sendToLobby');
-      const { type, payload } = parseInput(z.object({ type: z.string().min(1).max(64), payload: z.unknown() }), data);
-      // Alle anderen Mitglieder (auch deren Sessions); alle eigenen Sessions des Senders ausgenommen
-      io.to(lobby.id).except(userRoom(userId)).emit('message', { from: userId, type, payload });
+      const { type, payload, echo } = parseInput(z.object(RelayBase), data);
+      validateMessageType(type);
+      validateJsonPayloadSize(payload);
+      const msg = { from: userId, seq: nextSeq(lobby.id), type, payload };
+      bufferForGrace(lobby, userId, 'message', msg);
+      // Standard: alle anderen Mitglieder; mit echo:true bekommt der Sender (alle seine Sessions) die Nachricht ebenfalls
+      (echo ? io.to(lobby.id) : io.to(lobby.id).except(userRoom(userId))).emit('message', msg);
+      return { seq: msg.seq };
     });
 
-    handle(socket, 'sendToLobbyBinary', { limit: 'sendToLobbyBinary' }, (data) => {
+    handle(socket, 'sendToLobbyBinary', { limit: 'sendToLobbyBinary', perUser: true }, (data) => {
       const lobby = requireLobby(userId);
       assertLobbyLimit(lobby.id, 'sendToLobbyBinary');
-      const bin = validateBinaryRelayInput(data);
-      io.to(lobby.id).except(userRoom(userId)).emit('messageBinary', { from: userId, typeCode: bin.typeCode, payload: bin.payload });
+      const bin = validateBinaryRelayInput(data, maxBinaryBytesFor(userId));
+      const msg = { from: userId, seq: nextSeq(lobby.id), typeCode: bin.typeCode, payload: bin.payload };
+      bufferForGrace(lobby, userId, 'messageBinary', msg);
+      (data?.echo === true ? io.to(lobby.id) : io.to(lobby.id).except(userRoom(userId))).emit('messageBinary', msg);
+      return { seq: msg.seq };
     });
 
-    handle(socket, 'sendToPlayer', { limit: 'sendToPlayer' }, (data) => {
-      const { playerId, type, payload } = parseInput(
-        z.object({ playerId: z.string().min(1).max(64), type: z.string().min(1).max(64), payload: z.unknown() }),
-        data,
-      );
+    handle(socket, 'sendToPlayer', { limit: 'sendToPlayer', perUser: true }, (data) => {
+      const { playerId, type, payload, echo } = parseInput(z.object({ playerId: z.string().min(1).max(64), ...RelayBase }), data);
+      validateMessageType(type);
+      validateJsonPayloadSize(payload);
+      if (playerId === userId && !echo) throw new HubError('CANNOT_TARGET_SELF');
       relayTarget(playerId);
-      io.to(gameRoom(playerId)).emit('message', { from: userId, type, payload });
+      const msg = { from: userId, seq: nextSeq(requireLobby(userId).id), type, payload };
+      io.to(gameRoom(playerId)).emit('message', msg);
+      return { seq: msg.seq };
     });
 
-    handle(socket, 'sendToPlayerBinary', { limit: 'sendToPlayerBinary' }, (data) => {
+    handle(socket, 'sendToPlayerBinary', { limit: 'sendToPlayerBinary', perUser: true }, (data) => {
       const playerId = parseInput(z.string().min(1).max(64), data?.playerId);
+      if (playerId === userId && data?.echo !== true) throw new HubError('CANNOT_TARGET_SELF');
       relayTarget(playerId);
-      const bin = validateBinaryRelayInput(data);
-      io.to(gameRoom(playerId)).emit('messageBinary', { from: userId, typeCode: bin.typeCode, payload: bin.payload });
+      const bin = validateBinaryRelayInput(data, maxBinaryBytesFor(userId));
+      const msg = { from: userId, seq: nextSeq(requireLobby(userId).id), typeCode: bin.typeCode, payload: bin.payload };
+      io.to(gameRoom(playerId)).emit('messageBinary', msg);
+      return { seq: msg.seq };
     });
 
     // ── User-Daten (Socket-Parität zu REST) ──────────────────────────────────
@@ -799,7 +949,7 @@ export function registerLobbyHandlers(io: AppServer): void {
       const { remaining } = sessionManager.remove(userId, socket.id);
       if (remaining > 0) {
         // Anderer Socket des Users aktiv (Takeover/Panel): nur Presence neu bewerten
-        if (!sessionManager.hasGameSession(userId)) io.emit('presence:left', { userId });
+        if (!sessionManager.hasGameSession(userId)) presenceChanged(userId);
         return;
       }
       handleLastSessionGone(io, userId);
@@ -809,7 +959,7 @@ export function registerLobbyHandlers(io: AppServer): void {
 
 // ─── Hilfsfunktion: Beitrittsanfrage (gemeinsam für ID + Invite-Code) ─────────
 
-function startJoinRequest(
+export function startJoinRequest(
   io: AppServer,
   userId: string,
   username: string,
@@ -831,6 +981,8 @@ function startJoinRequest(
     return { pending: true };
   }
   assertLobbyLimit(lobby.id, 'requestJoinLobby');
+  // Pro User nur eine offene Anfrage: neue Anfrage ersetzt alte
+  withdrawAllRequestsFor(io, userId, 'cancelled', { exceptLobbyId: lobby.id, notifyRequester: true });
 
   const timer = setTimeout(() => {
     clearJoinRequest(lobby.id, userId);

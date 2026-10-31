@@ -7,7 +7,6 @@ import type {
   Lobby,
   UserDataEntry,
   DataVisibility,
-  PresenceUser,
   RelayMessage,
   RelayBinaryMessage,
   JoinRequestRejectReason,
@@ -17,11 +16,32 @@ import type {
   SessionState,
   HelloPayload,
   BulkDataEntry,
+  FriendInfo,
+  FriendRequestResult,
+  FriendRequestsResult,
+  FriendPresence,
+  SocialSettings,
+  SocialSnapshot,
+  HubNotification,
+  NotificationBacklog,
+  NotificationCounts,
+  NotificationListResult,
+  DirectMessage,
+  DmConversation,
+  DmHistoryResult,
+  LobbyInvite,
+  FriendLobbyInfo,
 } from '@ethernal/shared';
 
 // ─── Types ───────────────────────────────────────────────────────
 
-export type { Lobby, UserDataEntry, DataVisibility, PresenceUser, JoinRequestRejectReason } from '@ethernal/shared';
+export type { Lobby, UserDataEntry, DataVisibility, JoinRequestRejectReason } from '@ethernal/shared';
+export type {
+  FriendInfo, FriendRequestInfo, FriendRequestResult, FriendRequestsResult, FriendPresence, FriendPresenceStatus,
+  OwnPresenceStatus, SocialSettings, SocialSnapshot, HubNotification, NotificationType, NotificationBacklog,
+  NotificationCounts, NotificationListResult, DirectMessage, DmConversation, DmHistoryResult, LobbyInvite,
+  LobbyInviteCancelReason, FriendLobbyInfo,
+} from '@ethernal/shared';
 export type { RelayMessage, RelayBinaryMessage, ErrorCode, HubErrorPayload, GameInfo, SessionState, HelloPayload, BulkDataEntry } from '@ethernal/shared';
 
 /** Error thrown by every SDK call; `code` is a stable machine-readable value (see ErrorCode). */
@@ -183,6 +203,12 @@ export class EthernalClient extends EventEmitter {
   }
 
   /** (Host only) Unlock the lobby. */
+  /** Host: Lobby-Status setzen (für Spiele ohne Subprocess). */
+  async setLobbyState(state: 'in_progress' | 'closed'): Promise<Lobby> {
+    const res = await this.call<{ lobby: Lobby }>('setLobbyState', { state });
+    return res.lobby;
+  }
+
   async unlockLobby(): Promise<void> {
     await this.call('unlockLobby');
   }
@@ -288,11 +314,132 @@ export class EthernalClient extends EventEmitter {
     await this.call('deleteUserData', { gameId, key });
   }
 
-  // ─── Presence ─────────────────────────────────────────────────────────────
+  // ─── Social: Friends ──────────────────────────────────────────────────────
+  // There are no public profiles. Presence, lobbies and messages are only visible between friends.
+  // Every event has a pull equivalent (see docs/social-api.md) — `syncSocial()` returns everything at once.
 
-  /** Request the current list of online users. */
-  async listPresence(): Promise<PresenceUser[]> {
-    return (await this.call<{ users: PresenceUser[] }>('presence:list')).users;
+  /** Send a friend request by exact username. Only answers REQUEST_SENT or NO_SUCH_PLAYER (never leaks more). */
+  async requestFriendByName(username: string): Promise<FriendRequestResult> {
+    return (await this.call<{ result: FriendRequestResult }>('friend:request', { username })).result;
+  }
+
+  /** Send a friend request to a member of your current lobby. */
+  async requestFriendFromLobby(userId: string): Promise<FriendRequestResult> {
+    return (await this.call<{ result: FriendRequestResult }>('friend:request', { userId })).result;
+  }
+
+  async respondFriendRequest(requestId: string, accept: boolean): Promise<void> {
+    await this.call('friend:respond', { requestId, accept });
+  }
+
+  async cancelFriendRequest(requestId: string): Promise<void> {
+    await this.call('friend:cancel', { requestId });
+  }
+
+  async removeFriend(friendId: string): Promise<void> {
+    await this.call('friend:remove', { friendId });
+  }
+
+  async listFriends(): Promise<FriendInfo[]> {
+    return (await this.call<{ friends: FriendInfo[] }>('friend:list')).friends;
+  }
+
+  async listFriendRequests(): Promise<FriendRequestsResult> {
+    return this.call<FriendRequestsResult>('friend:requests');
+  }
+
+  /** Current presence of all friends (pull variant of the `friend:presence` event). */
+  async getFriendsPresence(): Promise<FriendPresence[]> {
+    return (await this.call<{ presence: FriendPresence[] }>('presence:friends')).presence;
+  }
+
+  async getSocialSettings(): Promise<SocialSettings> {
+    return (await this.call<{ settings: SocialSettings }>('social:getSettings')).settings;
+  }
+
+  /** Set own status (online/away/busy/invisible), last-seen visibility, DM read receipts, muted notification types. */
+  async setSocialSettings(patch: Partial<SocialSettings>): Promise<SocialSettings> {
+    return (await this.call<{ settings: SocialSettings }>('social:setSettings', patch)).settings;
+  }
+
+  /** One consistent snapshot of the whole social state. Pass the last `etag` to get `{ notModified: true }` cheaply. */
+  async syncSocial(etag?: string): Promise<SocialSnapshot | { notModified: true; etag: string }> {
+    return this.call('social:sync', etag ? { etag } : {});
+  }
+
+  /** Lobby info of a friend (only for friends; the lobby ID is only included for non-private lobbies). */
+  async getFriendLobby(friendId: string): Promise<FriendLobbyInfo | null> {
+    return (await this.call<{ lobby: FriendLobbyInfo | null }>('social:friendLobby', { friendId })).lobby;
+  }
+
+  // ─── Social: Notifications ────────────────────────────────────────────────
+
+  async listNotifications(opts: { since?: number; unreadOnly?: boolean; limit?: number; cursor?: string } = {}): Promise<NotificationListResult> {
+    return this.call<NotificationListResult>('notification:list', opts);
+  }
+
+  /** Mark notifications read by `ids` and/or everything created up to `upTo` (unix ms). */
+  async markNotificationsRead(input: { ids?: string[]; upTo?: number }): Promise<{ marked: number; unread: number }> {
+    return this.call('notification:markRead', input);
+  }
+
+  async getNotificationCounts(): Promise<NotificationCounts> {
+    return this.call<NotificationCounts>('notification:counts');
+  }
+
+  // ─── Social: Direct messages (friends only) ──────────────────────────────
+
+  /** Send a text DM (max 1000 chars, plain text — escape on display). Stored for 30 days. */
+  async sendDirectMessage(toUserId: string, text: string): Promise<DirectMessage> {
+    return (await this.call<{ message: DirectMessage }>('dm:send', { toUserId, text })).message;
+  }
+
+  /** Conversation history, oldest first. Page backwards with `before` = previous `nextBefore`. */
+  async getDmHistory(withUserId: string, opts: { before?: number; limit?: number } = {}): Promise<DmHistoryResult> {
+    return this.call<DmHistoryResult>('dm:history', { withUserId, ...opts });
+  }
+
+  async listConversations(): Promise<DmConversation[]> {
+    return (await this.call<{ conversations: DmConversation[] }>('dm:conversations')).conversations;
+  }
+
+  async markConversationRead(withUserId: string): Promise<number> {
+    return (await this.call<{ marked: number }>('dm:markRead', { withUserId })).marked;
+  }
+
+  /** Ephemeral typing indicator. */
+  async sendTyping(toUserId: string): Promise<void> {
+    await this.call('dm:typing', { toUserId });
+  }
+
+  // ─── Social: Lobby invites & joining friends ─────────────────────────────
+
+  /** Invite an online friend (same game) to your lobby. Expires after 5 minutes. */
+  async inviteFriend(friendId: string): Promise<LobbyInvite> {
+    return (await this.call<{ invite: LobbyInvite }>('lobby:invite', { friendId })).invite;
+  }
+
+  async cancelLobbyInvite(inviteId: string): Promise<void> {
+    await this.call('lobby:cancelInvite', { inviteId });
+  }
+
+  /** Accept an invite and join the lobby (works for private lobbies). */
+  async acceptLobbyInvite(inviteId: string): Promise<Lobby> {
+    return (await this.call<{ lobby: Lobby }>('lobby:acceptInvite', { inviteId })).lobby;
+  }
+
+  async declineLobbyInvite(inviteId: string): Promise<void> {
+    await this.call('lobby:declineInvite', { inviteId });
+  }
+
+  /** Active (unexpired) invites addressed to you. */
+  async listLobbyInvites(): Promise<LobbyInvite[]> {
+    return (await this.call<{ invites: LobbyInvite[] }>('lobby:invites')).invites;
+  }
+
+  /** Join a friend's lobby: direct join if open, join request if locked, requires an invite if private. */
+  async joinFriend(friendId: string): Promise<{ pending: boolean; lobby?: Lobby }> {
+    return this.call('lobby:joinFriend', { friendId });
   }
 
   // ─── User Data (REST) ─────────────────────────────────────────────────────
@@ -421,9 +568,21 @@ export class EthernalClient extends EventEmitter {
     forward('messageBinary');
     forward('userData');
     forward('playerData');
-    forward('presence:joined');
-    forward('presence:left');
-    forward('presence:list');
+    forward('friend:presence');
+    forward('friend:requestReceived');
+    forward('friend:requestAccepted');
+    forward('friend:requestDeclined');
+    forward('friend:requestCancelled');
+    forward('friend:removed');
+    forward('notification');
+    forward('notification:backlog');
+    forward('dm:received');
+    forward('dm:delivered');
+    forward('dm:read');
+    forward('dm:typing');
+    forward('lobby:inviteReceived');
+    forward('lobby:inviteCancelled');
+    forward('lobby:inviteDeclined');
     forward('joinRequestReceived');
     forward('joinRequestPending');
     forward('joinRequestAccepted');

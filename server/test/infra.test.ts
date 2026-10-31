@@ -11,11 +11,11 @@ describe('Migrationen (#12)', () => {
     await db.execute({ sql: "INSERT INTO users VALUES ('u','n','h',1)" , args: [] });
     await db.execute("INSERT INTO user_data (user_id, game_id, key, value, visibility, updated_at) VALUES ('u','g','k','1','private',1)");
 
-    expect(await runMigrations(db)).toEqual([2]);
+    expect(await runMigrations(db)).toEqual([2, 3]);
     expect(await runMigrations(db)).toEqual([]);
     const row = (await db.execute('SELECT write_scope, version FROM user_data')).rows[0];
     expect(row).toMatchObject({ write_scope: 'client', version: 1 });
-    expect((await db.execute('SELECT version FROM schema_migrations ORDER BY version')).rows.map((r) => Number(r.version))).toEqual([1, 2]);
+    expect((await db.execute('SELECT version FROM schema_migrations ORDER BY version')).rows.map((r) => Number(r.version))).toEqual([1, 2, 3]);
   });
 
   it('Bestehende DB ohne schema_migrations (alte Installation) wird ohne Datenverlust übernommen', async () => {
