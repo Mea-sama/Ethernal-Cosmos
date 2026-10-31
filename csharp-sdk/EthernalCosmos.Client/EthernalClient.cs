@@ -142,6 +142,27 @@ public sealed class EthernalClient : IAsyncDisposable
         return result;
     }
 
+    /// <summary>Revoke all refresh tokens of this account and disconnect every session.</summary>
+    public async Task LogoutAllAsync(CancellationToken ct = default)
+    {
+        await AuthedFetchAsync(HttpMethod.Post, "/auth/logout-all", new { }, ct);
+        await LogoutLocalAsync();
+    }
+
+    /// <summary>Renew the access token and hand it to the live socket (<c>auth:refresh</c>).</summary>
+    public async Task RefreshSocketAuthAsync(CancellationToken ct = default)
+    {
+        await DoRefreshAsync(ct);
+        await CallAsync<object?>("auth:refresh", new { token = _accessToken }, ct);
+    }
+
+    private async Task LogoutLocalAsync()
+    {
+        if (_socket is not null) { await _socket.DisconnectAsync(); _socket = null; }
+        _accessToken = null;
+        _refreshToken = null;
+    }
+
     /// <summary>Log out: revoke the refresh token and disconnect the socket.</summary>
     public async Task LogoutAsync(CancellationToken ct = default)
     {
@@ -495,7 +516,16 @@ public sealed class EthernalClient : IAsyncDisposable
         RegisterEvent<HelloPayload>(socket,        "hello",            d => Hello?.Invoke(d));
         RegisterEvent<SessionResumedData>(socket,  "session:resumed",  d => SessionResumed?.Invoke(d));
         RegisterEvent<SessionReplacedData>(socket, "session:replaced", d => SessionReplaced?.Invoke(d));
-        RegisterEvent<HubErrorPayload>(socket,     "errorDetail",      d => ErrorDetail?.Invoke(d));
+        RegisterEvent<HubErrorPayload>(socket,     "errorDetail",      d =>
+        {
+            ErrorDetail?.Invoke(d);
+            if (d.Code == "AUTH_EXPIRED" && _refreshToken is not null)
+                _ = Task.Run(async () =>
+                {
+                    try { await RefreshSocketAuthAsync(); }
+                    catch { AuthError?.Invoke("Token konnte nicht erneuert werden"); }
+                });
+        });
         RegisterEvent<Lobby>(socket,     "lobbyCreated",  d => LobbyCreated?.Invoke(d));
         RegisterEvent<Lobby>(socket,     "lobbyUpdated",  d => LobbyUpdated?.Invoke(d));
         RegisterEvent<Lobby[]>(socket,   "lobbyList",     d => LobbyList?.Invoke(d));

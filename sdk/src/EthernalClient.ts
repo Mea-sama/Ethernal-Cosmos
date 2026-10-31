@@ -140,6 +140,22 @@ export class EthernalClient extends EventEmitter {
     this.refreshToken = null;
   }
 
+  /** Revoke all refresh tokens of this account and disconnect every session. */
+  async logoutAll(): Promise<void> {
+    await this.authedFetch('/auth/logout-all', { method: 'POST', body: '{}', headers: { 'Content-Type': 'application/json' } });
+    this.socket?.disconnect();
+    this.socket = null;
+    this.registeredGameId = null;
+    this.accessToken = null;
+    this.refreshToken = null;
+  }
+
+  /** Renew the access token and hand it to the live socket (`auth:refresh`). */
+  async refreshSocketAuth(): Promise<void> {
+    await this.doRefresh();
+    await this.call('auth:refresh', { token: this.accessToken });
+  }
+
   // ─── Lobby ────────────────────────────────────────────────────────────────
 
   /**
@@ -526,6 +542,12 @@ export class EthernalClient extends EventEmitter {
 
     socket.on('disconnect', (reason) => {
       this.emit('disconnected', reason);
+    });
+
+    // Server warns before dropping a socket whose access token expired: renew in place
+    socket.on('errorDetail', (detail) => {
+      if (detail.code !== 'AUTH_EXPIRED' || !this.refreshToken) return;
+      void this.refreshSocketAuth().catch(() => this.emit('authError', 'Token konnte nicht erneuert werden'));
     });
 
     // If the token expired mid-session, refresh and reconnect

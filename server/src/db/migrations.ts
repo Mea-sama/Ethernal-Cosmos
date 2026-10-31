@@ -111,6 +111,18 @@ export const MIGRATIONS: Migration[] = [
       )`,
     ],
   },
+  {
+    version: 4,
+    name: 'username-lower',
+    statements: [
+      `ALTER TABLE users ADD COLUMN username_lower TEXT`,
+      `UPDATE users SET username_lower = lower(username)`,
+      // Bestehende Kollisionen (Bob/bob): der älteste Account behält den Namen, die übrigen erhalten ein eindeutiges Suffix im Index-Feld (Anzeigename bleibt unverändert)
+      `UPDATE users SET username_lower = lower(username) || '~' || substr(id, 1, 8)
+         WHERE rowid NOT IN (SELECT MIN(rowid) FROM users GROUP BY lower(username))`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_lower ON users(username_lower)`,
+    ],
+  },
 ];
 
 export async function runMigrations(db: Client, migrations: Migration[] = MIGRATIONS): Promise<number[]> {

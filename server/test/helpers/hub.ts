@@ -34,7 +34,7 @@ const TEST_GAMES = [
 ];
 
 /** Großzügige Limits, damit Tests nicht in Rate-Limits laufen; einzelne Tests überschreiben via `limits`. */
-export async function startHub(opts: { limits?: Record<string, unknown> } = {}): Promise<TestHub> {
+export async function startHub(opts: { limits?: Record<string, unknown>; env?: Record<string, string> } = {}): Promise<TestHub> {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ethernal-test-'));
   const gamesPath = path.join(dataDir, 'games.json');
   const limitsPath = path.join(dataDir, 'limits.json');
@@ -53,7 +53,7 @@ export async function startHub(opts: { limits?: Record<string, unknown> } = {}):
          'requestJoinLobbyByCode', 'cancelJoinRequest', 'respondJoinRequest', 'listLobbies', 'getLobbyInfo', 'presenceList', 'getUserData',
          'getPlayerData', 'gameAction', 'registerGame', 'sessionState', 'setUserData', 'bulkSetUserData', 'deleteUserData', 'leaveLobby',
          'friendRequestByName', 'friendRequest', 'friendAction', 'socialRead', 'socialSettings', 'notificationWrite', 'dmSend', 'dmTyping',
-         'lobbyInvite', 'lobbyInviteAction']
+         'lobbyInvite', 'lobbyInviteAction', 'authRefresh', 'setLobbyState']
           .map((k) => [k, big])
       ),
       ...opts.limits,
@@ -72,6 +72,7 @@ export async function startHub(opts: { limits?: Record<string, unknown> } = {}):
       LIMITS_CONFIG_PATH: limitsPath,
       BCRYPT_ROUNDS: '4',
       JWT_SECRET: 'test-secret',
+      ...opts.env,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });

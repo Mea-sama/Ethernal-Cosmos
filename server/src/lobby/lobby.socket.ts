@@ -1,7 +1,7 @@
 import { Server, Socket } from 'socket.io';
 import { z } from 'zod';
 import { v4 as uuidv4 } from 'uuid';
-import { verifyToken } from '../auth/auth.service';
+import { verifyToken, setSessionTerminator } from '../auth/auth.service';
 import { lobbyManager } from './lobby.manager';
 import { getGame } from '../games/game.registry';
 import { instanceManager } from '../games/instance.manager';
@@ -509,6 +509,7 @@ export function registerSocketAuth(io: AppServer): void {
       socket.data.username = payload.username;
       socket.data.clientType = clientType;
       socket.data.sessionId = uuidv4();
+      socket.data.tokenExpiresAt = payload.exp ? payload.exp * 1000 : undefined;
       next();
     } catch {
       next(new Error('INVALID_TOKEN'));
@@ -523,6 +524,9 @@ export function registerSocketAuth(io: AppServer): void {
  * Socket.io-Events an alle Spieler im jeweiligen Lobby-Room weiter.
  */
 export function registerIpcRouting(io: AppServer): void {
+  setSessionTerminator((uid) => {
+    io.in(userRoom(uid)).disconnectSockets(true);
+  });
   instanceManager.setExitCallback((lobbyId, code) => {
     const lobby = lobbyManager.getLobby(lobbyId);
     if (!lobby) return;
@@ -938,8 +942,40 @@ export function registerLobbyHandlers(io: AppServer): void {
       });
     });
 
+    // ── Token-Ablauf: ohne auth:refresh wird der Socket nach Gnadenfrist getrennt ──
+    let expiryTimer: NodeJS.Timeout | undefined;
+    const armExpiry = (): void => {
+      clearTimeout(expiryTimer);
+      const exp = socket.data.tokenExpiresAt;
+      if (!exp) return;
+      const graceMs = Number(process.env.AUTH_EXPIRY_GRACE_MS) >= 0 && process.env.AUTH_EXPIRY_GRACE_MS ? Number(process.env.AUTH_EXPIRY_GRACE_MS) : 15_000;
+      expiryTimer = setTimeout(() => {
+        const detail = { code: 'AUTH_EXPIRED' as const, message: 'Sitzung abgelaufen' };
+        socket.emit('errorDetail', detail);
+        socket.emit('error', detail.message);
+        setTimeout(() => socket.disconnect(true), graceMs).unref();
+      }, Math.max(0, exp - Date.now()));
+      expiryTimer.unref();
+    };
+    armExpiry();
+
+    handle(socket, 'auth:refresh', { limit: 'authRefresh' }, (data) => {
+      const { token } = parseInput(z.object({ token: z.string().min(1) }), data);
+      let payload;
+      try {
+        payload = verifyToken(token.startsWith('Bearer ') ? token.slice(7) : token);
+      } catch {
+        throw new HubError('INVALID_TOKEN');
+      }
+      if (payload.userId !== userId) throw new HubError('INVALID_TOKEN', 'Token gehört zu einem anderen User');
+      socket.data.tokenExpiresAt = payload.exp ? payload.exp * 1000 : undefined;
+      armExpiry();
+      return { expiresAt: socket.data.tokenExpiresAt ?? 0 };
+    });
+
     // ── disconnect ──────────────────────────────────────────────────────────
     socket.on('disconnect', () => {
+      clearTimeout(expiryTimer);
       console.log(`[Socket] "${username}" getrennt (${socket.id})`);
       socketBuckets.delete(socket.id);
       for (const key of [...lastRateLimitNotice.keys()]) {

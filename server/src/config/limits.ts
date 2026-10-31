@@ -43,6 +43,7 @@ const defaultLimits: ServerLimits = {
   joinRequestTimeoutMs: 15_000,
   closedLobbyTtlMs: 60_000,
   socketLimits: {
+    authRefresh: { refillPerSecond: 0.5, burst: 5 },
     setLobbyState: { refillPerSecond: 0.5, burst: 3 },
     createLobby: { refillPerSecond: 0.1, burst: 2 },
     joinLobby: { refillPerSecond: 0.25, burst: 4 },

@@ -81,6 +81,9 @@ export interface ClientToServerEvents {
     ack?: Ack<{ game: GameInfo; state: SessionState }>
   ) => void;
 
+  /** Access-Token erneuern, ohne die Verbindung zu verlieren (sonst AUTH_EXPIRED + Disconnect nach Gnadenfrist) */
+  'auth:refresh': (data: { token: string }, ack?: Ack<{ expiresAt: number }>) => void;
+
   /** Aktuellen Session-Zustand abrufen (Pull-Variante zu `hello`/`session:resumed`) */
   'session:getState': (ack?: Ack<{ state: SessionState; lobby?: Lobby }>) => void;
 
@@ -304,4 +307,6 @@ export interface SocketData {
   sessionId: string;
   /** 'game' = Spielclient; 'panel' = Social-Panel (selber User, selbes Gerät) */
   clientType: 'game' | 'panel';
+  /** Ablaufzeit des Access-Tokens (ms seit Epoch) */
+  tokenExpiresAt?: number;
 }

@@ -6,9 +6,12 @@ import {
   RegisterSchema,
   LoginSchema,
   rotateRefreshToken,
-  revokeRefreshToken,
+  revokeRefreshTokenReturningUser,
+  revokeAllRefreshTokens,
+  terminateUserSessions,
 } from './auth.service';
 import { isAuthUsernameWhitelisted, isRefreshTokenWhitelisted } from './rate-limit-whitelist';
+import { requireAuth } from './auth.middleware';
 import { serverLimits } from '../config/limits';
 
 const router = Router();
@@ -155,10 +158,23 @@ router.post('/logout', async (req: Request, res: Response): Promise<void> => {
   }
 
   try {
-    await revokeRefreshToken(refreshToken);
+    const userId = await revokeRefreshTokenReturningUser(refreshToken);
+    if (userId) terminateUserSessions(userId);
     res.status(204).send();
   } catch (err) {
     console.error('[Auth] Logout fehlgeschlagen:', err);
+    res.status(500).json({ error: 'Interner Fehler' });
+  }
+});
+
+// POST /auth/logout-all — alle Refresh-Tokens widerrufen und alle Sockets trennen
+router.post('/logout-all', requireAuth, async (req: Request, res: Response): Promise<void> => {
+  try {
+    await revokeAllRefreshTokens(req.auth!.userId);
+    terminateUserSessions(req.auth!.userId);
+    res.status(204).send();
+  } catch (err) {
+    console.error('[Auth] logout-all fehlgeschlagen:', err);
     res.status(500).json({ error: 'Interner Fehler' });
   }
 });
