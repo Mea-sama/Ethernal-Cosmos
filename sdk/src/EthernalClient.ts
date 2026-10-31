@@ -174,7 +174,7 @@ export class EthernalClient extends EventEmitter {
   }
 
   /** Create a new lobby for the registered game. */
-  async createLobby(data: { name: string; isPrivate?: boolean; settings?: Record<string, unknown> }): Promise<Lobby> {
+  async createLobby(data: { name: string; isPrivate?: boolean; settings?: Record<string, unknown>; serverPreference?: { mode?: 'any' | 'none'; region?: string } }): Promise<Lobby> {
     return (await this.call<{ lobby: Lobby }>('createLobby', data)).lobby;
   }
 

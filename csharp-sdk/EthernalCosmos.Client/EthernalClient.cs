@@ -207,8 +207,14 @@ public sealed class EthernalClient : IAsyncDisposable
         string name,
         bool isPrivate = false,
         Dictionary<string, object?>? settings = null,
-        CancellationToken ct = default) =>
-        (await CallAsync<LobbyResult>("createLobby", new { name, isPrivate, settings = settings ?? [] }, ct)).Lobby;
+        CancellationToken ct = default,
+        string? serverMode = null,
+        string? serverRegion = null) =>
+        (await CallAsync<LobbyResult>("createLobby", new
+        {
+            name, isPrivate, settings = settings ?? [],
+            serverPreference = serverMode == null && serverRegion == null ? null : new { mode = serverMode, region = serverRegion },
+        }, ct)).Lobby;
 
     /// <summary>Join a public lobby of the registered game by ID.</summary>
     public async Task<Lobby> JoinLobbyAsync(string lobbyId, CancellationToken ct = default) =>
