@@ -7,6 +7,7 @@ import type {
   GameServerToHubEvents,
   HubToGameServerEvents,
   Lobby,
+  LobbyChangeReason,
   ServerPreference,
 } from '@ethernal/shared';
 import { HubError, isHubError } from '../errors';
@@ -97,14 +98,14 @@ function candidatesFor(gameId: string, pref?: ServerPreference): LiveServer[] {
   });
 }
 
-function askAssignment(server: LiveServer, lobby: Lobby): Promise<boolean> {
+function askAssignment(server: LiveServer, lobby: Lobby, rebind = false): Promise<boolean> {
   return new Promise((resolve) => {
     if (!namespace) return resolve(false);
     const timer = setTimeout(() => resolve(false), assignTimeoutMs());
     const players = lobby.players.map((p) => ({ userId: p.userId, username: p.username }));
     (namespace.to(serverRoom(server.serverId)) as unknown as { timeout: (ms: number) => { emit: (...a: unknown[]) => void } })
       .timeout(assignTimeoutMs())
-      .emit('lobby:assigned', { lobby, players }, (err: unknown, responses: Array<{ accept: boolean }>) => {
+      .emit('lobby:assigned', { lobby, players, ...(rebind ? { rebind: true } : {}) }, (err: unknown, responses: Array<{ accept: boolean }>) => {
         clearTimeout(timer);
         resolve(!err && responses?.[0]?.accept === true);
       });
@@ -143,20 +144,62 @@ export function releaseServerSlot(lobbyId: string, serverId: string | undefined)
 
 // ─── Verlust eines Servers ────────────────────────────────────────────────────
 
+function closeLostLobby(lobbyId: string): void {
+  const lobby = lobbyManager.getLobby(lobbyId);
+  if (!lobby || !mainIo || lobby.status === 'closed') return;
+  mainIo.to(lobbyId).emit('gameCrashed', { lobbyId, code: null });
+  lobbyManager.setStatus(lobbyId, 'closed');
+  broadcastLobbyChange(mainIo, lobby, 'state_changed');
+  scheduleClosedRelease(mainIo, lobbyId);
+}
+
+/** Resume-Frist abgelaufen: Lobby auf einen anderen Server umbinden; sonst required → schließen, optional → serverlos weiter. */
+async function recoverLobby(lobbyId: string, gameId: string, lostServerId: string): Promise<void> {
+  const io = mainIo;
+  const lobby = lobbyManager.getLobby(lobbyId);
+  if (!io || !lobby || lobby.status === 'closed' || lobby.server?.serverId !== lostServerId) return;
+  const support = getGame(gameId)?.serverSupport ?? 'none';
+  for (const candidate of candidatesFor(gameId, { region: lobby.server.region })) {
+    candidate.lobbies.add(lobbyId);
+    if (await askAssignment(candidate, lobby, true)) {
+      if (lobbyManager.getLobby(lobbyId)?.status === 'closed') {
+        candidate.lobbies.delete(lobbyId);
+        return;
+      }
+      lobbyManager.setServer(lobbyId, { serverId: candidate.serverId, region: candidate.region });
+      broadcastLobbyChange(io, lobby, 'server_rebound');
+      return;
+    }
+    candidate.lobbies.delete(lobbyId);
+  }
+  if (support === 'optional') {
+    lobbyManager.setServer(lobbyId, undefined);
+    broadcastLobbyChange(io, lobby, 'server_lost');
+  } else {
+    closeLostLobby(lobbyId);
+  }
+}
+
 function dropServer(serverId: string): void {
   const s = servers.get(serverId);
   if (!s || !mainIo) return;
   clearTimeout(s.resumeTimer);
-  for (const lobbyId of [...s.lobbies]) {
-    const lobby = lobbyManager.getLobby(lobbyId);
-    s.lobbies.delete(lobbyId);
-    if (!lobby || lobby.status === 'closed') continue;
-    mainIo.to(lobbyId).emit('gameCrashed', { lobbyId, code: null });
-    lobbyManager.setStatus(lobbyId, 'closed');
-    broadcastLobbyChange(mainIo, lobby, 'state_changed');
-    scheduleClosedRelease(mainIo, lobbyId);
-  }
   servers.delete(serverId);
+  for (const lobbyId of [...s.lobbies]) {
+    void recoverLobby(lobbyId, s.gameId, serverId).catch((err) => {
+      console.error('[GameServer] Recovery fehlgeschlagen:', err);
+      closeLostLobby(lobbyId);
+    });
+  }
+}
+
+/** Setzt den Server-Status aller Lobbys eines Servers und informiert Mitglieder. */
+function markServerLobbies(s: LiveServer, status: 'ok' | 'lost' | 'draining', reason: LobbyChangeReason): void {
+  if (!mainIo) return;
+  for (const lobbyId of s.lobbies) {
+    const lobby = lobbyManager.setServerStatus(lobbyId, status);
+    if (lobby && lobby.status !== 'closed') broadcastLobbyChange(mainIo, lobby, reason);
+  }
 }
 
 // ─── Autorisierung ────────────────────────────────────────────────────────────
@@ -232,6 +275,7 @@ export function registerGameServerNamespace(io: AppServer): void {
     }
     server.socketId = socket.id;
     server.connected = true;
+    if (resumed) markServerLobbies(server, server.draining ? 'draining' : 'ok', 'server_resumed');
     socket.join(serverRoom(hs.serverId));
     console.log(`[GameServer] "${hs.serverId}" (${hs.gameId}${hs.region ? `, ${hs.region}` : ''}) ${resumed ? 'wieder verbunden' : 'verbunden'}`);
 
@@ -321,7 +365,10 @@ export function registerGameServerNamespace(io: AppServer): void {
     onServerEvent(socket, 'server:status', (data) => {
       const { draining, capacity } = z.object({ draining: z.boolean().optional(), capacity: z.number().int().min(1).max(100_000).optional() }).parse(data ?? {});
       const s = servers.get(hs.serverId)!;
-      if (draining !== undefined) s.draining = draining;
+      if (draining !== undefined && draining !== s.draining) {
+        s.draining = draining;
+        markServerLobbies(s, draining ? 'draining' : 'ok', 'server_draining');
+      }
       if (capacity !== undefined) s.capacity = capacity;
       return { info: toServerInfo(s) };
     });
@@ -331,6 +378,7 @@ export function registerGameServerNamespace(io: AppServer): void {
       if (!s || s.socketId !== socket.id) return; // abgelöst durch neuere Verbindung
       s.connected = false;
       console.log(`[GameServer] "${hs.serverId}" getrennt`);
+      markServerLobbies(s, 'lost', 'server_lost');
       if (s.lobbies.size === 0) {
         servers.delete(hs.serverId);
         return;

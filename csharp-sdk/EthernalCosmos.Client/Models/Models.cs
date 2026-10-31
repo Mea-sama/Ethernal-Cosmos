@@ -31,6 +31,20 @@ public sealed class Lobby
     [JsonPropertyName("settings")]   public Dictionary<string, object?> Settings { get; init; } = [];
     [JsonPropertyName("locked")]     public bool         Locked     { get; init; }
     [JsonPropertyName("createdAt")]  public long         CreatedAt  { get; init; }
+    /// <summary>Game server binding (members only); null = no game server.</summary>
+    [JsonPropertyName("server")]       public LobbyServerBinding? Server       { get; init; }
+    /// <summary>ok | lost | draining — only meaningful when a game server is bound.</summary>
+    [JsonPropertyName("serverStatus")] public string?             ServerStatus { get; init; }
+    /// <summary>Listings only: a game server is bound.</summary>
+    [JsonPropertyName("serverBound")]  public bool?               ServerBound  { get; init; }
+    [JsonPropertyName("region")]       public string?             Region       { get; init; }
+    [JsonPropertyName("joinable")]     public bool?               Joinable     { get; init; }
+}
+
+public sealed class LobbyServerBinding
+{
+    [JsonPropertyName("serverId")] public string  ServerId { get; init; } = "";
+    [JsonPropertyName("region")]   public string? Region   { get; init; }
 }
 
 public sealed class UserDataEntry

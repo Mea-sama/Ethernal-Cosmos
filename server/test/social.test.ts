@@ -834,3 +834,43 @@ describe('Social-Snapshot (#31)', () => {
     void ua;
   });
 });
+
+describe('friend_online notification', () => {
+  it('geht an online-Freunde beim Online-Wechsel; Offline-Freunde und Fremde bekommen nichts; invisible löst nichts aus', async () => {
+    const [a, b, c, stranger] = [await live(hub), await live(hub), await live(hub), await live(hub)];
+    await befriend(a, b);
+    await befriend(a, c);
+    c.close(); // c ist offline
+    await sleep(100);
+    a.close();
+    await sleep(200);
+    const a2 = await reconnect(hub, a);
+    const n = await b.waitFor('notification', (x) => x.type === 'friend_online' && x.payload.userId === a.user.userId);
+    expect(n.payload.username).toBe(a.user.username);
+    expect(stranger.count('notification', (x) => x.type === 'friend_online')).toBe(0);
+    // c war offline → kein Backlog-Eintrag
+    const c2 = await reconnect(hub, c);
+    const list = (await c2.emitAck('notification:list')).notifications ?? [];
+    expect(list.filter((x: any) => x.type === 'friend_online' && x.payload.userId === a.user.userId)).toHaveLength(0);
+    // invisible → offline-Wechsel unsichtbar, Rückkehr zu online erzeugt (wieder) Notification
+    await a2.emitAck('social:setSettings', { status: 'invisible' });
+    await b.waitFor('friend:presence', (p) => p.userId === a.user.userId && p.online === false);
+    const before = b.count('notification', (x) => x.type === 'friend_online');
+    await a2.emitAck('social:setSettings', { status: 'online' });
+    await sleep(300);
+    expect(b.count('notification', (x) => x.type === 'friend_online')).toBe(before + 1);
+    closeAll(a2, b, c2, stranger);
+  });
+
+  it('Mute-Einstellung unterdrückt friend_online', async () => {
+    const [a, b] = [await live(hub), await live(hub)];
+    await befriend(a, b);
+    await b.emitAck('social:setSettings', { mutedNotificationTypes: ['friend_online'] });
+    a.close();
+    await sleep(200);
+    const a2 = await reconnect(hub, a);
+    await sleep(400);
+    expect(b.count('notification', (x) => x.type === 'friend_online')).toBe(0);
+    closeAll(a2, b);
+  });
+});

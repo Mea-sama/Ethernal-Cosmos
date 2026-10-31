@@ -49,6 +49,8 @@ public sealed class EthernalClient : IAsyncDisposable
     public event Action<HubErrorPayload>?       ErrorDetail;
     public event Action<Lobby>?                 LobbyCreated;
     public event Action<Lobby>?                 LobbyUpdated;
+    /// <summary>Lobby changed, with the reason (e.g. player_joined, server_lost, server_rebound).</summary>
+    public event Action<Lobby, string?>?        LobbyChanged;
     public event Action<Lobby[]>?               LobbyList;
     public event Action<Lobby>?                 LobbyInfo;
     public event Action<GameStartingData>?      GameStarting;
@@ -533,7 +535,18 @@ public sealed class EthernalClient : IAsyncDisposable
                 });
         });
         RegisterEvent<Lobby>(socket,     "lobbyCreated",  d => LobbyCreated?.Invoke(d));
-        RegisterEvent<Lobby>(socket,     "lobbyUpdated",  d => LobbyUpdated?.Invoke(d));
+        socket.On("lobbyUpdated", response =>
+        {
+            try
+            {
+                var lobby = response.GetValue<Lobby>(0);
+                string? reason = null;
+                try { reason = response.GetValue<string?>(1); } catch { /* reason is optional */ }
+                LobbyUpdated?.Invoke(lobby);
+                LobbyChanged?.Invoke(lobby, reason);
+            }
+            catch { /* ignore deserialization errors */ }
+        });
         RegisterEvent<Lobby[]>(socket,   "lobbyList",     d => LobbyList?.Invoke(d));
         RegisterEvent<Lobby>(socket,     "lobbyInfo",     d => LobbyInfo?.Invoke(d));
         RegisterEvent<GameStartingData>(socket, "gameStarting", d => GameStarting?.Invoke(d));
