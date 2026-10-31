@@ -21,7 +21,7 @@ interface RunningInstance {
 }
 
 /** Callback: Subprocess hat sich unerwartet beendet (Crash / Exit ohne stopInstance) */
-type ExitCallback = (lobbyId: string, code: number | null) => void;
+type ExitCallback = (lobbyId: string, code: number | null, alreadyClosed: boolean) => void;
 
 const MAX_INSTANCES = Number(process.env.MAX_INSTANCES) || 50;
 const KILL_TIMEOUT_MS = Number(process.env.INSTANCE_KILL_TIMEOUT_MS) || 5000;
@@ -137,8 +137,10 @@ class InstanceManager {
       console.log(`[InstanceManager] Lobby ${lobby.id} beendet (exit ${code ?? '?'})`);
       if (this.instances.get(lobby.id) === instance) this.instances.delete(lobby.id);
       if (!instance.stopping) {
+        // Ein Prozess, der nach GAME_OVER regulär endet, ist kein Absturz
+        const alreadyClosed = lobbyManager.getLobby(lobby.id)?.status === 'closed';
         lobbyManager.setStatus(lobby.id, 'closed');
-        this.onExit?.(lobby.id, code);
+        this.onExit?.(lobby.id, code, alreadyClosed);
       }
     });
 

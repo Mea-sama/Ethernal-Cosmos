@@ -432,6 +432,8 @@ export function afterJoin(io: AppServer, userId: string, username: string, lobby
   withdrawAllRequestsFor(io, userId, 'cancelled');
   bindUserToLobby(io, userId, lobby.id);
   broadcastLobbyChange(io, lobby, 'player_joined');
+  // Beitritt über Panel/Einladung muss den Spielclient genauso initialisieren wie ein Beitritt per Code
+  io.to(gameRoom(userId)).emit('lobbyInfo', lobby);
   if (instanceManager.isRunning(lobby.id)) {
     instanceManager.sendToInstance(lobby.id, { type: 'PLAYER_JOIN', payload: { userId, username } });
   }
@@ -527,10 +529,10 @@ export function registerIpcRouting(io: AppServer): void {
   setSessionTerminator((uid) => {
     io.in(userRoom(uid)).disconnectSockets(true);
   });
-  instanceManager.setExitCallback((lobbyId, code) => {
+  instanceManager.setExitCallback((lobbyId, code, alreadyClosed) => {
     const lobby = lobbyManager.getLobby(lobbyId);
     if (!lobby) return;
-    io.to(lobbyId).emit('gameCrashed', { lobbyId, code });
+    if (!alreadyClosed && code !== 0) io.to(lobbyId).emit('gameCrashed', { lobbyId, code });
     broadcastLobbyChange(io, lobby, 'state_changed');
     scheduleClosedRelease(io, lobbyId);
   });

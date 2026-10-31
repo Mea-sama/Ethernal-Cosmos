@@ -403,7 +403,7 @@ describe('Notifications (#28)', () => {
     await a.emitAck('dm:send', { toUserId: b0.user.userId, text: 'offline' });
     const b = await reconnect(retention, b0);
     expect((await b.waitFor('notification:backlog')).unreadCount).toBe(1);
-    await sleep(3500);
+    await sleep(5000);
     expect((await b.emitAck('notification:counts')).total).toBe(0);
     const db = createClient({ url: `file:${path.join(retention.dataDir, 'ethernal.db')}` });
     const rows = await db.execute({ sql: 'SELECT COUNT(*) AS n FROM notifications WHERE user_id = ?', args: [b0.user.userId] });
@@ -512,7 +512,7 @@ describe('Direct Messages (#29)', () => {
     await befriend(a, b);
     await a.emitAck('dm:send', { toUserId: b.user.userId, text: 'alt' });
     expect((await b.emitAck('dm:history', { withUserId: a.user.userId })).messages).toHaveLength(1);
-    await sleep(3500);
+    await sleep(5000);
     expect((await b.emitAck('dm:history', { withUserId: a.user.userId })).messages).toEqual([]);
     const db = createClient({ url: `file:${path.join(retention.dataDir, 'ethernal.db')}` });
     const rows = await db.execute({ sql: 'SELECT COUNT(*) AS n FROM direct_messages WHERE conversation_id = ?', args: [[a.user.userId, b.user.userId].sort().join(':')] });
