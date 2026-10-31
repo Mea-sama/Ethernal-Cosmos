@@ -34,33 +34,50 @@ public sealed class EthernalClient : IAsyncDisposable
 {
     // ─── Events ───────────────────────────────────────────────────────────────
 
+    /// <summary>Raised when the socket connection is established (also after an automatic reconnect).</summary>
     public event Action?                        Connected;
+    /// <summary>Raised when the socket connection is lost; the argument is the reason.</summary>
     public event Action<string>?                Disconnected;
     /// <summary>Fired when authentication fails (e.g. token expired and refresh failed).</summary>
     public event Action<string>?                AuthError;
     /// <summary>Fired for server-side error messages.</summary>
     public event Action<string>?                ServerError;
 
+    /// <summary>Handshake data sent by the hub after every (re)connect.</summary>
     public event Action<HelloPayload>?          Hello;
     /// <summary>Raised when a lobby membership was resumed after a reconnect or on a second device.</summary>
     public event Action<SessionResumedData>?    SessionResumed;
     /// <summary>Raised when a newer game session of the same user replaced this one.</summary>
     public event Action<SessionReplacedData>?   SessionReplaced;
+    /// <summary>Raised for every <c>error</c> event of the hub, with typed <see cref="HubErrorPayload.Error"/>.</summary>
     public event Action<HubErrorPayload>?       ErrorDetail;
+    /// <summary>Raised after this client created a lobby.</summary>
     public event Action<Lobby>?                 LobbyCreated;
+    /// <summary>Raised whenever a lobby you are in changed (see <see cref="LobbyChanged"/> for the reason).</summary>
     public event Action<Lobby>?                 LobbyUpdated;
     /// <summary>Lobby changed, with the reason (e.g. player_joined, server_lost, server_rebound).</summary>
-    public event Action<Lobby, string?>?        LobbyChanged;
+    public event Action<Lobby, LobbyChangeReason?>? LobbyChanged;
+    /// <summary>Raised with the result of a lobby listing.</summary>
     public event Action<Lobby[]>?               LobbyList;
+    /// <summary>Raised with the result of a lobby lookup.</summary>
     public event Action<Lobby>?                 LobbyInfo;
+    /// <summary>Raised when the hub starts the game process of a hosted lobby.</summary>
     public event Action<GameStartingData>?      GameStarting;
+    /// <summary>Raised when the game broadcasts shared state (hosted games).</summary>
     public event Action<JsonElement>?           GameState;
+    /// <summary>Raised when the game broadcasts an event (hosted games).</summary>
     public event Action<JsonElement>?           GameEvent;
+    /// <summary>Raised when the game ended (hosted games).</summary>
     public event Action<JsonElement>?           GameOver;
+    /// <summary>Raised when this client was kicked from a lobby.</summary>
     public event Action<PlayerKickedData>?      PlayerKicked;
+    /// <summary>Raised for a relayed text/JSON message from another player.</summary>
     public event Action<RelayMessage>?          Message;
+    /// <summary>Raised for a relayed binary message from another player.</summary>
     public event Action<RelayBinaryMessage>?    MessageBinary;
+    /// <summary>Raised with own user data (also pushed by game servers).</summary>
     public event Action<UserDataPayload>?       UserData;
+    /// <summary>Raised with visible data of another player.</summary>
     public event Action<PlayerDataPayload>?     PlayerData;
 
     /// <summary>Host: a new join request has arrived for a locked lobby.</summary>
@@ -75,22 +92,35 @@ public sealed class EthernalClient : IAsyncDisposable
     public event Action<JoinRequestWithdrawnData>? JoinRequestWithdrawn;
 
     // Social
+    /// <summary>A friend's presence changed.</summary>
     public event Action<FriendPresence>?          FriendPresenceChanged;
+    /// <summary>Someone sent you a friend request.</summary>
     public event Action<FriendRequestInfo>?       FriendRequestReceived;
+    /// <summary>Your friend request was accepted.</summary>
     public event Action<FriendRequestAccepted>?   FriendRequestAccepted;
+    /// <summary>Your friend request was declined.</summary>
     public event Action<FriendRequestDeclined>?   FriendRequestDeclined;
     /// <summary>Argument is the request id.</summary>
     public event Action<string>?                  FriendRequestCancelled;
     /// <summary>Argument is the userId of the former friend.</summary>
     public event Action<string>?                  FriendRemoved;
+    /// <summary>A new notification arrived.</summary>
     public event Action<HubNotification>?         NotificationReceived;
+    /// <summary>Unread notification summary delivered right after connecting.</summary>
     public event Action<NotificationBacklog>?     NotificationBacklogReceived;
+    /// <summary>A friend sent you a direct message.</summary>
     public event Action<DirectMessage>?           DirectMessageReceived;
+    /// <summary>A message you sent was delivered to an offline recipient.</summary>
     public event Action<DmDeliveredData>?         DirectMessageDelivered;
+    /// <summary>A friend read your messages.</summary>
     public event Action<DmReadData>?              DirectMessageRead;
+    /// <summary>A friend is typing to you.</summary>
     public event Action<DmTypingData>?            DirectMessageTyping;
+    /// <summary>A friend invited you to a lobby.</summary>
     public event Action<LobbyInvite>?             LobbyInviteReceived;
+    /// <summary>A lobby invite was cancelled or expired.</summary>
     public event Action<LobbyInviteCancelledData>? LobbyInviteCancelled;
+    /// <summary>A friend declined your lobby invite.</summary>
     public event Action<LobbyInviteDeclinedData>?  LobbyInviteDeclined;
 
     // ─── Fields ───────────────────────────────────────────────────────────────
@@ -117,6 +147,7 @@ public sealed class EthernalClient : IAsyncDisposable
 
     // ─── Constructor ──────────────────────────────────────────────────────────
 
+    /// <summary>Creates a client. Nothing connects until <see cref="LoginAsync"/> or <see cref="RegisterAsync"/>.</summary>
     public EthernalClient(EthernalClientOptions options)
     {
         _serverUrl = options.ServerUrl.TrimEnd('/');
@@ -210,12 +241,12 @@ public sealed class EthernalClient : IAsyncDisposable
         bool isPrivate = false,
         Dictionary<string, object?>? settings = null,
         CancellationToken ct = default,
-        string? serverMode = null,
+        ServerMode? serverMode = null,
         string? serverRegion = null) =>
         (await CallAsync<LobbyResult>("createLobby", new
         {
             name, isPrivate, settings = settings ?? [],
-            serverPreference = serverMode == null && serverRegion == null ? null : new { mode = serverMode, region = serverRegion },
+            serverPreference = serverMode == null && serverRegion == null ? null : new { mode = serverMode?.Wire(), region = serverRegion },
         }, ct)).Lobby;
 
     /// <summary>Join a public lobby of the registered game by ID.</summary>
@@ -248,10 +279,10 @@ public sealed class EthernalClient : IAsyncDisposable
     /// <summary>(Host only) Lock the lobby — further joins (including via invite code) require an accepted join request.</summary>
     public Task LockLobbyAsync(CancellationToken ct = default) => CallAsync<object?>("lockLobby", null, ct);
 
-    /// <summary>(Host only) Unlock the lobby.</summary>
-    /// <summary>Host: sets lobby state ("in_progress" or "closed").</summary>
-    public Task SetLobbyStateAsync(string state, CancellationToken ct = default) => CallAsync<object?>("setLobbyState", new { state }, ct);
+    /// <summary>(Host only) Set the lobby state: <c>"in_progress"</c> or <c>"closed"</c> (wire values of <see cref="LobbyStatus"/>).</summary>
+    public Task SetLobbyStateAsync(LobbyStatus state, CancellationToken ct = default) => CallAsync<object?>("setLobbyState", new { state = state.Wire() }, ct);
 
+    /// <summary>(Host only) Unlock the lobby.</summary>
     public Task UnlockLobbyAsync(CancellationToken ct = default) => CallAsync<object?>("unlockLobby", null, ct);
 
     /// <summary>
@@ -287,14 +318,14 @@ public sealed class EthernalClient : IAsyncDisposable
     public Task SendToLobbyBinaryAsync(int typeCode, byte[] payload, CancellationToken ct = default)
     {
         if (payload is null) throw new ArgumentNullException(nameof(payload));
-        return CallAsync<object?>("sendToLobbyBinary", new { typeCode, payload }, ct);
+        return CallAsync<object?>("sendToLobbyBinary", new { typeCode, payload }, ct, binary: true);
     }
 
     /// <summary>Send a binary message directly to one player in the lobby.</summary>
     public Task SendToPlayerBinaryAsync(string playerId, int typeCode, byte[] payload, CancellationToken ct = default)
     {
         if (payload is null) throw new ArgumentNullException(nameof(payload));
-        return CallAsync<object?>("sendToPlayerBinary", new { playerId, typeCode, payload }, ct);
+        return CallAsync<object?>("sendToPlayerBinary", new { playerId, typeCode, payload }, ct, binary: true);
     }
 
     // ─── Game Actions ─────────────────────────────────────────────────────────
@@ -315,7 +346,7 @@ public sealed class EthernalClient : IAsyncDisposable
 
     /// <summary>Write one own key via socket. Server-scoped keys are read-only for clients (DATA_READ_ONLY).</summary>
     public Task SetUserDataAsync(string gameId, string key, object? value, DataVisibility? visibility = null, CancellationToken ct = default) =>
-        CallAsync<object?>("setUserData", new { gameId, key, value, visibility = visibility?.ToString().ToLowerInvariant() }, ct);
+        CallAsync<object?>("setUserData", new { gameId, key, value, visibility = visibility?.Wire() }, ct);
 
     /// <summary>Atomically write several own keys via socket.</summary>
     public Task BulkSetUserDataAsync(
@@ -323,7 +354,7 @@ public sealed class EthernalClient : IAsyncDisposable
         IEnumerable<(string Key, object? Value, DataVisibility? Visibility)> entries,
         CancellationToken ct = default)
     {
-        var data = entries.Select(e => new { key = e.Key, value = e.Value, visibility = e.Visibility?.ToString().ToLowerInvariant() });
+        var data = entries.Select(e => new { key = e.Key, value = e.Value, visibility = e.Visibility?.Wire() });
         return CallAsync<object?>("bulkSetUserData", new { gameId, entries = data }, ct);
     }
 
@@ -333,63 +364,77 @@ public sealed class EthernalClient : IAsyncDisposable
 
     // ─── Social ───────────────────────────────────────────────────────────────
 
-    /// <summary>Send a friend request by username. Returns "REQUEST_SENT" or "NO_SUCH_PLAYER" only.</summary>
-    public async Task<string> RequestFriendByNameAsync(string username, CancellationToken ct = default) =>
-        (await CallAsync<ResultAck>("friend:request", new { username }, ct)).Result;
+    /// <summary>Send a friend request by username. Returns <see cref="FriendRequestResult.RequestSent"/> or <see cref="FriendRequestResult.NoSuchPlayer"/> only.</summary>
+    public async Task<FriendRequestResult> RequestFriendByNameAsync(string username, CancellationToken ct = default) =>
+        WireEnumConverter<FriendRequestResult>.Parse((await CallAsync<ResultAck>("friend:request", new { username }, ct)).Result);
 
     /// <summary>Send a friend request to a player in your current lobby.</summary>
-    public async Task<string> RequestFriendFromLobbyAsync(string userId, CancellationToken ct = default) =>
-        (await CallAsync<ResultAck>("friend:request", new { userId }, ct)).Result;
+    public async Task<FriendRequestResult> RequestFriendFromLobbyAsync(string userId, CancellationToken ct = default) =>
+        WireEnumConverter<FriendRequestResult>.Parse((await CallAsync<ResultAck>("friend:request", new { userId }, ct)).Result);
 
+    /// <summary>Accept or decline an incoming friend request.</summary>
     public Task RespondFriendRequestAsync(string requestId, bool accept, CancellationToken ct = default) =>
         CallAsync<object?>("friend:respond", new { requestId, accept }, ct);
 
+    /// <summary>Cancel an outgoing friend request.</summary>
     public Task CancelFriendRequestAsync(string requestId, CancellationToken ct = default) =>
         CallAsync<object?>("friend:cancel", new { requestId }, ct);
 
+    /// <summary>Remove a friend.</summary>
     public Task RemoveFriendAsync(string friendId, CancellationToken ct = default) =>
         CallAsync<object?>("friend:remove", new { friendId }, ct);
 
+    /// <summary>List all friends.</summary>
     public async Task<FriendInfo[]> ListFriendsAsync(CancellationToken ct = default) =>
         (await CallAsync<FriendsAck>("friend:list", null, ct)).Friends;
 
+    /// <summary>List open incoming and outgoing friend requests.</summary>
     public Task<FriendRequestsResult> ListFriendRequestsAsync(CancellationToken ct = default) =>
         CallAsync<FriendRequestsResult>("friend:requests", null, ct);
 
+    /// <summary>Presence of all friends.</summary>
     public async Task<FriendPresence[]> GetFriendsPresenceAsync(CancellationToken ct = default) =>
         (await CallAsync<PresenceAck>("presence:friends", null, ct)).Presence;
 
+    /// <summary>Read own social settings.</summary>
     public async Task<SocialSettings> GetSocialSettingsAsync(CancellationToken ct = default) =>
         (await CallAsync<SettingsAck>("social:getSettings", null, ct)).Settings;
 
     /// <summary>Update own settings; only non-null arguments are changed.</summary>
-    public async Task<SocialSettings> SetSocialSettingsAsync(string? status = null, bool? showLastSeen = null,
-        bool? dmReadReceipts = null, string[]? mutedNotificationTypes = null, CancellationToken ct = default) =>
+    public async Task<SocialSettings> SetSocialSettingsAsync(OwnPresenceStatus? status = null, bool? showLastSeen = null,
+        bool? dmReadReceipts = null, NotificationType[]? mutedNotificationTypes = null, CancellationToken ct = default) =>
         (await CallAsync<SettingsAck>("social:setSettings",
-            new { status, showLastSeen, dmReadReceipts, mutedNotificationTypes }, ct)).Settings;
+            new { status = status?.Wire(), showLastSeen, dmReadReceipts, mutedNotificationTypes = mutedNotificationTypes?.Select(t => t.Wire()) }, ct)).Settings;
 
     /// <summary>Full social state. Pass the previous etag to get <c>NotModified</c> when nothing changed.</summary>
     public Task<SocialSnapshot> SyncSocialAsync(string? etag = null, CancellationToken ct = default) =>
         CallAsync<SocialSnapshot>("social:sync", new { etag }, ct);
 
+    /// <summary>Look up the lobby of a friend; null when the friend is in none (or it is hidden).</summary>
     public async Task<FriendLobbyInfo?> GetFriendLobbyAsync(string friendId, CancellationToken ct = default) =>
         (await CallAsync<FriendLobbyAck>("social:friendLobby", new { friendId }, ct)).Lobby;
 
+    /// <summary>List notifications, newest first; page with <c>cursor</c>.</summary>
     public Task<NotificationListResult> ListNotificationsAsync(int? limit = null, string? cursor = null, bool? unreadOnly = null, CancellationToken ct = default) =>
         CallAsync<NotificationListResult>("notification:list", new { limit, cursor, unreadOnly }, ct);
 
+    /// <summary>Mark notifications read, by <c>ids</c> or everything up to a timestamp (<c>upTo</c>).</summary>
     public Task<NotificationMarkResult> MarkNotificationsReadAsync(string[]? ids = null, long? upTo = null, CancellationToken ct = default) =>
         CallAsync<NotificationMarkResult>("notification:markRead", new { ids, upTo }, ct);
 
+    /// <summary>Unread and total notification counters.</summary>
     public Task<NotificationCounts> GetNotificationCountsAsync(CancellationToken ct = default) =>
         CallAsync<NotificationCounts>("notification:counts", null, ct);
 
+    /// <summary>Send a direct message to a friend.</summary>
     public async Task<DirectMessage> SendDirectMessageAsync(string toUserId, string text, CancellationToken ct = default) =>
         (await CallAsync<MessageAck>("dm:send", new { toUserId, text }, ct)).Message;
 
+    /// <summary>Load DM history with a friend; page backwards with <c>before</c> = <see cref="DmHistoryResult.NextBefore"/>.</summary>
     public Task<DmHistoryResult> GetDmHistoryAsync(string withUserId, long? before = null, int? limit = null, CancellationToken ct = default) =>
         CallAsync<DmHistoryResult>("dm:history", new { withUserId, before, limit }, ct);
 
+    /// <summary>List DM conversations with their last message and unread count.</summary>
     public async Task<DmConversation[]> ListConversationsAsync(CancellationToken ct = default) =>
         (await CallAsync<ConversationsAck>("dm:conversations", null, ct)).Conversations;
 
@@ -397,24 +442,31 @@ public sealed class EthernalClient : IAsyncDisposable
     public async Task<int> MarkConversationReadAsync(string withUserId, CancellationToken ct = default) =>
         (await CallAsync<MarkedAck>("dm:markRead", new { withUserId }, ct)).Marked;
 
+    /// <summary>Tell a friend you are typing.</summary>
     public Task SendTypingAsync(string toUserId, CancellationToken ct = default) =>
         CallAsync<object?>("dm:typing", new { toUserId }, ct);
 
+    /// <summary>Invite a friend to your current lobby.</summary>
     public async Task<LobbyInvite> InviteFriendAsync(string friendId, CancellationToken ct = default) =>
         (await CallAsync<InviteAck>("lobby:invite", new { friendId }, ct)).Invite;
 
+    /// <summary>Cancel a lobby invite you sent.</summary>
     public Task CancelLobbyInviteAsync(string inviteId, CancellationToken ct = default) =>
         CallAsync<object?>("lobby:cancelInvite", new { inviteId }, ct);
 
+    /// <summary>Accept a lobby invite and join the lobby.</summary>
     public async Task<Lobby> AcceptLobbyInviteAsync(string inviteId, CancellationToken ct = default) =>
         (await CallAsync<LobbyResult>("lobby:acceptInvite", new { inviteId }, ct)).Lobby;
 
+    /// <summary>Decline a lobby invite.</summary>
     public Task DeclineLobbyInviteAsync(string inviteId, CancellationToken ct = default) =>
         CallAsync<object?>("lobby:declineInvite", new { inviteId }, ct);
 
+    /// <summary>List your open lobby invites.</summary>
     public async Task<LobbyInvite[]> ListLobbyInvitesAsync(CancellationToken ct = default) =>
         (await CallAsync<InvitesAck>("lobby:invites", null, ct)).Invites;
 
+    /// <summary>Join the lobby of a friend; when the lobby is locked only a join request is sent (<see cref="JoinFriendResult.Pending"/>).</summary>
     public Task<JoinFriendResult> JoinFriendAsync(string friendId, CancellationToken ct = default) =>
         CallAsync<JoinFriendResult>("lobby:joinFriend", new { friendId }, ct);
 
@@ -424,7 +476,7 @@ public sealed class EthernalClient : IAsyncDisposable
     public Task SetKeyAsync(string gameId, string key, object? value, DataVisibility? visibility = null, CancellationToken ct = default)
     {
         var body = visibility.HasValue
-            ? (object)new { value, visibility = visibility.Value.ToString().ToLowerInvariant() }
+            ? (object)new { value, visibility = visibility.Value.Wire() }
             : new { value };
         return AuthedFetchAsync(
             HttpMethod.Put,
@@ -444,17 +496,11 @@ public sealed class EthernalClient : IAsyncDisposable
         IEnumerable<(string Key, object? Value, DataVisibility? Visibility)> entries,
         CancellationToken ct = default)
     {
-        var data = entries.Select(e => new
-        {
-            key   = e.Key,
-            value = e.Value,
-            visibility = e.Visibility.HasValue
-                ? e.Visibility.Value.ToString().ToLowerInvariant()
-                : null
-        });
+        // The hub expects a bare JSON array as the PATCH body
+        var data = entries.Select(e => new { key = e.Key, value = e.Value, visibility = e.Visibility?.Wire() }).ToArray();
         return AuthedFetchAsync(HttpMethod.Patch,
             $"/userdata/{Uri.EscapeDataString(gameId)}",
-            new { data }, ct);
+            data, ct);
     }
 
     /// <summary>Fetch all own KV entries for a game via REST.</summary>
@@ -527,7 +573,7 @@ public sealed class EthernalClient : IAsyncDisposable
         RegisterEvent<HubErrorPayload>(socket,     "errorDetail",      d =>
         {
             ErrorDetail?.Invoke(d);
-            if (d.Code == "AUTH_EXPIRED" && _refreshToken is not null)
+            if (d.Error == ErrorCode.AuthExpired && _refreshToken is not null)
                 _ = Task.Run(async () =>
                 {
                     try { await RefreshSocketAuthAsync(); }
@@ -540,8 +586,8 @@ public sealed class EthernalClient : IAsyncDisposable
             try
             {
                 var lobby = response.GetValue<Lobby>(0);
-                string? reason = null;
-                try { reason = response.GetValue<string?>(1); } catch { /* reason is optional */ }
+                LobbyChangeReason? reason = null;
+                try { reason = WireEnumConverter<LobbyChangeReason>.Parse(response.GetValue<string?>(1)); } catch { /* reason is optional */ }
                 LobbyUpdated?.Invoke(lobby);
                 LobbyChanged?.Invoke(lobby, reason);
             }
@@ -598,14 +644,11 @@ public sealed class EthernalClient : IAsyncDisposable
     {
         socket.On(eventName, response =>
         {
-            // Fulfil a pending one-shot request first, if any
+            // Fulfil a pending one-shot request (e.g. RequestJoinLobbyAsync); the public event is still raised
             lock (_pendingLock)
             {
                 if (_pending.TryGetValue(eventName, out var q) && q.Count > 0)
-                {
                     q.Dequeue().TrySetResult(response);
-                    return;
-                }
             }
             try
             {
@@ -718,8 +761,11 @@ public sealed class EthernalClient : IAsyncDisposable
     }
 
     /// <summary>Emits an event with an ack callback; throws <see cref="EthernalException"/> on a server error or timeout.</summary>
-    private async Task<T> CallAsync<T>(string eventName, object? data, CancellationToken ct = default)
+    private async Task<T> CallAsync<T>(string eventName, object? data, CancellationToken ct = default, bool binary = false)
     {
+        // The hub validates payloads strictly and rejects explicit nulls for optional fields,
+        // so null members are omitted. Binary payloads must stay byte[] (sent as socket.io attachments).
+        if (data is not null && !binary) data = JsonSerializer.SerializeToElement(data, JsonOpts);
         var raw = await EmitWithAckAsync(eventName, data, ct);
         return raw.Deserialize<T>(JsonOpts)!;
     }
@@ -812,13 +858,22 @@ public sealed class EthernalClient : IAsyncDisposable
         StoreTokens(result.AccessToken, result.RefreshToken);
     }
 
+    /// <summary>Maps a failed REST response (<c>{ error, code }</c>) to an <see cref="EthernalException"/>.</summary>
+    private static async Task<EthernalException> ToExceptionAsync(HttpResponseMessage res, CancellationToken ct)
+    {
+        var text = await res.Content.ReadAsStringAsync(ct);
+        ErrorResponse? err = null;
+        try { err = JsonSerializer.Deserialize<ErrorResponse>(text, JsonOpts); } catch (JsonException) { /* non-JSON body */ }
+        var status = (int)res.StatusCode;
+        return new EthernalException(err?.Code ?? $"HTTP_{status}", err?.Error ?? $"HTTP {status}: {text}");
+    }
+
     private async Task<T> PostAsync<T>(string path, object body, CancellationToken ct)
     {
         using var res = await _http.PostAsJsonAsync(path.TrimStart('/'), body, JsonOpts, ct);
         if (!res.IsSuccessStatusCode)
         {
-            var err = await res.Content.ReadFromJsonAsync<ErrorResponse>(JsonOpts, ct);
-            throw new Exception(err?.Error ?? $"HTTP {(int)res.StatusCode}");
+            throw await ToExceptionAsync(res, ct);
         }
         return (await res.Content.ReadFromJsonAsync<T>(JsonOpts, ct))!;
     }
@@ -842,8 +897,7 @@ public sealed class EthernalClient : IAsyncDisposable
             if (res.StatusCode == System.Net.HttpStatusCode.NoContent) return default!;
             if (!res.IsSuccessStatusCode)
             {
-                var text = await res.Content.ReadAsStringAsync(ct);
-                throw new Exception($"HTTP {(int)res.StatusCode}: {text}");
+                throw await ToExceptionAsync(res, ct);
             }
             return (await res.Content.ReadFromJsonAsync<T>(JsonOpts, ct))!;
         }
@@ -860,6 +914,7 @@ public sealed class EthernalClient : IAsyncDisposable
 
     // ─── IAsyncDisposable ─────────────────────────────────────────────────────
 
+    /// <summary>Disconnects and releases all resources.</summary>
     public async ValueTask DisposeAsync()
     {
         if (_socket is not null)
@@ -875,5 +930,6 @@ public sealed class EthernalClient : IAsyncDisposable
     private sealed class ErrorResponse
     {
         [JsonPropertyName("error")] public string? Error { get; init; }
+        [JsonPropertyName("code")]  public string? Code  { get; init; }
     }
 }

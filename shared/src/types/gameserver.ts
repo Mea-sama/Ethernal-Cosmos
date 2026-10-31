@@ -2,7 +2,8 @@
 // Ein Game-Server ist ein Dienst, kein Lobby-Teilnehmer: ein Server bedient N Lobbys, eine Lobby hat 0..1 Server.
 
 import type { Ack } from './errors';
-import type { Lobby, LobbyChangeReason, LobbyStatus } from './index';
+import type { LobbyAssignReason, ServerMode, LobbyChangeReason, LobbyClosedReason, PlayerLeftReason } from './enums';
+import type { Lobby, LobbyStatus } from './index';
 
 /** Handshake (socket.handshake.auth) eines Game-Servers */
 export interface GameServerHandshake {
@@ -36,7 +37,7 @@ export interface GameServerPlayer {
 /** Wunsch des Spielers bei createLobby */
 export interface ServerPreference {
   /** 'none' = bewusst ohne Server (nur bei serverSupport 'optional') */
-  mode?: 'any' | 'none';
+  mode?: ServerMode;
   region?: string;
 }
 
@@ -44,11 +45,16 @@ export interface ServerPreference {
 export interface HubToGameServerEvents {
   hello: (data: { serverId: string; gameId: string; resumed: boolean; lobbies: Lobby[] }) => void;
   /** Lobby wird diesem Server zugewiesen; der Server antwortet per Ack mit accept/reject */
-  'lobby:assigned': (data: { lobby: Lobby; players: GameServerPlayer[]; rebind?: boolean }, ack: (res: { accept: boolean; reason?: string }) => void) => void;
+  'lobby:assigned': (data: { lobby: Lobby; players: GameServerPlayer[]; reason: LobbyAssignReason;
+    /** Only with reason `server_rebound`: the server that was lost */
+    previousServerId?: string;
+    /** Only with reason `server_rebound`: unix ms when the previous server was lost */
+    lostAt?: number;
+  }, ack: (res: { accept: boolean; reason?: string }) => void) => void;
   'lobby:updated': (data: { lobby: Lobby; reason?: LobbyChangeReason }) => void;
-  'lobby:closed': (data: { lobbyId: string; reason: 'closed' | 'dissolved' | 'host_left' | 'reassigned' }) => void;
+  'lobby:closed': (data: { lobbyId: string; reason: LobbyClosedReason }) => void;
   'player:joined': (data: { lobbyId: string } & GameServerPlayer) => void;
-  'player:left': (data: { lobbyId: string; userId: string; reason: 'left' | 'kicked' | 'timeout' }) => void;
+  'player:left': (data: { lobbyId: string; userId: string; reason: PlayerLeftReason }) => void;
   'player:disconnected': (data: { lobbyId: string; userId: string }) => void;
   'player:reconnected': (data: { lobbyId: string; userId: string }) => void;
   /** Weitergeleitete gameAction eines Spielers */

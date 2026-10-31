@@ -7,6 +7,7 @@ import type {
   GameServerToHubEvents,
   HubToGameServerEvents,
   Lobby,
+  LobbyAssignReason,
   LobbyChangeReason,
   ServerPreference,
 } from '@ethernal/shared';
@@ -40,6 +41,8 @@ interface LiveServer {
   connected: boolean;
   lobbies: Set<string>;
   resumeTimer?: NodeJS.Timeout;
+  /** unix ms of the last disconnect while still holding lobbies */
+  lostAt?: number;
 }
 
 const servers = new Map<string, LiveServer>();
@@ -98,14 +101,16 @@ function candidatesFor(gameId: string, pref?: ServerPreference): LiveServer[] {
   });
 }
 
-function askAssignment(server: LiveServer, lobby: Lobby, rebind = false): Promise<boolean> {
+type AssignInfo = { reason: LobbyAssignReason; previousServerId?: string; lostAt?: number };
+
+function askAssignment(server: LiveServer, lobby: Lobby, info: AssignInfo = { reason: 'new_lobby' }): Promise<boolean> {
   return new Promise((resolve) => {
     if (!namespace) return resolve(false);
     const timer = setTimeout(() => resolve(false), assignTimeoutMs());
     const players = lobby.players.map((p) => ({ userId: p.userId, username: p.username }));
     (namespace.to(serverRoom(server.serverId)) as unknown as { timeout: (ms: number) => { emit: (...a: unknown[]) => void } })
       .timeout(assignTimeoutMs())
-      .emit('lobby:assigned', { lobby, players, ...(rebind ? { rebind: true } : {}) }, (err: unknown, responses: Array<{ accept: boolean }>) => {
+      .emit('lobby:assigned', { lobby, players, ...info }, (err: unknown, responses: Array<{ accept: boolean }>) => {
         clearTimeout(timer);
         resolve(!err && responses?.[0]?.accept === true);
       });
@@ -154,14 +159,14 @@ function closeLostLobby(lobbyId: string): void {
 }
 
 /** Resume-Frist abgelaufen: Lobby auf einen anderen Server umbinden; sonst required → schließen, optional → serverlos weiter. */
-async function recoverLobby(lobbyId: string, gameId: string, lostServerId: string): Promise<void> {
+async function recoverLobby(lobbyId: string, gameId: string, lostServerId: string, lostAt: number): Promise<void> {
   const io = mainIo;
   const lobby = lobbyManager.getLobby(lobbyId);
   if (!io || !lobby || lobby.status === 'closed' || lobby.server?.serverId !== lostServerId) return;
   const support = getGame(gameId)?.serverSupport ?? 'none';
   for (const candidate of candidatesFor(gameId, { region: lobby.server.region })) {
     candidate.lobbies.add(lobbyId);
-    if (await askAssignment(candidate, lobby, true)) {
+    if (await askAssignment(candidate, lobby, { reason: 'server_rebound', previousServerId: lostServerId, lostAt })) {
       if (lobbyManager.getLobby(lobbyId)?.status === 'closed') {
         candidate.lobbies.delete(lobbyId);
         return;
@@ -186,7 +191,7 @@ function dropServer(serverId: string): void {
   clearTimeout(s.resumeTimer);
   servers.delete(serverId);
   for (const lobbyId of [...s.lobbies]) {
-    void recoverLobby(lobbyId, s.gameId, serverId).catch((err) => {
+    void recoverLobby(lobbyId, s.gameId, serverId, s.lostAt ?? Date.now()).catch((err) => {
       console.error('[GameServer] Recovery fehlgeschlagen:', err);
       closeLostLobby(lobbyId);
     });
@@ -377,6 +382,7 @@ export function registerGameServerNamespace(io: AppServer): void {
       const s = servers.get(hs.serverId);
       if (!s || s.socketId !== socket.id) return; // abgelöst durch neuere Verbindung
       s.connected = false;
+      s.lostAt = Date.now();
       console.log(`[GameServer] "${hs.serverId}" getrennt`);
       markServerLobbies(s, 'lost', 'server_lost');
       if (s.lobbies.size === 0) {

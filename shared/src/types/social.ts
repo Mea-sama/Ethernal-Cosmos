@@ -1,12 +1,13 @@
 // ─── Social: Freunde, Presence, Notifications, DMs, Lobby-Einladungen ─────────
 
+import type { FriendPresenceStatus, FriendRequestSource, LobbyInviteCancelReason, NotificationType, OwnPresenceStatus } from './enums';
+
 /** Einzige Information über einen Freund (erst nach Annahme sichtbar) */
 export interface FriendInfo {
   userId: string;
   username: string;
 }
 
-export type FriendRequestSource = 'name' | 'lobby';
 
 export interface FriendRequestInfo {
   id: string;
@@ -23,11 +24,8 @@ export interface FriendRequestsResult {
 }
 
 /** Antwort auf eine Anfrage per Name — absichtlich nur diese zwei Werte (Enumeration-Schutz) */
-export type FriendRequestResult = 'REQUEST_SENT' | 'NO_SUCH_PLAYER';
 
 /** Eigener Status; `invisible` erscheint bei Freunden als offline */
-export type OwnPresenceStatus = 'online' | 'away' | 'busy' | 'invisible';
-export type FriendPresenceStatus = 'online' | 'away' | 'busy' | 'offline';
 
 export interface FriendPresence {
   userId: string;
@@ -47,16 +45,6 @@ export interface SocialSettings {
   mutedNotificationTypes: NotificationType[];
 }
 
-export type NotificationType =
-  | 'friend_request'
-  | 'friend_accepted'
-  | 'friend_removed'
-  | 'dm'
-  | 'lobby_invite'
-  | 'lobby_invite_cancelled'
-  | 'friend_online'
-  | 'kicked'
-  | 'system';
 
 export interface HubNotification {
   id: string;
@@ -119,7 +107,6 @@ export interface LobbyInvite {
   expiresAt: number;
 }
 
-export type LobbyInviteCancelReason = 'cancelled' | 'expired' | 'lobby_closed' | 'lobby_full' | 'left' | 'unfriended';
 
 export interface FriendLobbyInfo {
   /** Nur bei nicht-privaten Lobbys */

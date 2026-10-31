@@ -1,3 +1,5 @@
+import type { DataVisibility, DataWriteScope, LobbyChangeReason, LobbyServerStatus, LobbyStatus, ServerSupport } from './enums';
+
 // ─── User ────────────────────────────────────────────────────────────────────
 
 /** Vollständiger User-Datensatz (nur server-intern, nie an Clients senden) */
@@ -29,10 +31,8 @@ export interface AuthResult {
 
 // ─── Lobby ───────────────────────────────────────────────────────────────────
 
-export type LobbyStatus = 'open' | 'full' | 'in_progress' | 'closed';
 
 /** Grund einer Lobby-Änderung (zweites Argument von `lobbyUpdated`) */
-export type LobbyChangeReason = 'player_joined' | 'player_left' | 'host_left' | 'host_transferred' | 'player_disconnected' | 'player_reconnected' | 'state_changed' | 'locked' | 'unlocked' | 'kicked' | 'settings_changed' | 'server_lost' | 'server_resumed' | 'server_draining' | 'server_rebound';
 
 export interface LobbyPlayer {
   userId: string;
@@ -64,7 +64,7 @@ export interface Lobby {
   /** Game-Server dieser Lobby (nur für Mitglieder; in Listings ersetzt durch serverBound/region) */
   server?: LobbyServerBinding;
   /** Zustand des Game-Servers: ok (Default), lost (Verbindung weg, Resume-Frist läuft), draining (nimmt keine neuen Lobbys an) */
-  serverStatus?: 'ok' | 'lost' | 'draining';
+  serverStatus?: LobbyServerStatus;
   /** Nur in Listings: läuft die Lobby auf einem Game-Server? */
   serverBound?: boolean;
   /** Nur in Listings: Region des Game-Servers */
@@ -76,9 +76,6 @@ export interface Lobby {
   createdAt: number; // unix ms
 }
 
-/** Grund, warum eine Beitrittsanfrage abgelehnt/beendet wurde */
-export type JoinRequestRejectReason =
-  | 'declined' | 'timeout' | 'host_changed' | 'lobby_closed' | 'unlocked' | 'already_in_lobby' | 'lobby_full' | 'superseded';
 
 // ─── Game Registry ───────────────────────────────────────────────────────────
 
@@ -123,7 +120,6 @@ export interface GameInfo {
   regions?: string[];
 }
 
-export type ServerSupport = 'none' | 'optional' | 'required';
 
 /** Bindung einer Lobby an einen Game-Server (0..1 pro Lobby). Mitglieder sehen die serverId, Listings nicht. */
 export interface LobbyServerBinding {
@@ -174,7 +170,6 @@ export type IpcGameToHub =
 // ─── User Data ──────────────────────────────────────────────────────────────
 
 /** Sichtbarkeit eines User-Data-Keys */
-export type DataVisibility = 'private' | 'lobby' | 'public';
 
 /** Ein einzelner Key-Value-Eintrag in den User-Daten */
 export interface UserDataEntry {
@@ -188,7 +183,6 @@ export interface UserDataEntry {
   version: number;
 }
 
-export type DataWriteScope = 'client' | 'server';
 
 // ─── Presence ────────────────────────────────────────────────────────────────
 
@@ -240,6 +234,7 @@ export interface PanelAction {
   onClick: () => void;
 }
 
+export * from './enums';
 export * from './events';
 export * from './errors';
 export * from './social';
