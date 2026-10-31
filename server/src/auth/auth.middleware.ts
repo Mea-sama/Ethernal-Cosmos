@@ -23,7 +23,7 @@ export function requireAuth(
 ): void {
   const authHeader = req.headers.authorization;
   if (!authHeader?.startsWith('Bearer ')) {
-    res.status(401).json({ error: 'Nicht authentifiziert' });
+    res.status(401).json({ error: 'Nicht authentifiziert', code: 'UNAUTHENTICATED' });
     return;
   }
 
@@ -32,6 +32,6 @@ export function requireAuth(
     req.auth = verifyToken(token);
     next();
   } catch {
-    res.status(401).json({ error: 'Token ungültig oder abgelaufen' });
+    res.status(401).json({ error: 'Token ungültig oder abgelaufen', code: 'INVALID_TOKEN' });
   }
 }

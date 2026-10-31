@@ -79,7 +79,7 @@ router.post('/register', registerLimiterWithWhitelist, async (req: Request, res:
     const messages = Object.values(parse.error.flatten().fieldErrors)
       .flat()
       .join(' · ');
-    res.status(400).json({ error: messages || 'Ungültige Eingabe' });
+    res.status(400).json({ error: messages || 'Ungültige Eingabe', code: 'INVALID_INPUT' });
     return;
   }
 
@@ -89,7 +89,7 @@ router.post('/register', registerLimiterWithWhitelist, async (req: Request, res:
     res.status(201).json(result);
   } catch (err: unknown) {
     if (err instanceof Error && err.message === 'USERNAME_TAKEN') {
-      res.status(409).json({ error: 'Benutzername bereits vergeben' });
+      res.status(409).json({ error: 'Benutzername bereits vergeben', code: 'USERNAME_TAKEN' });
       return;
     }
     console.error('[Auth] Registrierung fehlgeschlagen:', err);
@@ -101,7 +101,7 @@ router.post('/register', registerLimiterWithWhitelist, async (req: Request, res:
 router.post('/login', loginLimiterWithWhitelist, async (req: Request, res: Response): Promise<void> => {
   const parse = LoginSchema.safeParse(req.body);
   if (!parse.success) {
-    res.status(400).json({ error: 'Benutzername und Passwort erforderlich' });
+    res.status(400).json({ error: 'Benutzername und Passwort erforderlich', code: 'INVALID_INPUT' });
     return;
   }
 
@@ -111,7 +111,7 @@ router.post('/login', loginLimiterWithWhitelist, async (req: Request, res: Respo
     res.json(result);
   } catch (err: unknown) {
     if (err instanceof Error && err.message === 'INVALID_CREDENTIALS') {
-      res.status(401).json({ error: 'Benutzername oder Passwort falsch' });
+      res.status(401).json({ error: 'Benutzername oder Passwort falsch', code: 'INVALID_CREDENTIALS' });
       return;
     }
     console.error('[Auth] Login fehlgeschlagen:', err);
@@ -123,7 +123,7 @@ router.post('/login', loginLimiterWithWhitelist, async (req: Request, res: Respo
 router.post('/refresh', refreshLimiterWithWhitelist, async (req: Request, res: Response): Promise<void> => {
   const { refreshToken } = req.body as { refreshToken?: unknown };
   if (typeof refreshToken !== 'string' || !refreshToken) {
-    res.status(400).json({ error: 'refreshToken erforderlich' });
+    res.status(400).json({ error: 'refreshToken erforderlich', code: 'INVALID_INPUT' });
     return;
   }
 
@@ -135,10 +135,11 @@ router.post('/refresh', refreshLimiterWithWhitelist, async (req: Request, res: R
       const status =
         err.message === 'REFRESH_TOKEN_REVOKED' ||
         err.message === 'REFRESH_TOKEN_EXPIRED' ||
-        err.message === 'INVALID_REFRESH_TOKEN'
+        err.message === 'INVALID_REFRESH_TOKEN' ||
+        err.message === 'USER_NOT_FOUND'
           ? 401
           : 500;
-      res.status(status).json({ error: err.message });
+      res.status(status).json({ error: err.message, code: status === 500 ? 'INTERNAL' : err.message });
       return;
     }
     res.status(500).json({ error: 'Interner Fehler' });
@@ -149,7 +150,7 @@ router.post('/refresh', refreshLimiterWithWhitelist, async (req: Request, res: R
 router.post('/logout', async (req: Request, res: Response): Promise<void> => {
   const { refreshToken } = req.body as { refreshToken?: unknown };
   if (typeof refreshToken !== 'string' || !refreshToken) {
-    res.status(400).json({ error: 'refreshToken erforderlich' });
+    res.status(400).json({ error: 'refreshToken erforderlich', code: 'INVALID_INPUT' });
     return;
   }
 

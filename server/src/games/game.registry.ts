@@ -1,5 +1,10 @@
 import type { GameInfo } from '@ethernal/shared';
+import fs from 'fs';
+import path from 'path';
 import { EXTERNAL_GAMES } from './external-games';
+
+/** Standard-Gnadenfrist für Reconnects (ms), wenn ein Spiel keine eigene angibt */
+export const DEFAULT_RECONNECT_GRACE_MS = 60_000;
 
 /**
  * Statische Spiel-Registry für serverseitig verwaltete Spiele.
@@ -22,6 +27,7 @@ const HOSTED: Omit<GameInfo, 'hosted'>[] = [
     // die echte 1 Host + 7 Kontrahenten-Grenze setzt der Subprocess selbst durch.
     maxPlayers: 40,
     entryScript: 'games/dudg/server/dist/index.js',
+    reconnectGraceMs: 120_000,
   },
   // Hier kommen zukünftige Spiele rein, z.B.:
   // { id: 'tcg', name: 'Ethernal TCG', description: '...', maxPlayers: 2, entryScript: 'games/tcg/server/dist/index.js' },
@@ -29,8 +35,29 @@ const HOSTED: Omit<GameInfo, 'hosted'>[] = [
 
 const HOSTED_GAMES: GameInfo[] = HOSTED.map((g) => ({ ...g, hosted: true }));
 
-/** Alle bekannten Spiele: gehostete + externe */
-const ALL_GAMES: GameInfo[] = [...HOSTED_GAMES, ...EXTERNAL_GAMES];
+/**
+ * Optionale Zusatzspiele aus einer JSON-Datei (GAMES_CONFIG_PATH): Array von GameInfo-ähnlichen Objekten.
+ * Dient Tests und Deployments; entryScript darf hier absolut sein.
+ */
+function loadConfiguredGames(): GameInfo[] {
+  const file = process.env.GAMES_CONFIG_PATH;
+  if (!file) return [];
+  const raw = JSON.parse(fs.readFileSync(path.resolve(file), 'utf8')) as Array<Partial<GameInfo>>;
+  return raw.map((g) => ({
+    id: String(g.id),
+    name: g.name ?? String(g.id),
+    description: g.description ?? '',
+    maxPlayers: g.maxPlayers ?? 2,
+    hosted: !!g.entryScript,
+    ...g,
+  })) as GameInfo[];
+}
+
+/** Alle bekannten Spiele: gehostete + externe + konfigurierte */
+const ALL_GAMES: GameInfo[] = [...HOSTED_GAMES, ...EXTERNAL_GAMES, ...loadConfiguredGames()].map((g) => ({
+  ...g,
+  reconnectGraceMs: g.reconnectGraceMs ?? DEFAULT_RECONNECT_GRACE_MS,
+}));
 
 const registryMap = new Map<string, GameInfo>(ALL_GAMES.map((g) => [g.id, g]));
 

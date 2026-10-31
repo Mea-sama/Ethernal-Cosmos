@@ -1,4 +1,4 @@
-export { EthernalClient } from './EthernalClient';
+export { EthernalClient, EthernalError } from './EthernalClient';
 export type {
   EthernalClientOptions,
   AuthResult,
@@ -10,4 +10,10 @@ export type {
   PresenceUser,
   RelayMessage,
   RelayBinaryMessage,
+  ErrorCode,
+  HubErrorPayload,
+  GameInfo,
+  SessionState,
+  HelloPayload,
+  BulkDataEntry,
 } from './EthernalClient';

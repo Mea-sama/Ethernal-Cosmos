@@ -19,6 +19,8 @@ import { registerSocketAuth, registerLobbyHandlers, registerIpcRouting } from '.
 import { listGames } from './games/game.registry';
 import { ALLOWED_ORIGINS, HOST, IS_PRODUCTION, PORT, isAllowedOrigin } from './config/env';
 import { serverLimits } from './config/limits';
+import { registerMaintenanceJobs } from './jobs/maintenance';
+import { startScheduler } from './jobs/scheduler';
 
 const socketIoClientCandidates = [
   path.resolve(__dirname, '../../node_modules/socket.io/client-dist'),
@@ -215,6 +217,8 @@ app.use('/dudg/api/questions', dudgQuestionsRouter);
 
 async function start(): Promise<void> {
   await initDatabase();
+  registerMaintenanceJobs();
+  startScheduler();
   httpServer.listen(PORT, HOST, () => {
     console.log(`[Server] Ethernal Cosmos Hub läuft auf ${HOST}:${PORT} (intern — HTTPS via Caddy auf :12346)`);
     console.log(

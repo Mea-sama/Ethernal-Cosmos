@@ -11,12 +11,26 @@ import type {
   RelayMessage,
   RelayBinaryMessage,
   JoinRequestRejectReason,
+  ErrorCode,
+  HubErrorPayload,
+  GameInfo,
+  SessionState,
+  HelloPayload,
+  BulkDataEntry,
 } from '@ethernal/shared';
 
 // ─── Types ───────────────────────────────────────────────────────
 
 export type { Lobby, UserDataEntry, DataVisibility, PresenceUser, JoinRequestRejectReason } from '@ethernal/shared';
-export type { RelayMessage, RelayBinaryMessage } from '@ethernal/shared';
+export type { RelayMessage, RelayBinaryMessage, ErrorCode, HubErrorPayload, GameInfo, SessionState, HelloPayload, BulkDataEntry } from '@ethernal/shared';
+
+/** Error thrown by every SDK call; `code` is a stable machine-readable value (see ErrorCode). */
+export class EthernalError extends Error {
+  constructor(public readonly code: ErrorCode | 'TIMEOUT' | 'NOT_CONNECTED', message: string, public readonly retryAfterMs?: number) {
+    super(message);
+    this.name = 'EthernalError';
+  }
+}
 
 export type BinaryPayload = Uint8Array | ArrayBuffer;
 
@@ -55,7 +69,8 @@ type EthernalSocket = Socket<ServerToClientEvents, ClientToServerEvents>;
  * const client = new EthernalClient({ serverUrl: 'http://localhost:12346' });
  * await client.login('alice', 'secret');
  * client.on('lobbyUpdated', (lobby) => console.log(lobby));
- * const lobby = await client.createLobby({ gameId: 'chess', name: 'Fast game' });
+ * const lobby = await client.registerGame('chess');
+ * const lobby = await client.createLobby({ name: 'Fast game' });
  * ```
  */
 export class EthernalClient extends EventEmitter {
@@ -63,6 +78,7 @@ export class EthernalClient extends EventEmitter {
   private readonly requestTimeout: number;
 
   private socket: EthernalSocket | null = null;
+  private registeredGameId: string | null = null;
   private accessToken: string | null = null;
   private refreshToken: string | null = null;
 
@@ -99,128 +115,123 @@ export class EthernalClient extends EventEmitter {
     }
     this.socket?.disconnect();
     this.socket = null;
+    this.registeredGameId = null;
     this.accessToken = null;
     this.refreshToken = null;
   }
 
   // ─── Lobby ────────────────────────────────────────────────────────────────
 
-  /** Create a new lobby and wait for server confirmation. */
-  createLobby(data: {
-    gameId: string;
-    name: string;
-    isPrivate?: boolean;
-    settings?: Record<string, unknown>;
-  }): Promise<Lobby> {
-    return this.socketRequest(
-      () => this.getSocket().emit('createLobby', data),
-      'lobbyCreated',
-    );
+  /**
+   * Register the game this client plays. Required once per connection (after login) before
+   * lobbies, relay or game actions can be used. Lobbies are bound to this game.
+   */
+  async registerGame(gameId: string, opts: { clientVersion?: string; platform?: string } = {}): Promise<{ game: GameInfo; state: SessionState }> {
+    const res = await this.call<{ game: GameInfo; state: SessionState }>('session:registerGame', { gameId, ...opts });
+    this.registeredGameId = gameId;
+    return res;
   }
 
-  /** Join an existing lobby by ID. Resolves with the updated lobby state. */
-  joinLobby(lobbyId: string): Promise<Lobby> {
-    return this.socketRequest(
-      () => this.getSocket().emit('joinLobby', { lobbyId }),
-      'lobbyUpdated',
-    );
+  /** Pull the current session state (game + lobby), e.g. after a reconnect. */
+  getSessionState(): Promise<{ state: SessionState; lobby?: Lobby }> {
+    return this.call('session:getState');
   }
 
-  /** Join a private lobby using a 6-character invite code. */
-  joinLobbyByCode(code: string): Promise<Lobby> {
-    return this.socketRequest(
-      () => this.getSocket().emit('joinLobbyByCode', { code }),
-      'lobbyUpdated',
-    );
+  /** Create a new lobby for the registered game. */
+  async createLobby(data: { name: string; isPrivate?: boolean; settings?: Record<string, unknown> }): Promise<Lobby> {
+    return (await this.call<{ lobby: Lobby }>('createLobby', data)).lobby;
+  }
+
+  /** Join a public lobby of the registered game by ID. */
+  async joinLobby(lobbyId: string): Promise<Lobby> {
+    return (await this.call<{ lobby: Lobby }>('joinLobby', { lobbyId })).lobby;
+  }
+
+  /** Join a lobby (also private/locked-free) using a 6-character invite code. */
+  async joinLobbyByCode(code: string): Promise<Lobby> {
+    return (await this.call<{ lobby: Lobby }>('joinLobbyByCode', { code })).lobby;
   }
 
   /** Leave the current lobby. */
-  leaveLobby(): void {
-    this.getSocket().emit('leaveLobby');
+  async leaveLobby(): Promise<void> {
+    await this.call('leaveLobby');
   }
 
-  /** Fetch all open lobbies for a given game. */
-  listLobbies(gameId: string): Promise<Lobby[]> {
-    return this.socketRequest(
-      () => this.getSocket().emit('listLobbies', gameId),
-      'lobbyList',
-    );
+  /** Fetch open public lobbies of the registered game. */
+  async listLobbies(): Promise<Lobby[]> {
+    return (await this.call<{ lobbies: Lobby[] }>('listLobbies')).lobbies;
   }
 
   /** Get a snapshot of the current lobby state. */
-  getLobbyInfo(): Promise<Lobby> {
-    return this.socketRequest(
-      () => this.getSocket().emit('getLobbyInfo'),
-      'lobbyInfo',
-    );
+  async getLobbyInfo(): Promise<Lobby> {
+    return (await this.call<{ lobby: Lobby }>('getLobbyInfo')).lobby;
   }
 
   /** (Host only) Kick a player from the lobby. */
-  kickPlayer(playerId: string): void {
-    this.getSocket().emit('kickPlayer', { playerId });
+  async kickPlayer(playerId: string): Promise<void> {
+    await this.call('kickPlayer', { playerId });
   }
 
   /** (Host only) Transfer the host role to another player. */
-  transferHost(playerId: string): void {
-    this.getSocket().emit('transferHost', { playerId });
+  async transferHost(playerId: string): Promise<void> {
+    await this.call('transferHost', { playerId });
   }
 
   /** (Host only) Lock the lobby — further joins (including via invite code) require an accepted join request. */
-  lockLobby(): void {
-    this.getSocket().emit('lockLobby');
+  async lockLobby(): Promise<void> {
+    await this.call('lockLobby');
   }
 
-  /** (Host only) Unlock the lobby — joinLobby/joinLobbyByCode work directly again. */
-  unlockLobby(): void {
-    this.getSocket().emit('unlockLobby');
+  /** (Host only) Unlock the lobby. */
+  async unlockLobby(): Promise<void> {
+    await this.call('unlockLobby');
   }
 
   /**
-   * Request to join a locked lobby by ID. Resolves once the host accepts (with the updated
-   * Lobby, already joined server-side) or rejects when the host declines, the request times
-   * out (~15s of host inactivity), or the host changes/lobby closes in the meantime.
+   * Request to join a locked lobby by ID. Resolves once the host accepts (with the joined
+   * Lobby) or rejects when the host declines, the request times out, or the lobby closes.
    */
   requestJoinLobby(lobbyId: string): Promise<Lobby> {
-    return this.joinRequestRace(() => this.getSocket().emit('requestJoinLobby', { lobbyId }));
+    return this.joinRequestRace('requestJoinLobby', { lobbyId });
   }
 
-  /** Request to join a locked lobby using its 6-character invite code. See {@link requestJoinLobby}. */
+  /** Request to join a locked lobby using its invite code. See {@link requestJoinLobby}. */
   requestJoinLobbyByCode(code: string): Promise<Lobby> {
-    return this.joinRequestRace(() => this.getSocket().emit('requestJoinLobbyByCode', { code }));
+    return this.joinRequestRace('requestJoinLobbyByCode', { code });
   }
 
   /** Withdraw your own pending join request before the host has responded. */
-  cancelJoinRequest(lobbyId: string): void {
-    this.getSocket().emit('cancelJoinRequest', { lobbyId });
+  async cancelJoinRequest(lobbyId: string): Promise<void> {
+    await this.call('cancelJoinRequest', { lobbyId });
   }
 
   /** (Host only) Accept or reject a pending join request (see the 'joinRequestReceived' event). */
-  respondJoinRequest(requesterId: string, accept: boolean): void {
-    this.getSocket().emit('respondJoinRequest', { requesterId, accept });
+  async respondJoinRequest(requesterId: string, accept: boolean): Promise<void> {
+    await this.call('respondJoinRequest', { requesterId, accept });
   }
 
   // ─── Relay ────────────────────────────────────────────────────────────────
 
   /** Broadcast a typed message to all other players in the lobby. */
-  sendToLobby(type: string, payload: unknown): void {
-    this.getSocket().emit('sendToLobby', { type, payload });
+  async sendToLobby(type: string, payload: unknown): Promise<void> {
+    await this.call('sendToLobby', { type, payload });
   }
 
   /** Send a typed message directly to one player in the lobby. */
-  sendToPlayer(playerId: string, type: string, payload: unknown): void {
-    this.getSocket().emit('sendToPlayer', { playerId, type, payload });
+  async sendToPlayer(playerId: string, type: string, payload: unknown): Promise<void> {
+    await this.call('sendToPlayer', { playerId, type, payload });
   }
 
   /** Broadcast a binary message to all other players in the lobby. */
-  sendToLobbyBinary(typeCode: number, payload: BinaryPayload): void {
+  async sendToLobbyBinary(typeCode: number, payload: BinaryPayload): Promise<void> {
     const bytes = payload instanceof Uint8Array ? payload : new Uint8Array(payload);
-    this.getSocket().emit('sendToLobbyBinary', { typeCode, payload: bytes });
+    await this.call('sendToLobbyBinary', { typeCode, payload: bytes });
   }
 
   /** Send a binary message directly to one player in the lobby. */
-  sendToPlayerBinary(playerId: string, typeCode: number, payload: BinaryPayload): void {
+  async sendToPlayerBinary(playerId: string, typeCode: number, payload: BinaryPayload): Promise<void> {
     const bytes = payload instanceof Uint8Array ? payload : new Uint8Array(payload);
-    this.getSocket().emit('sendToPlayerBinary', { playerId, typeCode, payload: bytes });
+    await this.call('sendToPlayerBinary', { playerId, typeCode, payload: bytes });
   }
 
   /** Subscribe to relay messages with an optional payload type parameter for compile-time typing. */
@@ -246,41 +257,42 @@ export class EthernalClient extends EventEmitter {
   // ─── Game Actions ─────────────────────────────────────────────────────────
 
   /** Forward a game action to the running game subprocess. */
-  sendGameAction(type: string, payload: unknown): void {
-    this.getSocket().emit('gameAction', { type, payload });
+  async sendGameAction(type: string, payload: unknown): Promise<void> {
+    await this.call('gameAction', { type, payload });
   }
 
   // ─── User Data (Socket) ───────────────────────────────────────────────────
 
   /** Fetch the current user's own KV-data for a game (socket). */
-  getUserData(gameId: string): Promise<UserDataEntry[]> {
-    return this.socketRequest(
-      () => this.getSocket().emit('getUserData', gameId),
-      'userData',
-      (res: { gameId: string; entries: UserDataEntry[] }) => res.entries,
-    );
+  async getUserData(gameId: string): Promise<UserDataEntry[]> {
+    return (await this.call<{ entries: UserDataEntry[] }>('getUserData', gameId)).entries;
   }
 
-  /**
-   * Fetch visible KV-data for another player (socket).
-   * Returns public data, plus lobby-scoped data if both players are in the same lobby.
-   */
-  getPlayerData(playerId: string, gameId: string): Promise<UserDataEntry[]> {
-    return this.socketRequest(
-      () => this.getSocket().emit('getPlayerData', { playerId, gameId }),
-      'playerData',
-      (res: { playerId: string; gameId: string; entries: UserDataEntry[] }) => res.entries,
-    );
+  /** Fetch visible KV-data for another player (public, or lobby-scoped if you share a lobby). */
+  async getPlayerData(playerId: string, gameId: string): Promise<UserDataEntry[]> {
+    return (await this.call<{ entries: UserDataEntry[] }>('getPlayerData', { playerId, gameId })).entries;
+  }
+
+  /** Write one own key via socket. Server-scoped keys are read-only for clients (DATA_READ_ONLY). */
+  async setUserData(gameId: string, key: string, value: unknown, visibility?: DataVisibility): Promise<void> {
+    await this.call('setUserData', { gameId, key, value, ...(visibility ? { visibility } : {}) });
+  }
+
+  /** Atomically write several own keys via socket. */
+  async bulkSetUserData(gameId: string, entries: BulkDataEntry[]): Promise<void> {
+    await this.call('bulkSetUserData', { gameId, entries });
+  }
+
+  /** Delete one own key via socket. */
+  async deleteUserData(gameId: string, key: string): Promise<void> {
+    await this.call('deleteUserData', { gameId, key });
   }
 
   // ─── Presence ─────────────────────────────────────────────────────────────
 
-  /** Request the current list of online users. Resolves once the server responds. */
-  listPresence(): Promise<PresenceUser[]> {
-    return this.socketRequest(
-      () => this.getSocket().emit('presence:list'),
-      'presence:list',
-    );
+  /** Request the current list of online users. */
+  async listPresence(): Promise<PresenceUser[]> {
+    return (await this.call<{ users: PresenceUser[] }>('presence:list')).users;
   }
 
   // ─── User Data (REST) ─────────────────────────────────────────────────────
@@ -360,6 +372,9 @@ export class EthernalClient extends EventEmitter {
 
     socket.on('connect', () => {
       this.emit('connected');
+      if (this.registeredGameId) {
+        this.registerGame(this.registeredGameId).catch((e) => this.emit('serverError', String(e.message ?? e)));
+      }
     });
 
     socket.on('disconnect', (reason) => {
@@ -389,6 +404,10 @@ export class EthernalClient extends EventEmitter {
       });
     };
 
+    forward('hello');
+    forward('session:resumed');
+    forward('session:replaced');
+    forward('errorDetail');
     forward('lobbyCreated');
     forward('lobbyUpdated');
     forward('lobbyList');
@@ -421,97 +440,75 @@ export class EthernalClient extends EventEmitter {
 
   private getSocket(): EthernalSocket {
     if (!this.socket?.connected) {
-      throw new Error('Kein aktiver Socket — bitte zuerst login() oder register() aufrufen');
+      throw new EthernalError('NOT_CONNECTED', 'Kein aktiver Socket — bitte zuerst login() oder register() aufrufen');
     }
     return this.socket;
   }
 
-  /**
-   * Emit a socket event and resolve when a specific response event fires.
-   * Rejects on `error` from the server or when the timeout is reached.
-   */
-  private socketRequest<TResponse, TReturn = TResponse>(
-    emit: () => void,
-    successEvent: keyof ServerToClientEvents,
-    transform?: (data: TResponse) => TReturn,
-  ): Promise<TReturn> {
+  /** Emit a socket event with an ack callback; rejects with EthernalError on failure or timeout. */
+  private call<T = Record<string, never>>(event: string, ...args: unknown[]): Promise<T> {
     return new Promise((resolve, reject) => {
-      // Use a loosely-typed handle for dynamic event names
-      const sock = this.getSocket() as unknown as {
-        once: (event: string, cb: (...args: unknown[]) => void) => void;
-        off: (event: string, cb: (...args: unknown[]) => void) => void;
-      };
-
-      const timer = setTimeout(() => {
-        sock.off('error', onError);
-        sock.off(successEvent as string, onSuccess);
-        reject(new Error(`Timeout beim Warten auf "${String(successEvent)}"`));
-      }, this.requestTimeout);
-
-      const onError = (...args: unknown[]) => {
+      let sock: EthernalSocket;
+      try {
+        sock = this.getSocket();
+      } catch (e) {
+        reject(e);
+        return;
+      }
+      const timer = setTimeout(
+        () => reject(new EthernalError('TIMEOUT', `Timeout beim Warten auf "${event}"`)),
+        this.requestTimeout,
+      );
+      const ack = (res: { ok: boolean; error?: HubErrorPayload } & Record<string, unknown>) => {
         clearTimeout(timer);
-        sock.off(successEvent as string, onSuccess);
-        reject(new Error(typeof args[0] === 'string' ? args[0] : 'Unbekannter Fehler'));
+        if (res.ok) resolve(res as unknown as T);
+        else reject(new EthernalError(res.error!.code, res.error!.message, res.error!.retryAfterMs));
       };
-
-      const onSuccess = (...args: unknown[]) => {
-        clearTimeout(timer);
-        sock.off('error', onError);
-        const data = args[0] as TResponse;
-        resolve(transform ? transform(data) : (data as unknown as TReturn));
-      };
-
-      sock.once('error', onError);
-      sock.once(successEvent as string, onSuccess);
-      emit();
+      (sock as unknown as { emit: (e: string, ...a: unknown[]) => void }).emit(event, ...args, ack);
     });
   }
 
   /**
-   * Emits a join-request event and resolves/rejects based on the eventual host response
-   * ('joinRequestAccepted' / 'joinRequestRejected'), independent of the generic requestTimeout
-   * since the server allows up to ~15s for the host to respond.
+   * Sends a join request and resolves/rejects on the host's eventual answer
+   * ('joinRequestAccepted' / 'joinRequestRejected'); the server allows ~15s for the host.
    */
-  private joinRequestRace(emit: () => void): Promise<Lobby> {
+  private joinRequestRace(event: string, data: Record<string, unknown>): Promise<Lobby> {
     const JOIN_REQUEST_TIMEOUT_MS = 16_000;
     return new Promise((resolve, reject) => {
       const sock = this.getSocket() as unknown as {
         once: (event: string, cb: (...args: unknown[]) => void) => void;
         off: (event: string, cb: (...args: unknown[]) => void) => void;
+        emit: (event: string, ...args: unknown[]) => void;
       };
-
       const cleanup = () => {
         clearTimeout(timer);
-        sock.off('error', onError);
         sock.off('joinRequestAccepted', onAccepted);
         sock.off('joinRequestRejected', onRejected);
       };
-
       const timer = setTimeout(() => {
         cleanup();
-        reject(new Error('Timeout beim Warten auf die Beitrittsanfrage'));
+        reject(new EthernalError('TIMEOUT', 'Timeout beim Warten auf die Beitrittsanfrage'));
       }, JOIN_REQUEST_TIMEOUT_MS);
-
-      const onError = (...args: unknown[]) => {
-        cleanup();
-        reject(new Error(typeof args[0] === 'string' ? args[0] : 'Unbekannter Fehler'));
-      };
-
       const onAccepted = (...args: unknown[]) => {
         cleanup();
         resolve((args[0] as { lobby: Lobby }).lobby);
       };
-
       const onRejected = (...args: unknown[]) => {
         cleanup();
-        const data = args[0] as { reason: JoinRequestRejectReason };
-        reject(new Error(`Beitrittsanfrage abgelehnt (${data.reason})`));
+        const d = args[0] as { reason: JoinRequestRejectReason };
+        reject(new EthernalError('LOBBY_LOCKED', `Beitrittsanfrage abgelehnt (${d.reason})`));
       };
-
-      sock.once('error', onError);
       sock.once('joinRequestAccepted', onAccepted);
       sock.once('joinRequestRejected', onRejected);
-      emit();
+      sock.emit(event, data, (res: { ok: boolean; error?: HubErrorPayload; lobby?: Lobby }) => {
+        if (!res.ok) {
+          cleanup();
+          reject(new EthernalError(res.error!.code, res.error!.message, res.error!.retryAfterMs));
+        } else if (res.lobby) {
+          cleanup();
+          resolve(res.lobby);
+        }
+      });
     });
   }
 
@@ -580,6 +577,10 @@ export class EthernalClient extends EventEmitter {
   on(event: 'disconnected', listener: (reason: string) => void): this;
   on(event: 'authError', listener: (message: string) => void): this;
   on(event: 'serverError', listener: (message: string) => void): this;
+  on(event: 'hello', listener: (data: HelloPayload) => void): this;
+  on(event: 'session:resumed', listener: (data: { state: SessionState; lobby: Lobby }) => void): this;
+  on(event: 'session:replaced', listener: (data: { reason: 'new_session' }) => void): this;
+  on(event: 'errorDetail', listener: (error: HubErrorPayload) => void): this;
   on(event: 'lobbyCreated', listener: (lobby: Lobby) => void): this;
   on(event: 'lobbyUpdated', listener: (lobby: Lobby) => void): this;
   on(event: 'lobbyList', listener: (lobbies: Lobby[]) => void): this;

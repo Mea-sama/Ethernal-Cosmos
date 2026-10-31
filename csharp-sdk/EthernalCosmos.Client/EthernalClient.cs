@@ -26,7 +26,8 @@ public sealed class EthernalClientOptions
 /// var client = new EthernalClient(new EthernalClientOptions { ServerUrl = "http://localhost:12346" });
 /// await client.LoginAsync("alice", "secret");
 /// client.LobbyUpdated += lobby => Console.WriteLine(lobby.Name);
-/// var lobby = await client.CreateLobbyAsync("chess", "Fast game");
+/// await client.RegisterGameAsync("chess");
+/// var lobby = await client.CreateLobbyAsync("Fast game");
 /// </code>
 /// </example>
 public sealed class EthernalClient : IAsyncDisposable
@@ -40,6 +41,12 @@ public sealed class EthernalClient : IAsyncDisposable
     /// <summary>Fired for server-side error messages.</summary>
     public event Action<string>?                ServerError;
 
+    public event Action<HelloPayload>?          Hello;
+    /// <summary>Raised when a lobby membership was resumed after a reconnect or on a second device.</summary>
+    public event Action<SessionResumedData>?    SessionResumed;
+    /// <summary>Raised when a newer game session of the same user replaced this one.</summary>
+    public event Action<SessionReplacedData>?   SessionReplaced;
+    public event Action<HubErrorPayload>?       ErrorDetail;
     public event Action<Lobby>?                 LobbyCreated;
     public event Action<Lobby>?                 LobbyUpdated;
     public event Action<Lobby[]>?               LobbyList;
@@ -88,6 +95,8 @@ public sealed class EthernalClient : IAsyncDisposable
     private SocketIOClient.SocketIO? _socket;
     private string? _accessToken;
     private string? _refreshToken;
+    private string? _registeredGameId;
+    private (string? ClientVersion, string? Platform) _registerOptions;
 
     // Pending one-shot request/response queues (keyed by success-event name)
     private readonly Dictionary<string, Queue<TaskCompletionSource<SocketIOResponse>>> _pending = [];
@@ -137,60 +146,70 @@ public sealed class EthernalClient : IAsyncDisposable
         }
         _accessToken  = null;
         _refreshToken = null;
+        _registeredGameId = null;
     }
+
+    // ─── Session ──────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Register the game this client plays. Required once per connection (after login) before
+    /// lobbies, relay or game actions can be used. It is re-sent automatically after a reconnect.
+    /// </summary>
+    public async Task<RegisterGameResult> RegisterGameAsync(
+        string gameId, string? clientVersion = null, string? platform = null, CancellationToken ct = default)
+    {
+        var res = await CallAsync<RegisterGameResult>("session:registerGame", new { gameId, clientVersion, platform }, ct);
+        _registeredGameId = gameId;
+        _registerOptions = (clientVersion, platform);
+        return res;
+    }
+
+    /// <summary>Pull the current session state (game + lobby), e.g. after a reconnect.</summary>
+    public Task<SessionStateResult> GetSessionStateAsync(CancellationToken ct = default) =>
+        CallAsync<SessionStateResult>("session:getState", null, ct);
 
     // ─── Lobby ────────────────────────────────────────────────────────────────
 
-    /// <summary>Create a new lobby and wait for server confirmation.</summary>
-    public Task<Lobby> CreateLobbyAsync(
-        string gameId, string name,
+    /// <summary>Create a new lobby for the registered game.</summary>
+    public async Task<Lobby> CreateLobbyAsync(
+        string name,
         bool isPrivate = false,
         Dictionary<string, object?>? settings = null,
-        CancellationToken ct = default)
-    {
-        var data = new
-        {
-            gameId,
-            name,
-            isPrivate,
-            settings = settings ?? []
-        };
-        return SocketRequestAsync<Lobby>("createLobby", data, "lobbyCreated", ct);
-    }
+        CancellationToken ct = default) =>
+        (await CallAsync<LobbyResult>("createLobby", new { name, isPrivate, settings = settings ?? [] }, ct)).Lobby;
 
-    /// <summary>Join an existing lobby by ID.</summary>
-    public Task<Lobby> JoinLobbyAsync(string lobbyId, CancellationToken ct = default) =>
-        SocketRequestAsync<Lobby>("joinLobby", new { lobbyId }, "lobbyUpdated", ct);
+    /// <summary>Join a public lobby of the registered game by ID.</summary>
+    public async Task<Lobby> JoinLobbyAsync(string lobbyId, CancellationToken ct = default) =>
+        (await CallAsync<LobbyResult>("joinLobby", new { lobbyId }, ct)).Lobby;
 
-    /// <summary>Join a private lobby using a 6-character invite code.</summary>
-    public Task<Lobby> JoinLobbyByCodeAsync(string code, CancellationToken ct = default) =>
-        SocketRequestAsync<Lobby>("joinLobbyByCode", new { code }, "lobbyUpdated", ct);
+    /// <summary>Join a lobby using a 6-character invite code.</summary>
+    public async Task<Lobby> JoinLobbyByCodeAsync(string code, CancellationToken ct = default) =>
+        (await CallAsync<LobbyResult>("joinLobbyByCode", new { code }, ct)).Lobby;
 
     /// <summary>Leave the current lobby.</summary>
-    public Task LeaveLobbyAsync() =>
-        GetSocket().EmitAsync("leaveLobby");
+    public Task LeaveLobbyAsync(CancellationToken ct = default) => CallAsync<object?>("leaveLobby", null, ct);
 
-    /// <summary>Fetch all open lobbies for a given game.</summary>
-    public Task<Lobby[]> ListLobbiesAsync(string gameId, CancellationToken ct = default) =>
-        SocketRequestAsync<Lobby[]>("listLobbies", gameId, "lobbyList", ct);
+    /// <summary>Fetch open public lobbies of the registered game.</summary>
+    public async Task<Lobby[]> ListLobbiesAsync(CancellationToken ct = default) =>
+        (await CallAsync<LobbiesResult>("listLobbies", null, ct)).Lobbies;
 
     /// <summary>Get a snapshot of the current lobby state.</summary>
-    public Task<Lobby> GetLobbyInfoAsync(CancellationToken ct = default) =>
-        SocketRequestAsync<Lobby>("getLobbyInfo", null, "lobbyInfo", ct);
+    public async Task<Lobby> GetLobbyInfoAsync(CancellationToken ct = default) =>
+        (await CallAsync<LobbyResult>("getLobbyInfo", null, ct)).Lobby;
 
     /// <summary>(Host only) Kick a player from the lobby.</summary>
-    public Task KickPlayerAsync(string playerId) =>
-        GetSocket().EmitAsync("kickPlayer", new { playerId });
+    public Task KickPlayerAsync(string playerId, CancellationToken ct = default) =>
+        CallAsync<object?>("kickPlayer", new { playerId }, ct);
 
     /// <summary>(Host only) Transfer the host role to another player.</summary>
-    public Task TransferHostAsync(string playerId) =>
-        GetSocket().EmitAsync("transferHost", new { playerId });
+    public Task TransferHostAsync(string playerId, CancellationToken ct = default) =>
+        CallAsync<object?>("transferHost", new { playerId }, ct);
 
     /// <summary>(Host only) Lock the lobby — further joins (including via invite code) require an accepted join request.</summary>
-    public Task LockLobbyAsync() => GetSocket().EmitAsync("lockLobby");
+    public Task LockLobbyAsync(CancellationToken ct = default) => CallAsync<object?>("lockLobby", null, ct);
 
-    /// <summary>(Host only) Unlock the lobby — JoinLobbyAsync/JoinLobbyByCodeAsync work directly again.</summary>
-    public Task UnlockLobbyAsync() => GetSocket().EmitAsync("unlockLobby");
+    /// <summary>(Host only) Unlock the lobby.</summary>
+    public Task UnlockLobbyAsync(CancellationToken ct = default) => CallAsync<object?>("unlockLobby", null, ct);
 
     /// <summary>
     /// Request to join a locked lobby by ID. Resolves once the host accepts (already joined
@@ -199,89 +218,81 @@ public sealed class EthernalClient : IAsyncDisposable
     public Task<Lobby> RequestJoinLobbyAsync(string lobbyId) =>
         JoinRequestAsync("requestJoinLobby", new { lobbyId });
 
-    /// <summary>Request to join a locked lobby using its 6-character invite code. See <see cref="RequestJoinLobbyAsync"/>.</summary>
+    /// <summary>Request to join a locked lobby using its invite code. See <see cref="RequestJoinLobbyAsync"/>.</summary>
     public Task<Lobby> RequestJoinLobbyByCodeAsync(string code) =>
         JoinRequestAsync("requestJoinLobbyByCode", new { code });
 
     /// <summary>Withdraw your own pending join request before the host has responded.</summary>
-    public Task CancelJoinRequestAsync(string lobbyId) =>
-        GetSocket().EmitAsync("cancelJoinRequest", new { lobbyId });
+    public Task CancelJoinRequestAsync(string lobbyId, CancellationToken ct = default) =>
+        CallAsync<object?>("cancelJoinRequest", new { lobbyId }, ct);
 
     /// <summary>(Host only) Accept or reject a pending join request (see <see cref="JoinRequestReceived"/>).</summary>
-    public Task RespondJoinRequestAsync(string requesterId, bool accept) =>
-        GetSocket().EmitAsync("respondJoinRequest", new { requesterId, accept });
+    public Task RespondJoinRequestAsync(string requesterId, bool accept, CancellationToken ct = default) =>
+        CallAsync<object?>("respondJoinRequest", new { requesterId, accept }, ct);
 
     // ─── Relay ────────────────────────────────────────────────────────────────
 
     /// <summary>Broadcast a typed message to all other players in the lobby.</summary>
-    public Task SendToLobbyAsync(string type, object? payload = null) =>
-        GetSocket().EmitAsync("sendToLobby", new { type, payload });
+    public Task SendToLobbyAsync(string type, object? payload = null, CancellationToken ct = default) =>
+        CallAsync<object?>("sendToLobby", new { type, payload }, ct);
 
     /// <summary>Send a typed message directly to one player in the lobby.</summary>
-    public Task SendToPlayerAsync(string playerId, string type, object? payload = null) =>
-        GetSocket().EmitAsync("sendToPlayer", new { playerId, type, payload });
+    public Task SendToPlayerAsync(string playerId, string type, object? payload = null, CancellationToken ct = default) =>
+        CallAsync<object?>("sendToPlayer", new { playerId, type, payload }, ct);
 
-    /// <summary>
-    /// Broadcast a binary message to all other players in the lobby.
-    /// </summary>
-    public Task SendToLobbyBinaryAsync(int typeCode, byte[] payload)
+    /// <summary>Broadcast a binary message to all other players in the lobby.</summary>
+    public Task SendToLobbyBinaryAsync(int typeCode, byte[] payload, CancellationToken ct = default)
     {
         if (payload is null) throw new ArgumentNullException(nameof(payload));
-        return GetSocket().EmitAsync("sendToLobbyBinary", new
-        {
-            typeCode,
-            payload = Convert.ToBase64String(payload),
-        });
+        return CallAsync<object?>("sendToLobbyBinary", new { typeCode, payload }, ct);
     }
 
-    /// <summary>
-    /// Send a binary message directly to one player in the lobby.
-    /// </summary>
-    public Task SendToPlayerBinaryAsync(string playerId, int typeCode, byte[] payload)
+    /// <summary>Send a binary message directly to one player in the lobby.</summary>
+    public Task SendToPlayerBinaryAsync(string playerId, int typeCode, byte[] payload, CancellationToken ct = default)
     {
         if (payload is null) throw new ArgumentNullException(nameof(payload));
-        return GetSocket().EmitAsync("sendToPlayerBinary", new
-        {
-            playerId,
-            typeCode,
-            payload = Convert.ToBase64String(payload),
-        });
+        return CallAsync<object?>("sendToPlayerBinary", new { playerId, typeCode, payload }, ct);
     }
 
     // ─── Game Actions ─────────────────────────────────────────────────────────
 
     /// <summary>Forward a game action to the running game subprocess.</summary>
-    public Task SendGameActionAsync(string type, object? payload = null) =>
-        GetSocket().EmitAsync("gameAction", new { type, payload });
+    public Task SendGameActionAsync(string type, object? payload = null, CancellationToken ct = default) =>
+        CallAsync<object?>("gameAction", new { type, payload }, ct);
 
     // ─── User Data (Socket) ───────────────────────────────────────────────────
 
     /// <summary>Fetch the current user's own KV-data for a game (socket).</summary>
-    public async Task<UserDataEntry[]> GetUserDataAsync(string gameId, CancellationToken ct = default)
+    public async Task<UserDataEntry[]> GetUserDataAsync(string gameId, CancellationToken ct = default) =>
+        (await CallAsync<UserDataPayload>("getUserData", gameId, ct)).Entries;
+
+    /// <summary>Fetch visible KV-data for another player (public, or lobby-scoped if you share a lobby).</summary>
+    public async Task<UserDataEntry[]> GetPlayerDataAsync(string playerId, string gameId, CancellationToken ct = default) =>
+        (await CallAsync<PlayerDataPayload>("getPlayerData", new { playerId, gameId }, ct)).Entries;
+
+    /// <summary>Write one own key via socket. Server-scoped keys are read-only for clients (DATA_READ_ONLY).</summary>
+    public Task SetUserDataAsync(string gameId, string key, object? value, DataVisibility? visibility = null, CancellationToken ct = default) =>
+        CallAsync<object?>("setUserData", new { gameId, key, value, visibility = visibility?.ToString().ToLowerInvariant() }, ct);
+
+    /// <summary>Atomically write several own keys via socket.</summary>
+    public Task BulkSetUserDataAsync(
+        string gameId,
+        IEnumerable<(string Key, object? Value, DataVisibility? Visibility)> entries,
+        CancellationToken ct = default)
     {
-        var result = await SocketRequestAsync<UserDataPayload>("getUserData", gameId, "userData", ct);
-        return result.Entries;
+        var data = entries.Select(e => new { key = e.Key, value = e.Value, visibility = e.Visibility?.ToString().ToLowerInvariant() });
+        return CallAsync<object?>("bulkSetUserData", new { gameId, entries = data }, ct);
     }
 
-    /// <summary>
-    /// Fetch visible KV-data for another player (socket).
-    /// Returns public data, plus lobby-scoped data if both players are in the same lobby.
-    /// </summary>
-    public async Task<UserDataEntry[]> GetPlayerDataAsync(string playerId, string gameId, CancellationToken ct = default)
-    {
-        var result = await SocketRequestAsync<PlayerDataPayload>(
-            "getPlayerData", new { playerId, gameId }, "playerData", ct);
-        return result.Entries;
-    }
+    /// <summary>Delete one own key via socket.</summary>
+    public Task DeleteUserDataAsync(string gameId, string key, CancellationToken ct = default) =>
+        CallAsync<object?>("deleteUserData", new { gameId, key }, ct);
 
     // ─── Presence ─────────────────────────────────────────────────────────────
 
-    /// <summary>
-    /// Request the current list of all online users.
-    /// Resolves once the server responds. Also fires the <see cref="PresenceList"/> event.
-    /// </summary>
-    public Task<PresenceUser[]> ListPresenceAsync(CancellationToken ct = default) =>
-        SocketRequestAsync<PresenceUser[]>("presence:list", null, "presence:list", ct);
+    /// <summary>Request the current list of online users.</summary>
+    public async Task<PresenceUser[]> ListPresenceAsync(CancellationToken ct = default) =>
+        (await CallAsync<PresenceResult>("presence:list", null, ct)).Users;
 
     // ─── User Data (REST) ─────────────────────────────────────────────────────
 
@@ -355,7 +366,15 @@ public sealed class EthernalClient : IAsyncDisposable
             ReconnectionDelay    = 1000,
         });
 
-        socket.OnConnected += (_, _) => Connected?.Invoke();
+        socket.OnConnected += async (_, _) =>
+        {
+            Connected?.Invoke();
+            if (_registeredGameId is not null)
+            {
+                try { await RegisterGameAsync(_registeredGameId, _registerOptions.ClientVersion, _registerOptions.Platform); }
+                catch (Exception ex) { ServerError?.Invoke(ex.Message); }
+            }
+        };
         socket.OnDisconnected += (_, reason) => Disconnected?.Invoke(reason);
 
         socket.OnError += (_, err) => ServerError?.Invoke(err);
@@ -378,6 +397,10 @@ public sealed class EthernalClient : IAsyncDisposable
             }
         };
 
+        RegisterEvent<HelloPayload>(socket,        "hello",            d => Hello?.Invoke(d));
+        RegisterEvent<SessionResumedData>(socket,  "session:resumed",  d => SessionResumed?.Invoke(d));
+        RegisterEvent<SessionReplacedData>(socket, "session:replaced", d => SessionReplaced?.Invoke(d));
+        RegisterEvent<HubErrorPayload>(socket,     "errorDetail",      d => ErrorDetail?.Invoke(d));
         RegisterEvent<Lobby>(socket,     "lobbyCreated",  d => LobbyCreated?.Invoke(d));
         RegisterEvent<Lobby>(socket,     "lobbyUpdated",  d => LobbyUpdated?.Invoke(d));
         RegisterEvent<Lobby[]>(socket,   "lobbyList",     d => LobbyList?.Invoke(d));
@@ -531,148 +554,91 @@ public sealed class EthernalClient : IAsyncDisposable
         return _socket;
     }
 
+    private sealed class LobbyResult   { [JsonPropertyName("lobby")]   public Lobby   Lobby   { get; init; } = new(); }
+    private sealed class LobbiesResult { [JsonPropertyName("lobbies")] public Lobby[] Lobbies { get; init; } = []; }
+    private sealed class PresenceResult { [JsonPropertyName("users")]  public PresenceUser[] Users { get; init; } = []; }
+    private sealed class JoinRequestAck
+    {
+        [JsonPropertyName("pending")] public bool   Pending { get; init; }
+        [JsonPropertyName("lobby")]   public Lobby? Lobby   { get; init; }
+    }
+
+    /// <summary>Emits an event with an ack callback; throws <see cref="EthernalException"/> on a server error or timeout.</summary>
+    private async Task<T> CallAsync<T>(string eventName, object? data, CancellationToken ct = default)
+    {
+        var raw = await EmitWithAckAsync(eventName, data, ct);
+        return raw.Deserialize<T>(JsonOpts)!;
+    }
+
+    private async Task<JsonElement> EmitWithAckAsync(string eventName, object? data, CancellationToken ct)
+    {
+        var socket = GetSocket();
+        var tcs = new TaskCompletionSource<JsonElement>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(_timeout);
+        using var reg = cts.Token.Register(() =>
+            tcs.TrySetException(new EthernalException("TIMEOUT", $"Timeout beim Warten auf \"{eventName}\"")));
+
+        void OnAck(SocketIOResponse res)
+        {
+            try
+            {
+                var root = res.GetValue<JsonElement>(0);
+                if (root.TryGetProperty("ok", out var ok) && ok.GetBoolean()) { tcs.TrySetResult(root); return; }
+                var err = root.GetProperty("error").Deserialize<HubErrorPayload>(JsonOpts) ?? new HubErrorPayload();
+                tcs.TrySetException(new EthernalException(err.Code, err.Message, err.RetryAfterMs));
+            }
+            catch (Exception ex) { tcs.TrySetException(ex); }
+        }
+
+        if (data is null) await socket.EmitAsync(eventName, OnAck);
+        else await socket.EmitAsync(eventName, OnAck, data);
+        return await tcs.Task;
+    }
+
     /// <summary>
-    /// Emits a join-request event and resolves/rejects based on the eventual host response
-    /// ("joinRequestAccepted" / "joinRequestRejected"), using a longer timeout than
-    /// <see cref="SocketRequestAsync{T}"/> since the server allows up to ~15s for the host to respond.
+    /// Sends a join request and resolves/rejects on the host's eventual answer
+    /// ("joinRequestAccepted" / "joinRequestRejected"); the server allows ~15s for the host.
     /// </summary>
-    private Task<Lobby> JoinRequestAsync(string emitEvent, object? data)
+    private async Task<Lobby> JoinRequestAsync(string emitEvent, object data)
     {
         var acceptedTcs = new TaskCompletionSource<SocketIOResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
         var rejectedTcs = new TaskCompletionSource<SocketIOResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var errTcs      = new TaskCompletionSource<SocketIOResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var tcs         = new TaskCompletionSource<Lobby>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var socket      = GetSocket();
+        lock (_pendingLock)
+        {
+            Enqueue("joinRequestAccepted", acceptedTcs);
+            Enqueue("joinRequestRejected", rejectedTcs);
+        }
+
+        void Dequeue()
+        {
+            lock (_pendingLock)
+            {
+                foreach (var (key, waiter) in new[] { ("joinRequestAccepted", acceptedTcs), ("joinRequestRejected", rejectedTcs) })
+                    if (_pending.TryGetValue(key, out var q))
+                        _pending[key] = new Queue<TaskCompletionSource<SocketIOResponse>>(q.Where(w => w != waiter));
+            }
+        }
+
+        try
+        {
+            var ack = (await EmitWithAckAsync(emitEvent, data, CancellationToken.None)).Deserialize<JoinRequestAck>(JsonOpts)!;
+            if (ack.Lobby is not null) return ack.Lobby;
+
+            var done = await Task.WhenAny(acceptedTcs.Task, rejectedTcs.Task, Task.Delay(16_000));
+            if (done == acceptedTcs.Task) return acceptedTcs.Task.Result.GetValue<JoinRequestAcceptedData>(0).Lobby;
+            if (done == rejectedTcs.Task)
+                throw new EthernalException("LOBBY_LOCKED",
+                    $"Beitrittsanfrage abgelehnt ({rejectedTcs.Task.Result.GetValue<JoinRequestRejectedData>(0).Reason})");
+            throw new EthernalException("TIMEOUT", "Timeout beim Warten auf die Beitrittsanfrage");
+        }
+        finally { Dequeue(); }
 
         void Enqueue(string key, TaskCompletionSource<SocketIOResponse> waiter)
         {
             if (!_pending.TryGetValue(key, out var q)) _pending[key] = q = new Queue<TaskCompletionSource<SocketIOResponse>>();
             q.Enqueue(waiter);
         }
-
-        lock (_pendingLock)
-        {
-            Enqueue("joinRequestAccepted", acceptedTcs);
-            Enqueue("joinRequestRejected", rejectedTcs);
-            Enqueue("error", errTcs);
-        }
-
-        var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(16_000));
-        cts.Token.Register(() =>
-        {
-            acceptedTcs.TrySetCanceled();
-            rejectedTcs.TrySetCanceled();
-            errTcs.TrySetCanceled();
-        });
-
-        acceptedTcs.Task.ContinueWith(t =>
-        {
-            if (t.IsCanceled) { tcs.TrySetCanceled(); return; }
-            if (t.IsFaulted)  { tcs.TrySetException(t.Exception!); return; }
-            rejectedTcs.TrySetCanceled();
-            errTcs.TrySetCanceled();
-            try   { tcs.TrySetResult(t.Result.GetValue<JoinRequestAcceptedData>(0).Lobby); }
-            catch (Exception ex) { tcs.TrySetException(ex); }
-        }, TaskScheduler.Default);
-
-        rejectedTcs.Task.ContinueWith(t =>
-        {
-            if (t.IsCanceled || t.IsFaulted) return; // already handled
-            acceptedTcs.TrySetCanceled();
-            errTcs.TrySetCanceled();
-            try   { tcs.TrySetException(new Exception($"Beitrittsanfrage abgelehnt ({t.Result.GetValue<JoinRequestRejectedData>(0).Reason})")); }
-            catch { tcs.TrySetException(new Exception("Beitrittsanfrage abgelehnt")); }
-        }, TaskScheduler.Default);
-
-        errTcs.Task.ContinueWith(t =>
-        {
-            if (t.IsCanceled || t.IsFaulted) return; // already handled
-            acceptedTcs.TrySetCanceled();
-            rejectedTcs.TrySetCanceled();
-            try   { tcs.TrySetException(new Exception(t.Result.GetValue<string>(0))); }
-            catch { tcs.TrySetException(new Exception("Server error")); }
-        }, TaskScheduler.Default);
-
-        var emitTask = data is null ? socket.EmitAsync(emitEvent) : socket.EmitAsync(emitEvent, data);
-        emitTask.ContinueWith(t =>
-        {
-            if (t.IsFaulted) tcs.TrySetException(t.Exception!);
-        }, TaskContinuationOptions.OnlyOnFaulted);
-
-        return tcs.Task;
-    }
-
-    private Task<T> SocketRequestAsync<T>(
-        string emitEvent, object? data, string successEvent, CancellationToken ct)
-    {
-        var rawTcs = new TaskCompletionSource<SocketIOResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var tcs    = new TaskCompletionSource<T>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var socket = GetSocket();
-
-        // Enqueue the raw TCS so our persistent event handler will resolve it
-        lock (_pendingLock)
-        {
-            if (!_pending.TryGetValue(successEvent, out var q))
-                _pending[successEvent] = q = new Queue<TaskCompletionSource<SocketIOResponse>>();
-            q.Enqueue(rawTcs);
-        }
-
-        // Also enqueue for "error" event (server-side errors)
-        var errTcs = new TaskCompletionSource<SocketIOResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
-        lock (_pendingLock)
-        {
-            if (!_pending.TryGetValue("error", out var qe))
-                _pending["error"] = qe = new Queue<TaskCompletionSource<SocketIOResponse>>();
-            qe.Enqueue(errTcs);
-        }
-
-        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        cts.CancelAfter(_timeout);
-        cts.Token.Register(() =>
-        {
-            rawTcs.TrySetCanceled();
-            errTcs.TrySetCanceled();
-        });
-
-        // Wire up the two raw TCS results into the typed TCS
-        rawTcs.Task.ContinueWith(t =>
-        {
-            if (t.IsCanceled) { tcs.TrySetCanceled(); return; }
-            if (t.IsFaulted)  { tcs.TrySetException(t.Exception!); return; }
-            // Cancel the error waiter — we got the success response
-            errTcs.TrySetCanceled();
-            try   { tcs.TrySetResult(t.Result.GetValue<T>(0)); }
-            catch (Exception ex) { tcs.TrySetException(ex); }
-        }, TaskScheduler.Default);
-
-        errTcs.Task.ContinueWith(t =>
-        {
-            if (t.IsCanceled || t.IsFaulted) return; // already handled
-            rawTcs.TrySetCanceled();
-            try   { tcs.TrySetException(new Exception(t.Result.GetValue<string>(0))); }
-            catch { tcs.TrySetException(new Exception("Server error")); }
-        }, TaskScheduler.Default);
-
-        // Also register for "error" event in socket in case it was never registered
-        socket.On("error", response =>
-        {
-            lock (_pendingLock)
-            {
-                if (_pending.TryGetValue("error", out var q) && q.Count > 0)
-                    q.Dequeue().TrySetResult(response);
-            }
-        });
-
-        var emitTask = data is null
-            ? socket.EmitAsync(emitEvent)
-            : socket.EmitAsync(emitEvent, data);
-
-        emitTask.ContinueWith(t =>
-        {
-            if (t.IsFaulted) tcs.TrySetException(t.Exception!);
-        }, TaskContinuationOptions.OnlyOnFaulted);
-
-        return tcs.Task;
     }
 
     // ─── Internal: HTTP ───────────────────────────────────────────────────────

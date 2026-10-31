@@ -4,6 +4,7 @@ import fs from 'fs';
 import { getGame } from './game.registry';
 import { lobbyManager } from '../lobby/lobby.manager';
 import { getAllOwnAsRecord } from '../user-data/userdata.service';
+import { DATA_DIR } from '../config/env';
 import type { Lobby, IpcHubToGame, IpcGameToHub } from '@ethernal/shared';
 
 /** Callback-Typ: wird aufgerufen wenn der Subprocess eine IPC-Nachricht sendet */
@@ -44,9 +45,10 @@ class InstanceManager {
     if (!game.entryScript) return;
 
     const scriptPath = path.resolve(__dirname, '../../..', game.entryScript);
+    if (!fs.existsSync(scriptPath)) throw new Error('GAME_SCRIPT_MISSING');
 
     // Verzeichnis für die spiel-eigene DB anlegen und Pfad übergeben
-    const gameDataDir = path.resolve(__dirname, '../../../data/games', game.id);
+    const gameDataDir = path.join(DATA_DIR, 'games', game.id);
     if (!fs.existsSync(gameDataDir)) {
       fs.mkdirSync(gameDataDir, { recursive: true });
     }
@@ -83,7 +85,10 @@ class InstanceManager {
       // GET_USER_DATA wird direkt hier behandelt, kein Callback nötig
       if (msg.type === 'GET_USER_DATA') {
         const { requestId, userId, gameId } = msg.payload;
-        getAllOwnAsRecord(userId, gameId)
+        // Nur Daten von Teilnehmern dieser Lobby und nur für das Spiel der Lobby herausgeben
+        const allowed = lobbyManager.isParticipant(lobby.id, gameId, userId);
+        if (!allowed) console.warn(`[IPC] GET_USER_DATA abgelehnt (${userId}/${gameId}) in Lobby ${lobby.id}`);
+        (allowed ? getAllOwnAsRecord(userId, gameId) : Promise.resolve({} as Record<string, unknown>))
           .then((data) => {
             this.sendToInstance(lobby.id, {
               type: 'USER_DATA_RESPONSE',
