@@ -44,7 +44,7 @@ export interface ServerPreference {
 export interface HubToGameServerEvents {
   hello: (data: { serverId: string; gameId: string; resumed: boolean; lobbies: Lobby[] }) => void;
   /** Lobby wird diesem Server zugewiesen; der Server antwortet per Ack mit accept/reject */
-  'lobby:assigned': (data: { lobby: Lobby; players: GameServerPlayer[] }, ack: (res: { accept: boolean; reason?: string }) => void) => void;
+  'lobby:assigned': (data: { lobby: Lobby; players: GameServerPlayer[]; rebind?: boolean }, ack: (res: { accept: boolean; reason?: string }) => void) => void;
   'lobby:updated': (data: { lobby: Lobby; reason?: LobbyChangeReason }) => void;
   'lobby:closed': (data: { lobbyId: string; reason: 'closed' | 'dissolved' | 'host_left' | 'reassigned' }) => void;
   'player:joined': (data: { lobbyId: string } & GameServerPlayer) => void;

@@ -280,3 +280,9 @@ This document describes the **as-is baseline before P0**. P0 changed the followi
 - User data: write scopes (`server`-scoped / `serverKeys` are read-only for clients), versions, size and quota limits, socket write events (`setUserData`, `bulkSetUserData`, `deleteUserData`).
 - Infra: DB migrations (`schema_migrations`), job scheduler with refresh-token purge, env overrides (`DATA_DIR`, `GAMES_CONFIG_PATH`, `LIMITS_CONFIG_PATH`, `BCRYPT_ROUNDS`), vitest suite (`npm test`), CI workflow.
 - Node and C# SDKs: `registerGame`, ack-based calls throwing `EthernalError`/`EthernalException` with `code`, new events, socket data writes, auto re-registration after reconnect.
+
+## Changelog: P1 / game servers (issues #20–#31, #50–#54, #56)
+
+- **friend_online notification**: when a user becomes visible (offline→online, or leaving `invisible`), each friend who is *currently online* receives a `friend_online` notification (`{userId, username}`, key `friend_online:<userId>`, replaces an older unread one). Offline friends get no backlog entry. Respects `mutedNotificationTypes`.
+- **Game servers** (`/gameserver` namespace, per-game keys via `/admin/game-servers`, needs `ADMIN_TOKEN`). Registry `serverSupport: none|optional|required`; `createLobby` accepts `serverPreference {mode: any|none, region}`.
+- **Server loss (#56)**: `Lobby.serverStatus` is `ok|lost|draining`; members get `lobbyUpdated` with reason `server_lost`, `server_resumed`, `server_draining`, `server_rebound`. Same `serverId` reconnecting within `SERVER_RESUME_GRACE_MS` resumes its lobbies. After the grace the hub tries to rebind the lobby to another server of the game (`lobby:assigned` with `rebind: true`); if none accepts, `required` lobbies close with `gameCrashed`, `optional` lobbies continue serverless (`server` cleared, reason `server_lost`). Draining servers receive no new lobbies; existing ones keep running until the server closes them.

@@ -32,7 +32,7 @@ export interface AuthResult {
 export type LobbyStatus = 'open' | 'full' | 'in_progress' | 'closed';
 
 /** Grund einer Lobby-Änderung (zweites Argument von `lobbyUpdated`) */
-export type LobbyChangeReason = 'player_joined' | 'player_left' | 'host_left' | 'host_transferred' | 'player_disconnected' | 'player_reconnected' | 'state_changed' | 'locked' | 'unlocked' | 'kicked' | 'settings_changed';
+export type LobbyChangeReason = 'player_joined' | 'player_left' | 'host_left' | 'host_transferred' | 'player_disconnected' | 'player_reconnected' | 'state_changed' | 'locked' | 'unlocked' | 'kicked' | 'settings_changed' | 'server_lost' | 'server_resumed' | 'server_draining' | 'server_rebound';
 
 export interface LobbyPlayer {
   userId: string;
@@ -63,6 +63,8 @@ export interface Lobby {
   joinable?: boolean;
   /** Game-Server dieser Lobby (nur für Mitglieder; in Listings ersetzt durch serverBound/region) */
   server?: LobbyServerBinding;
+  /** Zustand des Game-Servers: ok (Default), lost (Verbindung weg, Resume-Frist läuft), draining (nimmt keine neuen Lobbys an) */
+  serverStatus?: 'ok' | 'lost' | 'draining';
   /** Nur in Listings: läuft die Lobby auf einem Game-Server? */
   serverBound?: boolean;
   /** Nur in Listings: Region des Game-Servers */

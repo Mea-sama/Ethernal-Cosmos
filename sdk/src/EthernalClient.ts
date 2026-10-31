@@ -5,6 +5,7 @@ import type {
   ClientToServerEvents,
   ServerToClientEvents,
   Lobby,
+  LobbyChangeReason,
   UserDataEntry,
   DataVisibility,
   RelayMessage,
@@ -35,7 +36,7 @@ import type {
 
 // ─── Types ───────────────────────────────────────────────────────
 
-export type { Lobby, UserDataEntry, DataVisibility, JoinRequestRejectReason } from '@ethernal/shared';
+export type { Lobby, LobbyChangeReason, UserDataEntry, DataVisibility, JoinRequestRejectReason } from '@ethernal/shared';
 export type {
   FriendInfo, FriendRequestInfo, FriendRequestResult, FriendRequestsResult, FriendPresence, FriendPresenceStatus,
   OwnPresenceStatus, SocialSettings, SocialSnapshot, HubNotification, NotificationType, NotificationBacklog,
@@ -763,7 +764,7 @@ export class EthernalClient extends EventEmitter {
   on(event: 'session:replaced', listener: (data: { reason: 'new_session' }) => void): this;
   on(event: 'errorDetail', listener: (error: HubErrorPayload) => void): this;
   on(event: 'lobbyCreated', listener: (lobby: Lobby) => void): this;
-  on(event: 'lobbyUpdated', listener: (lobby: Lobby) => void): this;
+  on(event: 'lobbyUpdated', listener: (lobby: Lobby, reason?: LobbyChangeReason) => void): this;
   on(event: 'lobbyList', listener: (lobbies: Lobby[]) => void): this;
   on(event: 'lobbyInfo', listener: (lobby: Lobby) => void): this;
   on(event: 'gameStarting', listener: (data: { lobbyId: string; gameId: string }) => void): this;
@@ -784,7 +785,7 @@ export class EthernalClient extends EventEmitter {
   once(event: 'authError', listener: (message: string) => void): this;
   once(event: 'serverError', listener: (message: string) => void): this;
   once(event: 'lobbyCreated', listener: (lobby: Lobby) => void): this;
-  once(event: 'lobbyUpdated', listener: (lobby: Lobby) => void): this;
+  once(event: 'lobbyUpdated', listener: (lobby: Lobby, reason?: LobbyChangeReason) => void): this;
   once(event: 'lobbyList', listener: (lobbies: Lobby[]) => void): this;
   once(event: 'lobbyInfo', listener: (lobby: Lobby) => void): this;
   once(event: 'gameStarting', listener: (data: { lobbyId: string; gameId: string }) => void): this;

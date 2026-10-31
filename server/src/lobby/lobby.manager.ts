@@ -195,7 +195,16 @@ export class LobbyManager {
 
   setServer(lobbyId: string, server: Lobby['server'] | undefined): void {
     const lobby = this.lobbies.get(lobbyId);
-    if (lobby) lobby.server = server;
+    if (!lobby) return;
+    lobby.server = server;
+    lobby.serverStatus = server ? 'ok' : undefined;
+  }
+
+  setServerStatus(lobbyId: string, status: Lobby['serverStatus']): Lobby | null {
+    const lobby = this.lobbies.get(lobbyId);
+    if (!lobby || !lobby.server) return null;
+    lobby.serverStatus = status;
+    return lobby;
   }
 
   setSettings(lobbyId: string, settings: Record<string, unknown>): Lobby | null {

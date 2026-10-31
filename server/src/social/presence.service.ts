@@ -3,6 +3,7 @@ import { lobbyManager } from '../lobby/lobby.manager';
 import { sessionManager } from '../session/session.manager';
 import { emitToUser } from './bus';
 import { friendHooks, friendIds } from './friends.service';
+import { dropNotifications, notify } from './notifications.service';
 import { loadSettings, loadSettingsMany, setLastSeen, type SettingsRow } from './settings.service';
 
 /** Wird bei jeder Presence-Neubewertung aufgerufen (z.B. Invite-Abgleich) */
@@ -49,6 +50,7 @@ export async function presenceOfFriends(userId: string): Promise<FriendPresence[
 
 const pending = new Set<string>();
 const wasOnline = new Map<string, boolean>();
+const wasVisible = new Map<string, boolean>();
 const lastSent = new Map<string, string>();
 
 /**
@@ -81,7 +83,17 @@ async function flush(userId: string): Promise<void> {
   const key = JSON.stringify({ ...presence, lastSeen: undefined });
   if (lastSent.get(userId) === key) return;
   lastSent.set(userId, key);
-  for (const friendId of await friendIds(userId)) emitToUser(friendId, 'friend:presence', presence);
+  const becameVisible = presence.online && wasVisible.get(userId) !== true;
+  wasVisible.set(userId, presence.online);
+  for (const friendId of await friendIds(userId)) {
+    emitToUser(friendId, 'friend:presence', presence);
+    // Nur Freunde, die gerade selbst online sind, bekommen die Benachrichtigung (kein Backlog für Offline-Freunde)
+    if (becameVisible && isOnline(friendId)) {
+      const key = `friend_online:${userId}`;
+      await dropNotifications(friendId, key);
+      await notify(friendId, 'friend_online', { userId, username: presence.username }, { key });
+    }
+  }
 }
 
 /** Nach einer neuen Freundschaft sehen sich beide sofort (unabhängig von der Deduplizierung). */
@@ -100,6 +112,7 @@ export function forgetPresenceState(keep: (userId: string) => boolean): void {
     if (!keep(id)) {
       lastSent.delete(id);
       wasOnline.delete(id);
+      wasVisible.delete(id);
     }
   }
 }

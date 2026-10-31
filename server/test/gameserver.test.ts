@@ -12,6 +12,17 @@ async function server(gameId: string, opts: { region?: string; capacity?: number
   return connectGameServer(hub, { serverKey: key, gameId, serverId: opts.serverId ?? sid('srv'), region: opts.region, capacity: opts.capacity });
 }
 
+/** lobbyUpdated kommt als (lobby, reason) */
+async function updated(c: { events: Array<{ event: string; args: any[] }> }, reason: string, pred: (l: any) => boolean = () => true, timeoutMs = 5000): Promise<{ lobby: any }> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const e = c.events.find((x) => x.event === 'lobbyUpdated' && x.args[1] === reason && pred(x.args[0]));
+    if (e) return { lobby: e.args[0] };
+    if (Date.now() > deadline) throw new Error(`timeout lobbyUpdated/${reason}`);
+    await sleep(20);
+  }
+}
+
 const rejects = (p: Promise<unknown>): Promise<string> => p.then(() => 'connected', (e: Error) => e.message);
 
 describe('Registry serverSupport (#50)', () => {
@@ -242,5 +253,60 @@ describe('Server-Sitzung: Resume und Verlust (#52)', () => {
     expect(a.socket.connected).toBe(false);
     expect(b.socket.connected).toBe(true);
     b.close();
+  });
+});
+
+describe('Server-Verlust, Rebind, Draining (#56)', () => {
+  it('lost → server_lost an Mitglieder; Resume → server_resumed, serverStatus ok', async () => {
+    const { key } = await issueServerKey(hub, 'gs-req');
+    const serverId = sid('lost');
+    const s = await connectGameServer(hub, { serverKey: key, gameId: 'gs-req', serverId });
+    const u = await connectRegistered(hub, await registerUser(hub), 'gs-req');
+    const { lobby } = await u.emitAck('createLobby', { name: 'l' });
+    s.close();
+    const lost = await updated(u, 'server_lost');
+    expect(lost.lobby.serverStatus).toBe('lost');
+    const s2 = await connectGameServer(hub, { serverKey: key, gameId: 'gs-req', serverId });
+    const back = await updated(u, 'server_resumed');
+    expect(back.lobby.serverStatus).toBe('ok');
+    expect(back.lobby.id).toBe(lobby.id);
+    u.close(); s2.close();
+  });
+
+  it('Verlust: Lobby wird auf anderen Server umgebunden (rebind)', async () => {
+    const a = await server('gs-req');
+    const u = await connectRegistered(hub, await registerUser(hub), 'gs-req');
+    const { lobby } = await u.emitAck('createLobby', { name: 'rb' });
+    const b = await server('gs-req');
+    a.close();
+    const re = await b.waitFor('lobby:assigned', (d) => d.lobby.id === lobby.id, 5000);
+    expect(re.rebind).toBe(true);
+    await updated(u, 'server_rebound');
+    expect((await u.emitAck('session:getState')).lobby.status).not.toBe('closed');
+    u.close(); b.close();
+  });
+
+  it('Verlust optional ohne Ersatz: Lobby läuft serverlos weiter', async () => {
+    const a = await server('gs-opt');
+    const u = await connectRegistered(hub, await registerUser(hub), 'gs-opt');
+    const { lobby } = await u.emitAck('createLobby', { name: 'cont' });
+    expect(lobby.server).toBeTruthy();
+    a.close();
+    const upd = await updated(u, 'server_lost', (l) => !l.server);
+    expect(upd.lobby.status).not.toBe('closed');
+    u.close();
+  });
+
+  it('Draining markiert Lobbys und nimmt keine neuen an; zurück auf ok', async () => {
+    const s = await server('gs-req', { capacity: 5 });
+    const u = await connectRegistered(hub, await registerUser(hub), 'gs-req');
+    await u.emitAck('createLobby', { name: 'd' });
+    await s.emitAck('server:status', { draining: true });
+    expect((await updated(u, 'server_draining')).lobby.serverStatus).toBe('draining');
+    const u2 = await connectRegistered(hub, await registerUser(hub), 'gs-req');
+    expect((await u2.emitAck('createLobby', { name: 'n' })).error.code).toBe('NO_GAME_SERVER_AVAILABLE');
+    await s.emitAck('server:status', { draining: false });
+    await updated(u, 'server_draining', (l) => l.serverStatus === 'ok');
+    u.close(); u2.close(); s.close();
   });
 });
