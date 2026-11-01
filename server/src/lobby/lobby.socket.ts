@@ -268,6 +268,11 @@ const CreateLobbySchema = z.object({
     .optional(),
 });
 
+const KickSchema = z.object({
+  playerId: z.string().min(1).max(64),
+  reason: z.string().trim().max(200).optional(),
+});
+
 const InviteCodeSchema = z.string().trim().length(6).transform((c) => c.toUpperCase());
 
 function parseInput<T>(schema: z.ZodType<T, z.ZodTypeDef, unknown>, data: unknown, err: HubError = new HubError('INVALID_INPUT')): T {
@@ -755,10 +760,10 @@ export function registerLobbyHandlers(io: AppServer): void {
 
     // ── kickPlayer ───────────────────────────────────────────────────────────
     handle(socket, 'kickPlayer', { limit: 'kickPlayer' }, (data) => {
-      const { playerId } = parseInput(z.object({ playerId: z.string().min(1).max(64) }), data);
+      const { playerId, reason } = parseInput(KickSchema, data);
       const lobby = lobbyManager.kickPlayer(userId, playerId);
       gsHooks.playerLeft(lobby.id, lobby.server?.serverId, playerId, 'kicked');
-      io.to(userRoom(playerId)).emit('playerKicked', { lobbyId: lobby.id });
+      io.to(userRoom(playerId)).emit('playerKicked', { lobbyId: lobby.id, ...(reason ? { reason } : {}) });
       io.in(userRoom(playerId)).socketsLeave(lobby.id);
       sessionManager.clearGrace(playerId);
       if (instanceManager.isRunning(lobby.id)) {
@@ -768,6 +773,12 @@ export function registerLobbyHandlers(io: AppServer): void {
       broadcastPresence(io, playerId);
       if (!sessionManager.isConnected(playerId)) sessionManager.dropIfIdle(playerId);
       return { lobby };
+    });
+
+    // ── unkickPlayer ─────────────────────────────────────────────────────────
+    handle(socket, 'unkickPlayer', { limit: 'unkickPlayer' }, (data) => {
+      const { playerId } = parseInput(z.object({ playerId: z.string().min(1).max(64) }), data);
+      return { lobby: lobbyManager.unkickPlayer(userId, playerId) };
     });
 
     // ── transferHost ─────────────────────────────────────────────────────────
@@ -868,6 +879,7 @@ export function registerLobbyHandlers(io: AppServer): void {
           gameId: requesterGame,
           viaCode: entry.viaCode,
           bypassLock: true,
+          clearKick: true,
         });
         afterJoin(io, requesterId, entry.username, updated);
         io.to(userRoom(requesterId)).emit('joinRequestAccepted', { lobby: updated });

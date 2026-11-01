@@ -117,8 +117,20 @@ Request current lobby snapshot. Server responds with `lobbyInfo`.
 #### `kickPlayer` _(host only)_
 
 ```ts
-socket.emit('kickPlayer', { playerId: string });
+socket.emit('kickPlayer', { playerId: string; reason?: string /* ≤200 chars */ });
 ```
+
+Soft kick: the target is removed and cannot rejoin **this lobby** (join by ID, code, request, friend-join, invite accept → `KICKED_FROM_LOBBY`; requests are refused without notifying the host). The kicked set lives and dies with the lobby (nothing persisted). It is cleared by `unkickPlayer`, by the host accepting that user's join request, or by the host inviting them. Works on members in reconnect grace.
+
+---
+
+#### `unkickPlayer` _(host only)_
+
+```ts
+socket.emit('unkickPlayer', { playerId: string }, ack); // ack { ok, lobby }
+```
+
+Errors: `NOT_HOST`, `PLAYER_NOT_FOUND` (user is not kicked).
 
 ---
 
@@ -384,7 +396,7 @@ Response to `getLobbyInfo`.
 #### `playerKicked`
 
 ```ts
-socket.on('playerKicked', (data: { lobbyId: string }) => { ... });
+socket.on('playerKicked', (data: { lobbyId: string; reason?: string }) => { ... });
 ```
 
 Emitted to a player who has been kicked by the host.

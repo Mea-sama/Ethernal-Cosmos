@@ -76,7 +76,7 @@ Index maps: `userId→lobbyId` (**a user can be in at most one lobby at a time**
 | FEAT-LOBBY-05 | `joinLobbyByCode {code}` | non-member | Same as above via invite code (6 chars, trimmed, upper-cased). Works for any lobby that *has* a code (only private ones). | `Ungültiger Einladungscode`, `Einladungscode nicht gefunden` + join errors. |
 | FEAT-LOBBY-06 | `leaveLobby` | member | Removes player; PLAYER_LEAVE sent to subprocess; if last player ⇒ lobby dissolved (removed, code freed, pending requests rejected `lobby_closed`); if host left ⇒ **host auto-transferred to the next player in join order** (`players[0]`), pending requests rejected `host_changed`; `full`→`open`. | Silent no-op if not in a lobby. Not rate-limited. |
 | FEAT-LOBBY-07 | `getLobbyInfo` | member | Snapshot `lobbyInfo`. Side effect: **re-binds this socket to the lobby room** and re-sends IPC `PLAYER_JOIN` (used to sync a second socket, e.g. panel→game). | `Du bist in keiner Lobby`. |
-| FEAT-LOBBY-08 | `kickPlayer {playerId}` | host | Removes target, emits `playerKicked` to target socket(s) in room, IPC `PLAYER_LEAVE`, `lobbyUpdated` to room. `full`→`open`. | `NOT_HOST`, `CANNOT_KICK_SELF`, `PLAYER_NOT_FOUND`. |
+| FEAT-LOBBY-08 | `kickPlayer {playerId, reason?}` | host | Removes target, adds it to the lobby's in-memory kicked set (`KICKED_FROM_LOBBY` on rejoin), emits `playerKicked {lobbyId, reason?}` to target socket(s) in room, IPC `PLAYER_LEAVE`, `lobbyUpdated` to room. `full`→`open`. | `NOT_HOST`, `CANNOT_KICK_SELF`, `PLAYER_NOT_FOUND`. |
 | FEAT-LOBBY-09 | `transferHost {playerId}` | host | Swap host role; emits `lobbyUpdated`. | `NOT_HOST`, `ALREADY_HOST`, `PLAYER_NOT_FOUND`. Open join requests are **not** cleared (they stay addressed at the old host’s socket — see QUIRK-JOIN-04). |
 | FEAT-LOBBY-10 | `lockLobby` / `unlockLobby` | host | Toggles `locked`; emits `lobbyUpdated`. See §5. | `NOT_HOST`. |
 | FEAT-LOBBY-11 | Closing | server only | `status='closed'` set when the subprocess sends `GAME_OVER` or the subprocess exits/errors. Closed lobby: not listed, not joinable, members **remain members** until they leave. | No client call can close a lobby. |
@@ -104,7 +104,7 @@ Index maps: `userId→lobbyId` (**a user can be in at most one lobby at a time**
 | QUIRK-LOBBY-06 | `name` is trimmed after validation ⇒ a whitespace-only name passes validation and results in an empty name. Names are not unique, not profanity-filtered. `{src}` | Cosmetic/moderation. |
 | QUIRK-LOBBY-07 | No "game started" gate. Lobby stays `open` and joinable while a match is running (relay games never change status at all; subprocess games only on `GAME_OVER`). Only `lock` or the game’s own logic prevents late joiners. `{src}` | Mid-match joins in competitive games unless host locks or game rejects. |
 | QUIRK-LOBBY-08 | Closed lobbies cannot be reopened/restarted (no rematch). Members stay stuck as "in lobby" until they `leaveLobby`; the subprocess may be dead and `gameAction` is silently ignored. `{src}` | Rematch flows need leave + create + re-invite. |
-| QUIRK-LOBBY-09 | No kick-ban: a kicked player can rejoin immediately (unless locked/private). Kick cannot target offline users. `{src}` | Griefing. |
+| QUIRK-LOBBY-09 | **Superseded (P2):** kicks are soft per-lobby — a kicked player gets `KICKED_FROM_LOBBY` on rejoin (ID, code, request, friend-join, invite accept) until the host un-kicks, invites or accepts them, or the lobby dissolves. Not a ban; nothing is persisted. |
 | QUIRK-LOBBY-10 | Host auto-transfer picks `players[0]` (oldest member) with no consent, no "host migration" notification beyond `lobbyUpdated`, and no option to dissolve instead. For games where the host is authoritative (client-hosted external apps) this silently changes authority. `{src}` | |
 | QUIRK-LOBBY-11 | `hosted`/`entryScript` is per game, not per lobby. `listLobbies` and presence give no "match in progress" indicator. `{src}` | |
 | QUIRK-LOBBY-12 | `leaveLobby`, `gameAction` (no lobby), and `cancelJoinRequest` (unknown request) fail silently without `error` events. `{src}` | Hard-to-debug clients. |
@@ -245,7 +245,7 @@ Hub-side only: SDK parity is covered by the SDK test suites.
 | TEST-LOBBY-05 | private lobby is hidden from listLobbies; join by code works case-insensitively |
 | TEST-LOBBY-06 | private lobby cannot be joined or requested by ID (LOBBY_PRIVATE); no ID leaks to strangers |
 | TEST-LOBBY-07 | non-host kick/transfer/lock/unlock/setLobbyState are rejected with NOT_HOST |
-| TEST-LOBBY-08 | host kick notifies the victim; there is no ban, an immediate rejoin succeeds |
+| TEST-LOBBY-08 | host kick notifies the victim; an immediate rejoin is refused (KICKED_FROM_LOBBY, see TEST-KICK-*) |
 | TEST-LOBBY-09 | killed socket keeps the seat during grace (connected:false), then the player is removed and host transferred |
 | TEST-LOBBY-10 | oversized settings → SETTINGS_TOO_LARGE; failed subprocess start leaves no ghost lobby |
 | TEST-LOBBY-11 | names are trimmed; empty/whitespace names are INVALID_INPUT |
@@ -254,6 +254,11 @@ Hub-side only: SDK parity is covered by the SDK test suites.
 | TEST-LOBBY-14 | listings only expose publicSettingKeys and never invite codes |
 | TEST-LOBBY-15 | setLobbyState: host only, in_progress locks joining, repeat is INVALID_STATE, closed is final |
 | TEST-LOBBY-16 | lobbyUpdated carries a reason (player_joined, host_transferred) |
+| TEST-KICK-01 | kicked player gets playerKicked with the optional reason and KICKED_FROM_LOBBY on joinLobby; others are unaffected |
+| TEST-KICK-02 | KICKED_FROM_LOBBY also applies to join by code, requestJoinLobby and joinFriend; the host is not notified of such requests |
+| TEST-KICK-03 | host unkickPlayer lets the player rejoin; non-host → NOT_HOST; not kicked → PLAYER_NOT_FOUND |
+| TEST-KICK-04 | a host invite clears the kick (the invitee can join); a non-host invite of a kicked user is refused KICKED_FROM_LOBBY |
+| TEST-KICK-05 | kicking a member in reconnect grace works; the kick set dies with the lobby |
 | TEST-JOIN-01 | locked lobby rejects joinLobby (LOBBY_LOCKED); requestJoinLobby → pending, host accepts |
 | TEST-JOIN-02 | decline → requester gets joinRequestRejected(declined); unknown request → JOIN_REQUEST_NOT_FOUND |
 | TEST-JOIN-03 | unanswered request times out: requester gets rejected(timeout), host gets withdrawn(timeout) |

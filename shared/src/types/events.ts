@@ -114,7 +114,9 @@ export interface ClientToServerEvents {
   getLobbyInfo: (ack?: Ack<{ lobby: Lobby }>) => void;
 
   /** Host: Spieler aus der Lobby entfernen */
-  kickPlayer: (data: { playerId: string; requestId?: string }, ack?: Ack) => void;
+  kickPlayer: (data: { playerId: string; reason?: string; requestId?: string }, ack?: Ack) => void;
+  /** Host hebt den Kick eines Spielers auf (Kicks leben nur so lange wie die Lobby) */
+  unkickPlayer: (data: { playerId: string; requestId?: string }, ack?: Ack) => void;
 
   /** Host: Host-Rolle an anderen Spieler übertragen */
   transferHost: (data: { playerId: string; requestId?: string }, ack?: Ack) => void;
@@ -262,7 +264,7 @@ export interface ServerToClientEvents {
   lobbyInfo: (lobby: Lobby) => void;
 
   /** Du wurdest von einem Host aus der Lobby entfernt */
-  playerKicked: (data: { lobbyId: string }) => void;
+  playerKicked: (data: { lobbyId: string; reason?: string }) => void;
 
   /** Eingehende Relay-Nachricht von einem anderen Spieler */
   message: (data: RelayMessage) => void;

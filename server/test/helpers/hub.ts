@@ -52,7 +52,7 @@ export async function startHub(opts: { limits?: Record<string, unknown>; env?: R
         refresh: { windowMs: 60000, max: 10000, message: 'x' },
       },
       socketLimits: Object.fromEntries(
-        ['createLobby', 'joinLobby', 'joinLobbyByCode', 'kickPlayer', 'transferHost', 'lockLobby', 'unlockLobby', 'requestJoinLobby',
+        ['createLobby', 'joinLobby', 'joinLobbyByCode', 'kickPlayer', 'unkickPlayer', 'transferHost', 'lockLobby', 'unlockLobby', 'requestJoinLobby',
          'requestJoinLobbyByCode', 'cancelJoinRequest', 'respondJoinRequest', 'listLobbies', 'getLobbyInfo', 'presenceList', 'getUserData',
          'getPlayerData', 'gameAction', 'registerGame', 'sessionState', 'setUserData', 'bulkSetUserData', 'deleteUserData', 'leaveLobby',
          'friendRequestByName', 'friendRequest', 'friendAction', 'socialRead', 'socialSettings', 'notificationWrite', 'dmSend', 'dmTyping',

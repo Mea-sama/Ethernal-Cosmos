@@ -148,14 +148,14 @@ describe('Lobby lifecycle', () => {
     closeAll(host, guest);
   });
 
-  it('TEST-LOBBY-08: host kick notifies the victim; there is no ban, an immediate rejoin succeeds', async () => {
+  it('TEST-LOBBY-08: host kick notifies the victim (see TEST-KICK-* for the soft-kick rejoin rules)', async () => {
     const [host, guest] = [await live(hub), await live(hub)];
     const lobby = (await host.emitAck('createLobby', { name: 'kick' })).lobby;
     await guest.emitAck('joinLobby', { lobbyId: lobby.id });
     expect((await host.emitAck('kickPlayer', { playerId: host.user.userId })).error.code).toBe('CANNOT_KICK_SELF');
     expect((await host.emitAck('kickPlayer', { playerId: guest.user.userId })).ok).toBe(true);
     expect((await guest.waitFor('playerKicked')).lobbyId).toBe(lobby.id);
-    expect((await guest.emitAck('joinLobby', { lobbyId: lobby.id })).ok).toBe(true);
+    expect((await guest.emitAck('joinLobby', { lobbyId: lobby.id })).error.code).toBe('KICKED_FROM_LOBBY');
     closeAll(host, guest);
   });
 

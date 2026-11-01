@@ -203,6 +203,7 @@ export const ErrorCode = {
   LobbyPrivate: 'LOBBY_PRIVATE',
   InvalidInviteCode: 'INVALID_INVITE_CODE',
   InviteCodeNotFound: 'INVITE_CODE_NOT_FOUND',
+  KickedFromLobby: 'KICKED_FROM_LOBBY',
   NotHost: 'NOT_HOST',
   AlreadyHost: 'ALREADY_HOST',
   CannotKickSelf: 'CANNOT_KICK_SELF',

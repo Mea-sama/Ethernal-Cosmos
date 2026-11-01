@@ -291,6 +291,7 @@ Used in: `errorDetail`, ack errors, REST error `code`
 | `LOBBY_PRIVATE` | `ErrorCode.LobbyPrivate` |  |
 | `INVALID_INVITE_CODE` | `ErrorCode.InvalidInviteCode` |  |
 | `INVITE_CODE_NOT_FOUND` | `ErrorCode.InviteCodeNotFound` |  |
+| `KICKED_FROM_LOBBY` | `ErrorCode.KickedFromLobby` |  |
 | `NOT_HOST` | `ErrorCode.NotHost` |  |
 | `ALREADY_HOST` | `ErrorCode.AlreadyHost` |  |
 | `CANNOT_KICK_SELF` | `ErrorCode.CannotKickSelf` |  |

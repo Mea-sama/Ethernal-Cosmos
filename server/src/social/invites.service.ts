@@ -59,6 +59,11 @@ export async function createInvite(userId: string, friendId: string): Promise<Lo
   if (!friend || friend.status === 'invisible' || !sessionManager.hasGameSession(friendId)) throw new HubError('FRIEND_OFFLINE');
   if (sessionManager.getGameId(friendId) !== lobby.gameId) throw new HubError('GAME_MISMATCH');
   if (lobby.players.some((p) => p.userId === friendId)) throw new HubError('ALREADY_IN_LOBBY');
+  // Einladung durch den Host hebt einen Kick auf; andere Mitglieder können Gekickte nicht zurückholen
+  if (lobbyManager.isKicked(lobby.id, friendId)) {
+    if (lobby.hostId !== userId) throw new HubError('KICKED_FROM_LOBBY');
+    lobbyManager.clearKick(lobby.id, friendId);
+  }
 
   const existing = activeInvite(lobby.id, friendId);
   if (existing) return toPublic(existing);

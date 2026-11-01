@@ -393,6 +393,8 @@ public enum ErrorCode
     [WireValue("INVALID_INVITE_CODE")] InvalidInviteCode,
     /// <summary>Wire value <c>INVITE_CODE_NOT_FOUND</c>.</summary>
     [WireValue("INVITE_CODE_NOT_FOUND")] InviteCodeNotFound,
+    /// <summary>Wire value <c>KICKED_FROM_LOBBY</c>.</summary>
+    [WireValue("KICKED_FROM_LOBBY")] KickedFromLobby,
     /// <summary>Wire value <c>NOT_HOST</c>.</summary>
     [WireValue("NOT_HOST")] NotHost,
     /// <summary>Wire value <c>ALREADY_HOST</c>.</summary>

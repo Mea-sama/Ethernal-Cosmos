@@ -318,10 +318,11 @@ export function registerGameServerNamespace(io: AppServer): void {
     });
 
     onServerEvent(socket, 'lobby:kick', (data) => {
-      const { lobbyId, userId } = z.object({ lobbyId: z.string(), userId: z.string().max(64) }).parse(data);
+      const { lobbyId, userId, reason } = z.object({ lobbyId: z.string(), userId: z.string().max(64), reason: z.string().trim().max(200).optional() }).parse(data);
       const lobby = ownLobby(socket, lobbyId);
       if (!lobby.players.some((p) => p.userId === userId)) throw new HubError('PLAYER_NOT_FOUND');
-      io.to(userRoom(userId)).emit('playerKicked', { lobbyId });
+      lobbyManager.markKicked(lobbyId, userId);
+      io.to(userRoom(userId)).emit('playerKicked', { lobbyId, ...(reason ? { reason } : {}) });
       leaveLobbyFlow(io, userId, { notifyInstance: false, reason: 'kicked' });
       sessionManager.dropIfIdle(userId);
     });

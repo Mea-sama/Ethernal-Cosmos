@@ -49,6 +49,7 @@ const defaultLimits: ServerLimits = {
     joinLobby: { refillPerSecond: 0.25, burst: 4 },
     joinLobbyByCode: { refillPerSecond: 0.25, burst: 4 },
     kickPlayer: { refillPerSecond: 0.5, burst: 3 },
+    unkickPlayer: { refillPerSecond: 0.5, burst: 3 },
     transferHost: { refillPerSecond: 0.5, burst: 3 },
     lockLobby: { refillPerSecond: 0.5, burst: 3 },
     unlockLobby: { refillPerSecond: 0.5, burst: 3 },
