@@ -98,6 +98,7 @@ Each game can store arbitrary JSON values per user, per key. Keys have a `visibi
 | [Panel API](panel-api.md) | `window.EthernalPanel` browser overlay — for HTML games |
 | [Wire enums](enums.md) | Reasons, statuses and error codes used by events and both SDKs |
 | [Game-server protocol](game-server-protocol.md) | `/gameserver` namespace: assignment, takeover, failure behaviour |
+| [Migration guide (P2)](migration-p2.md) | Breaking and behaviour changes for SDK consumers |
 | [Node.js SDK](sdk-nodejs.md) | `@ethernal/client` TypeScript SDK — for Node.js game servers |
 | [C# SDK](sdk-csharp.md) | `EthernalCosmos.Client` .NET 8 SDK — for C# game servers |
 | [REST API](rest-api.md) | HTTP endpoints — auth, user data, leaderboard |

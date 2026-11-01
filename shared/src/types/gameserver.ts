@@ -83,7 +83,7 @@ export interface GameServerToHubEvents {
   'lobby:relay': (data: { lobbyId: string; toUserId?: string; type: string; payload?: unknown }, ack?: Ack<{ seq: number }>) => void;
   /** Spielzustand (`gameState`) an alle oder einen Spieler */
   'lobby:state': (data: { lobbyId: string; toUserId?: string; state: unknown }, ack?: Ack) => void;
-  'lobby:kick': (data: { lobbyId: string; userId: string }, ack?: Ack) => void;
+  'lobby:kick': (data: { lobbyId: string; userId: string; reason?: string }, ack?: Ack) => void;
   'lobby:setState': (data: { lobbyId: string; state: Extract<LobbyStatus, 'in_progress' | 'closed'> }, ack?: Ack<{ lobby: Lobby }>) => void;
   'lobby:setSettings': (data: { lobbyId: string; settings: Record<string, unknown> }, ack?: Ack<{ lobby: Lobby }>) => void;
   'lobby:gameOver': (data: { lobbyId: string; result?: unknown }, ack?: Ack) => void;
