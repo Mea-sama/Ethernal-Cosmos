@@ -59,6 +59,11 @@ export async function startHub(opts: { limits?: Record<string, unknown>; env?: R
          'lobbyInvite', 'lobbyInviteAction', 'authRefresh', 'setLobbyState']
           .map((k) => [k, big])
       ),
+      restRateLimits: Object.fromEntries(['userdata', 'players', 'leaderboard', 'social'].map((k) => [k, { windowMs: 60000, max: 1000000 }])),
+      caps: {
+        maxSessionsPerUser: 1000, maxConnectionsPerIp: 100000, maxLobbiesPerGame: 100000, maxLobbiesTotal: 100000,
+        maxPendingJoinRequestsPerLobby: 1000, maxGameServersPerGame: 1000, maxGameServerConnectionsPerIp: 1000, capRetryAfterMs: 5000,
+      },
       ...opts.limits,
     })
   );

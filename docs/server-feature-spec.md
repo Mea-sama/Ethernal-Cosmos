@@ -188,12 +188,23 @@ Store: key–value, PK `(user_id, game_id, key)`, value = any JSON (stored as te
 
 ## 9. Rate limiting & abuse controls (`LIMIT`)
 
-- Per-socket token buckets keyed by event (see `server/config/limits.json`): e.g. `createLobby` 0.1/s burst 2; `joinLobby` 0.25/s burst 4; `kickPlayer`/`transferHost`/`lock`/`unlock` 0.5/s burst 3; `listLobbies`/`getLobbyInfo` 5/s burst 15; `presence:list` 3/s; `getUserData`/`getPlayerData` 8/s; relay `250/s`, direct `200/s`; `gameAction` 300/s.
-- Per-lobby buckets: `sendToLobby(Binary)` 1200/s, `gameAction` 1600/s. Buckets are freed on socket disconnect / lobby dissolve.
-- Violation ⇒ `error "Rate limit erreicht (<event>)"`, throttled to one notice per 2 s per socket+event; the event is dropped.
-- Limits are overridable via `limits.json`; HTTP auth limits per IP.
-- `[GAP]` No limit on `leaveLobby`, relay `from` quotas per user (only per socket; a user with two sockets doubles), REST user-data endpoints (no rate limit), no connection-count limit per user/IP, no global lobby cap, no per-user lobby-creation cap beyond the bucket.
-- `[BUG]` BUG-JOIN-01 (missing `lobbyLimits.requestJoinLobby`).
+All limits live in `server/config/limits.json` (override path with `LIMITS_CONFIG_PATH`); every key has a typed default in `server/src/config/limits.ts` and invalid values fall back to it. Every limit error is `RATE_LIMITED` with `retryAfterMs` (socket acks / `errorDetail` / `connect_error.data`, REST body + `Retry-After` header, HTTP 429).
+
+| Limit | Key in `limits.json` | Default | Scope / behaviour |
+|---|---|---|---|
+| Socket events | `socketLimits.<event>` `{refillPerSecond, burst}` | see file, e.g. `createLobby` 0.1/s burst 2, `leaveLobby` 1/s burst 5, `unkickPlayer` 0.5/s burst 3, `friendRequestByName` 0.1/s burst 10 | token bucket per socket (relay/data events per user) |
+| Lobby relay | `lobbyLimits.<event>` | `sendToLobby` 1200/s, `gameAction` 1600/s, `requestJoinLobby` 2/s burst 10 | token bucket per lobby |
+| Auth REST | `authRateLimits.login/register/refresh` `{windowMs, max}` | 10/15 min, 5/h, 30/15 min | per IP |
+| User-data REST | `restRateLimits.userdata/players/leaderboard/social` `{windowMs, max}` | 120/min, 120/min, 60/min, 120/min | fixed window per user (valid bearer token) else per IP; `/social/*` covers all social REST routes |
+| Sessions per user | `caps.maxSessionsPerUser` | 10 | concurrent sockets (game + panel); a new game socket replaces the old one and does not count extra → `connect_error` `RATE_LIMITED` |
+| Connections per IP | `caps.maxConnectionsPerIp` | 100 | `connect_error` `RATE_LIMITED`; behind a proxy set `TRUST_PROXY=true` to use `X-Forwarded-For` |
+| Lobbies | `caps.maxLobbiesPerGame` / `caps.maxLobbiesTotal` | 500 / 2000 | `createLobby` → `RATE_LIMITED` |
+| Pending join requests | `caps.maxPendingJoinRequestsPerLobby` | 20 | per lobby (host spam) → `RATE_LIMITED` |
+| Game servers | `caps.maxGameServersPerGame` / `caps.maxGameServerConnectionsPerIp` | 50 / 20 | `/gameserver` handshake → `connect_error` `RATE_LIMITED`; resuming a known `serverId` is allowed |
+| Retry hint for caps | `caps.capRetryAfterMs` | 5000 | `retryAfterMs` of cap errors |
+
+Also in place: one open lobby per user (`ALREADY_IN_LOBBY`), friend request caps (`REQUEST_LIMIT_REACHED`, `FRIEND_LIMIT_REACHED`) and the `friendRequestByName`/`friendRequest` buckets. Violations of socket buckets without ack are announced as `error`/`errorDetail`, throttled to one notice per 2 s per socket+event.
+Test hubs (`server/test/helpers/hub.ts`) override all of these generously; individual tests tighten them via `startHub({ limits })`.
 
 ## 10. Social Panel (`PANEL`)
 
@@ -295,6 +306,13 @@ Hub-side only: SDK parity is covered by the SDK test suites.
 | TEST-AUTH-08 | socket connect without / with invalid token fails with UNAUTHENTICATED / INVALID_TOKEN |
 | TEST-LIMIT-01 | socket rate limit answers RATE_LIMITED with retryAfterMs in the ack |
 | TEST-LIMIT-02 | HTTP auth rate limit returns 429 RATE_LIMITED |
+| TEST-LIMIT-03 | REST /userdata, /players, /leaderboard and /social are rate limited per user: 429 RATE_LIMITED with retryAfterMs |
+| TEST-LIMIT-04 | max sessions per user: extra sockets get connect_error RATE_LIMITED with retryAfterMs; a game takeover does not count |
+| TEST-LIMIT-05 | max connections per IP rejects further sockets with RATE_LIMITED and frees slots on disconnect |
+| TEST-LIMIT-06 | max lobbies per game and globally: createLobby → RATE_LIMITED with retryAfterMs; freed when a lobby dissolves |
+| TEST-LIMIT-07 | leaveLobby is rate limited (RATE_LIMITED + retryAfterMs) |
+| TEST-LIMIT-08 | pending join requests per lobby are capped; friend requests per user are rate limited |
+| TEST-LIMIT-09 | game-server connections are capped per game and per IP (connect_error RATE_LIMITED); resuming a serverId is allowed |
 | TEST-INFRA-01 | /health and /api/games are reachable; test games are registered |
 | TEST-FRIEND-01 | friend request by name only answers REQUEST_SENT / NO_SUCH_PLAYER (no user enumeration) |
 | TEST-FRIEND-02 | accept: events on both sides, lists, only {userId, username} exposed |

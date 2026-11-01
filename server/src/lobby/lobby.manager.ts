@@ -2,6 +2,7 @@ import { v4 as uuidv4 } from 'uuid';
 import type { Lobby, LobbyPlayer, LobbyStatus } from '@ethernal/shared';
 import { HubError } from '../errors';
 import { getGame } from '../games/game.registry';
+import { serverLimits } from '../config/limits';
 
 const RECENT_LOBBY_TTL_MS = 60_000;
 
@@ -50,6 +51,7 @@ export class LobbyManager {
     if (this.userLobbyIndex.has(userId)) {
       throw new HubError('ALREADY_IN_LOBBY');
     }
+    this.assertLobbyCapacity(gameId);
 
     const host: LobbyPlayer = { userId, username, isHost: true, connected: true };
     const inviteCode = isPrivate ? this.generateInviteCode() : undefined;
@@ -75,6 +77,18 @@ export class LobbyManager {
     if (inviteCode) this.inviteCodeIndex.set(inviteCode, lobby.id);
     console.log(`[Lobby] Erstellt: "${lobby.name}" (${lobby.id}) für Spiel "${gameId}"${isPrivate ? ' [privat]' : ''}`);
     return lobby;
+  }
+
+  private assertLobbyCapacity(gameId: string): void {
+    const { maxLobbiesTotal, maxLobbiesPerGame, capRetryAfterMs } = serverLimits.caps;
+    if (this.lobbies.size >= maxLobbiesTotal) {
+      throw new HubError('RATE_LIMITED', 'Lobby-Limit des Servers erreicht', capRetryAfterMs);
+    }
+    let forGame = 0;
+    for (const l of this.lobbies.values()) if (l.gameId === gameId) forGame++;
+    if (forGame >= maxLobbiesPerGame) {
+      throw new HubError('RATE_LIMITED', 'Lobby-Limit für dieses Spiel erreicht', capRetryAfterMs);
+    }
   }
 
   // ─── Beitreten ─────────────────────────────────────────────────────────────

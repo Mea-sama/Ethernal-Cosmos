@@ -20,6 +20,7 @@ import { registerSocialHandlers } from './social/social.socket';
 import { registerGameServerNamespace } from './gameserver/gameserver.socket';
 import { gameServerAdminRouter } from './gameserver/admin.router';
 import { socialRouter } from './social/social.router';
+import { restRateLimit } from './limits/rest-rate-limit';
 import { registerSocialJobs } from './social/social.jobs';
 import { listGames } from './games/game.registry';
 import { ALLOWED_ORIGINS, HOST, IS_PRODUCTION, PORT, isAllowedOrigin } from './config/env';
@@ -215,10 +216,10 @@ app.get('/games', (_req, res) => {
 });
 
 app.use('/auth', authRouter);
-app.use('/userdata', userDataRouter);
-app.use('/players', playerDataRouter);
-app.use('/leaderboard', leaderboardRouter);
-app.use('/social', socialRouter);
+app.use('/userdata', restRateLimit('userdata'), userDataRouter);
+app.use('/players', restRateLimit('players'), playerDataRouter);
+app.use('/leaderboard', restRateLimit('leaderboard'), leaderboardRouter);
+app.use('/social', restRateLimit('social'), socialRouter);
 app.use('/admin/game-servers', gameServerAdminRouter);
 app.use('/dudg/api/questions', dudgQuestionsRouter);
 

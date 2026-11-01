@@ -11,6 +11,7 @@ import { serverLimits } from '../config/limits';
 import { HubError, isHubError } from '../errors';
 import { sessionManager, userRoom, gameRoom } from '../session/session.manager';
 import { presenceChanged } from '../social/presence.service';
+import { clientIp } from '../limits/client-ip';
 import { gsHooks } from '../gameserver/hooks';
 import { bindGameServer, releaseServerSlot } from '../gameserver/gameserver.socket';
 import {
@@ -515,6 +516,14 @@ function resumeIntoLobby(io: AppServer, socket: AppSocket, lobby: Lobby): void {
 
 // ─── Socket.io Auth-Middleware ────────────────────────────────────────────────
 
+const connectionsPerIp = new Map<string, number>();
+
+function capError(message: string): Error {
+  const err = new Error('RATE_LIMITED') as Error & { data: unknown };
+  err.data = { code: 'RATE_LIMITED', message, retryAfterMs: serverLimits.caps.capRetryAfterMs };
+  return err;
+}
+
 /**
  * Prüft den JWT aus socket.handshake.auth.token bei jeder neuen Verbindung.
  * Client sendet: io({ auth: { token: "Bearer <jwt>" } })
@@ -534,10 +543,22 @@ export function registerSocketAuth(io: AppServer): void {
       socket.data.clientType = clientType;
       socket.data.sessionId = uuidv4();
       socket.data.tokenExpiresAt = payload.exp ? payload.exp * 1000 : undefined;
-      next();
     } catch {
-      next(new Error('INVALID_TOKEN'));
+      return next(new Error('INVALID_TOKEN'));
     }
+    const { caps } = serverLimits;
+    const ip = clientIp(socket.handshake.headers, socket.handshake.address);
+    socket.data.ip = ip;
+    if ((connectionsPerIp.get(ip) ?? 0) >= caps.maxConnectionsPerIp) {
+      return next(capError('Zu viele Verbindungen von dieser IP'));
+    }
+    // Ein neuer Spiel-Client ersetzt die alten Spiel-Sockets (Takeover) und zählt daher nicht zusätzlich
+    const existing = sessionManager.get(socket.data.userId)?.sessions.size ?? 0;
+    const replaced = socket.data.clientType === 'game' ? sessionManager.gameSessions(socket.data.userId).length : 0;
+    if (existing - replaced >= caps.maxSessionsPerUser) {
+      return next(capError('Zu viele gleichzeitige Sitzungen für diesen Account'));
+    }
+    next();
   });
 }
 
@@ -625,6 +646,13 @@ export function registerLobbyHandlers(io: AppServer): void {
   io.on('connection', (socket: AppSocket) => {
     const { userId, username, clientType, sessionId } = socket.data;
     console.log(`[Socket] "${username}" verbunden als ${clientType} (${socket.id})`);
+    const ip = socket.data.ip;
+    connectionsPerIp.set(ip, (connectionsPerIp.get(ip) ?? 0) + 1);
+    socket.on('disconnect', () => {
+      const n = (connectionsPerIp.get(ip) ?? 1) - 1;
+      if (n <= 0) connectionsPerIp.delete(ip);
+      else connectionsPerIp.set(ip, n);
+    });
 
     // Session-Takeover: ein neuer Spiel-Client ersetzt den alten (F5, Gerätewechsel).
     // Die Lobby-Mitgliedschaft bleibt dabei bestehen (hängt am User).
@@ -1084,6 +1112,9 @@ export function startJoinRequest(
     return { pending: true };
   }
   assertLobbyLimit(lobby.id, 'requestJoinLobby');
+  if ((joinRequests.get(lobby.id)?.size ?? 0) >= serverLimits.caps.maxPendingJoinRequestsPerLobby) {
+    throw new HubError('RATE_LIMITED', 'Zu viele offene Beitrittsanfragen für diese Lobby', serverLimits.caps.capRetryAfterMs);
+  }
   // Pro User nur eine offene Anfrage: neue Anfrage ersetzt alte
   withdrawAllRequestsFor(io, userId, 'cancelled', { exceptLobbyId: lobby.id, notifyRequester: true });
 

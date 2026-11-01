@@ -12,6 +12,8 @@ import type {
   ServerPreference,
 } from '@ethernal/shared';
 import { HubError, isHubError } from '../errors';
+import { serverLimits } from '../config/limits';
+import { clientIp } from '../limits/client-ip';
 import { getGame } from '../games/game.registry';
 import { lobbyManager } from '../lobby/lobby.manager';
 import { gameRoom, sessionManager, userRoom } from '../session/session.manager';
@@ -28,7 +30,7 @@ import {
 import { setGameServerHooks } from './hooks';
 import { verifyGameServerKey } from './keys.service';
 
-type ServerSocket = Socket<GameServerToHubEvents, HubToGameServerEvents, Record<string, never>, { serverId: string; gameId: string }>;
+type ServerSocket = Socket<GameServerToHubEvents, HubToGameServerEvents, Record<string, never>, { serverId: string; gameId: string; ip?: string }>;
 
 interface LiveServer {
   serverId: string;
@@ -46,7 +48,8 @@ interface LiveServer {
 }
 
 const servers = new Map<string, LiveServer>();
-let namespace: Namespace<GameServerToHubEvents, HubToGameServerEvents, Record<string, never>, { serverId: string; gameId: string }> | null = null;
+const gsConnectionsPerIp = new Map<string, number>();
+let namespace: Namespace<GameServerToHubEvents, HubToGameServerEvents, Record<string, never>, { serverId: string; gameId: string; ip?: string }> | null = null;
 let mainIo: AppServer | null = null;
 
 const resumeGraceMs = (): number => (Number(process.env.SERVER_RESUME_GRACE_MS) > 0 ? Number(process.env.SERVER_RESUME_GRACE_MS) : 30_000);
@@ -253,6 +256,18 @@ export function registerGameServerNamespace(io: AppServer): void {
       if (!(await verifyGameServerKey(hs.gameId, hs.serverKey))) return next(new Error('INVALID_SERVER_KEY'));
       const existing = servers.get(hs.serverId);
       if (existing && existing.gameId !== hs.gameId) return next(new Error('INVALID_INPUT'));
+      const { caps } = serverLimits;
+      const ip = clientIp(socket.handshake.headers, socket.handshake.address);
+      const capErr = (message: string): Error => {
+        const err = new Error('RATE_LIMITED') as Error & { data: unknown };
+        err.data = { code: 'RATE_LIMITED', message, retryAfterMs: caps.capRetryAfterMs };
+        return err;
+      };
+      if ((gsConnectionsPerIp.get(ip) ?? 0) >= caps.maxGameServerConnectionsPerIp) return next(capErr('Zu viele Game-Server-Verbindungen von dieser IP'));
+      if (!existing && [...servers.values()].filter((s) => s.gameId === hs.gameId && s.connected).length >= caps.maxGameServersPerGame) {
+        return next(capErr('Maximale Anzahl Game-Server für dieses Spiel erreicht'));
+      }
+      socket.data.ip = ip;
       socket.data.serverId = hs.serverId;
       socket.data.gameId = hs.gameId;
       next();
@@ -264,6 +279,13 @@ export function registerGameServerNamespace(io: AppServer): void {
 
   ns.on('connection', (socket: ServerSocket) => {
     const hs = HandshakeSchema.parse(socket.handshake.auth);
+    const ip = socket.data.ip ?? 'unknown';
+    gsConnectionsPerIp.set(ip, (gsConnectionsPerIp.get(ip) ?? 0) + 1);
+    socket.on('disconnect', () => {
+      const n = (gsConnectionsPerIp.get(ip) ?? 1) - 1;
+      if (n <= 0) gsConnectionsPerIp.delete(ip);
+      else gsConnectionsPerIp.set(ip, n);
+    });
     let server = servers.get(hs.serverId);
     const resumed = !!server;
 

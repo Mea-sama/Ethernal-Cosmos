@@ -139,7 +139,12 @@ export function httpStatusFor(code: ErrorCode): number {
   return HTTP_STATUS[code] ?? 500;
 }
 
-/** Sendet einen HubError als REST-Antwort: `{ error: message, code }` (abwärtskompatibel zu `error`). */
+/** Sendet einen HubError als REST-Antwort: `{ error: message, code, retryAfterMs? }` (abwärtskompatibel zu `error`). */
 export function sendHubError(res: import('express').Response, err: HubError): void {
-  res.status(httpStatusFor(err.code)).json({ error: err.message, code: err.code });
+  if (err.retryAfterMs !== undefined) res.setHeader('Retry-After', String(Math.max(1, Math.ceil(err.retryAfterMs / 1000))));
+  res.status(httpStatusFor(err.code)).json({
+    error: err.message,
+    code: err.code,
+    ...(err.retryAfterMs !== undefined ? { retryAfterMs: err.retryAfterMs } : {}),
+  });
 }

@@ -35,6 +35,7 @@ The server emits a `connect_error` with a descriptive `message` string:
 |---------------|-------|--------|
 | `'UNAUTHENTICATED'` | No `auth.token` provided | Call `login()` first |
 | `'INVALID_TOKEN'` | Token expired or malformed | Refresh the token and reconnect |
+| `'RATE_LIMITED'` | Too many connections from this IP, too many sessions for this account, or too many game servers | Back off for `err.data.retryAfterMs` (`err.data = { code, message, retryAfterMs }`) |
 
 The Node.js SDK handles `'INVALID_TOKEN'` automatically by refreshing and reconnecting.
 

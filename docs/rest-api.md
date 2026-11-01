@@ -335,5 +335,5 @@ Status codes follow HTTP conventions:
 - `403` — forbidden
 - `404` — not found
 - `409` — conflict (e.g. duplicate username)
-- `429` — rate limited
+- `429` — rate limited (`code: "RATE_LIMITED"`, `retryAfterMs`, `Retry-After` header). `/userdata`, `/players`, `/leaderboard` and `/social` are limited per user (defaults 120/120/60/120 per minute, `limits.json` → `restRateLimits`)
 - `500` — internal server error

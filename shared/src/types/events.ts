@@ -322,4 +322,6 @@ export interface SocketData {
   clientType: 'game' | 'panel';
   /** Ablaufzeit des Access-Tokens (ms seit Epoch) */
   tokenExpiresAt?: number;
+  /** Client-IP (für Verbindungslimits) */
+  ip: string;
 }
