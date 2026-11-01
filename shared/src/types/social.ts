@@ -89,12 +89,40 @@ export interface DmConversation {
   username: string;
   lastMessage: DirectMessage;
   unreadCount: number;
+  /** Highest `seq` of an incoming message the user has read (0 = none). Everything up to it counts as read. */
+  lastReadSeq: number;
 }
 
 export interface DmHistoryResult {
   messages: DirectMessage[];
   /** Cursor für die nächstältere Seite (`before`), falls es mehr gibt */
   nextBefore?: number;
+  /** Read cursor of the caller: highest incoming `seq` read. In `dm:open` this is the value *before* the chat was opened. */
+  lastReadSeq: number;
+  /** `seq` of the oldest unread incoming message (state before opening); UI draws its "new messages" divider here. */
+  firstUnreadSeq?: number;
+  /** Unread incoming messages of this chat (state before opening for `dm:open`). */
+  unreadCount: number;
+  /** Highest `seq` of the caller's messages the friend has read. Omitted if the friend disabled read receipts. */
+  peerLastReadSeq?: number;
+}
+
+/** Result of `dm:markRead` / payload of `dm:readState`. */
+export interface DmReadState {
+  withUserId: string;
+  /** Number of messages newly marked read by this call (0 in `dm:readState` pushes) */
+  marked: number;
+  lastReadSeq: number;
+  /** Unread messages still left in this chat (0 if everything up to the latest message was read) */
+  unreadCount: number;
+  /** Unread DMs over all chats, for an app badge */
+  totalUnread: number;
+}
+
+/** Result of `dm:unread` (pull API for unread badges). */
+export interface DmUnreadResult {
+  conversations: DmConversationUnread[];
+  totalUnread: number;
 }
 
 export interface LobbyInvite {
@@ -122,6 +150,11 @@ export interface FriendLobbyInfo {
 export interface DmConversationUnread {
   withUserId: string;
   unreadCount: number;
+  /** `seq` of the oldest unread message: where the chat should open */
+  firstUnreadSeq: number;
+  /** `seq` and send time of the newest message (sorting chats) */
+  lastSeq: number;
+  lastMessageAt: number;
 }
 
 /** Konsistenter Gesamtzustand für Start/Resume (`social:sync`, `GET /social/sync`) */
@@ -136,4 +169,20 @@ export interface SocialSnapshot {
   lobbyInvites: LobbyInvite[];
   unreadNotifications: number;
   conversations: DmConversationUnread[];
+}
+
+/** A pending join request for a locked lobby (`getJoinRequests`). */
+export interface JoinRequestInfo {
+  lobbyId: string;
+  requesterId: string;
+  username: string;
+  /** When the hub auto-rejects the request (ms since epoch) */
+  expiresAt: number;
+}
+
+export interface JoinRequestsResult {
+  /** Requests waiting for the caller as host */
+  incoming: JoinRequestInfo[];
+  /** The caller's own open request, if any */
+  outgoing?: JoinRequestInfo;
 }

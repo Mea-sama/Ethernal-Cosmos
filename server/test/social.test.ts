@@ -484,6 +484,52 @@ describe('Direct Messages (#29)', () => {
     closeAll(a, b);
   });
 
+  it('Lesestand: dm:unread, dm:open (letzte 10 + Markierung), Teil-Lesen, peerLastReadSeq, readState-Push', async () => {
+    const [a, b] = [await live(hub), await live(hub)];
+    await befriend(a, b);
+    const sent: any[] = [];
+    for (let i = 1; i <= 12; i++) sent.push((await a.emitAck('dm:send', { toUserId: b.user.userId, text: `m${i}` })).message);
+
+    const unread = await b.emitAck('dm:unread');
+    expect(unread.totalUnread).toBe(12);
+    expect(unread.conversations[0]).toMatchObject({
+      withUserId: a.user.userId, unreadCount: 12, firstUnreadSeq: sent[0].seq, lastSeq: sent[11].seq,
+    });
+    expect((await b.emitAck('social:sync')).conversations[0]).toMatchObject({ unreadCount: 12, firstUnreadSeq: sent[0].seq });
+    expect((await api(hub, b.user, 'GET', '/social/dm/unread')).body.totalUnread).toBe(12);
+
+    // Partial read via cursor
+    const part = await b.emitAck('dm:markRead', { withUserId: a.user.userId, upToSeq: sent[3].seq });
+    expect(part).toMatchObject({ marked: 4, lastReadSeq: sent[3].seq, unreadCount: 8, totalUnread: 8 });
+    expect((await b.waitFor('dm:readState')).unreadCount).toBe(8);
+    expect((await a.waitFor('dm:read')).upToSeq).toBe(sent[3].seq);
+    expect((await a.emitAck('dm:history', { withUserId: b.user.userId })).peerLastReadSeq).toBe(sent[3].seq);
+    expect((await b.emitAck('notification:counts')).unread).toBeGreaterThanOrEqual(0);
+
+    // Opening shows the last 10 and reports the state from before opening
+    const opened = await b.emitAck('dm:open', { withUserId: a.user.userId });
+    expect(opened.messages.map((m: any) => m.text)).toEqual(['m3', 'm4', 'm5', 'm6', 'm7', 'm8', 'm9', 'm10', 'm11', 'm12']);
+    expect(opened).toMatchObject({ lastReadSeq: sent[3].seq, firstUnreadSeq: sent[4].seq, unreadCount: 8 });
+    expect(opened.nextBefore).toBe(sent[2].seq);
+    expect((await b.emitAck('dm:unread')).totalUnread).toBe(0);
+    expect((await b.emitAck('dm:conversations')).conversations[0]).toMatchObject({ unreadCount: 0, lastReadSeq: sent[11].seq });
+    expect((await b.emitAck('social:sync')).conversations).toEqual([]);
+    expect((await b.emitAck('notification:counts')).byType.dm).toBeUndefined();
+
+    // The sender sees how far the friend has read; reopening yields no unread state
+    const hist = await a.emitAck('dm:history', { withUserId: b.user.userId });
+    expect(hist.peerLastReadSeq).toBe(sent[11].seq);
+    const again = await b.emitAck('dm:open', { withUserId: a.user.userId, limit: 3 });
+    expect(again).toMatchObject({ unreadCount: 0, lastReadSeq: sent[11].seq });
+    expect(again.firstUnreadSeq).toBeUndefined();
+    expect((await b.emitAck('dm:markRead', { withUserId: a.user.userId })).marked).toBe(0);
+
+    // Receipts disabled: no peer cursor
+    await b.emitAck('social:setSettings', { dmReadReceipts: false });
+    expect((await a.emitAck('dm:history', { withUserId: b.user.userId })).peerLastReadSeq).toBeUndefined();
+    closeAll(a, b);
+  });
+
   it('Unfriend löscht Verlauf sofort für beide; Neu-Befreundung beginnt leer', async () => {
     const [a, b] = [await live(hub), await live(hub)];
     await befriend(a, b);
@@ -747,7 +793,7 @@ describe('Social-Snapshot (#31)', () => {
     expect(snap.lobbyInvites).toHaveLength(1);
     expect(snap.status).toBe('online');
     expect(snap.settings.showLastSeen).toBe(true);
-    expect(snap.conversations).toEqual([{ withUserId: a.user.userId, unreadCount: 1 }]);
+    expect(snap.conversations).toMatchObject([{ withUserId: a.user.userId, unreadCount: 1 }]);
     expect(snap.unreadNotifications).toBe((await b.emitAck('notification:counts')).unread);
 
     const snapA = await a.emitAck('social:sync');
