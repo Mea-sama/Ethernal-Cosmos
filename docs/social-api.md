@@ -17,12 +17,26 @@ Code: `server/src/social/*`. All socket events use the ack protocol (`{ok:true,.
 | `social:getSettings` / `setSettings` | `GET` / `PUT /social/settings` |
 | `social:friendLobby` | `GET /social/friends/:id/lobby` |
 | `notification:list` / `markRead` / `counts` | `GET /social/notifications` / `POST …/read` / `GET …/counts` |
-| `dm:conversations` / `history` / `send` / `markRead` | `GET /social/dm` / `GET /social/dm/:id` / `POST /social/dm/:id` / `POST …/read` |
+| `dm:conversations` / `history` / `send` | `GET /social/dm` / `GET /social/dm/:id` / `POST /social/dm/:id` |
+| `dm:unread` | `GET /social/dm/unread` |
+| `dm:open` | `POST /social/dm/:id/open {limit?}` |
+| `dm:markRead {upToSeq?}` | `POST /social/dm/:id/read {upToSeq?}` |
 | `lobby:invites` | `GET /social/lobby-invites` |
 
 Invite actions (`lobby:invite`, `cancelInvite`, `acceptInvite`, `declineInvite`, `joinFriend`) are socket-only. `DELETE /social/data` purges the caller's social data (cascade hook for account deletion).
 
-Server events: `friend:presence`, `friend:requestReceived/Accepted/Declined/Cancelled`, `friend:removed`, `notification`, `notification:backlog`, `dm:received/delivered/read/typing`, `lobby:inviteReceived/Cancelled/Declined`.
+Server events: `friend:presence`, `friend:requestReceived/Accepted/Declined/Cancelled`, `friend:removed`, `notification`, `notification:backlog`, `dm:received/delivered/read/readState/typing`, `lobby:inviteReceived/Cancelled/Declined`.
+
+## Direct messages: read cursor and unread state
+
+Every DM has a global ascending `seq`. A chat's **read cursor** (`lastReadSeq`) is the highest incoming `seq` the user has read; everything at or below it is read. See [dm-ui-guide.md](dm-ui-guide.md) for how a UI should use these calls.
+
+- `dm:unread` → `{ conversations: [{ withUserId, unreadCount, firstUnreadSeq, lastSeq, lastMessageAt }], totalUnread }`: only chats with unread messages (pull API for friend-list badges / app badge; also in `social:sync`).
+- `dm:open { withUserId, limit? = 10 }` → `DmHistoryResult`: last `limit` messages (oldest first) plus the state *before* opening (`lastReadSeq`, `firstUnreadSeq`, `unreadCount`); the server then marks the chat read and pushes `dm:readState` / `dm:read`.
+- `dm:history { withUserId, before?, limit? }` → older pages (`nextBefore`) without changing the read state. The result also has `lastReadSeq`, `firstUnreadSeq`, `unreadCount` and `peerLastReadSeq` (how far the friend has read your messages; absent if the friend disabled `dmReadReceipts`).
+- `dm:markRead { withUserId, upToSeq? }` → `DmReadState { withUserId, marked, lastReadSeq, unreadCount, totalUnread }`: moves the cursor up to `upToSeq` (default: everything). Use `upToSeq` when only part of the chat was visible.
+- `dm:readState` (server event) → same `DmReadState`, sent to **all sessions of the reader** whenever the cursor moves, so other devices clear their badge. `dm:read { byUserId, upToSeq }` goes to the *sender* (only if the reader has `dmReadReceipts` on).
+- The `dm` notification of an offline message is marked read once the chat has no unread messages left.
 
 ## Configuration (env)
 

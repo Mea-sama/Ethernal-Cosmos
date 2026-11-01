@@ -218,14 +218,14 @@ Bulk-create or update up to **100** KV entries in a single request.
 
 **Request body**
 
+A raw JSON array (not wrapped in an object):
+
 ```json
-{
-  "data": [
-    { "key": "wins",   "value": 10, "visibility": "public" },
-    { "key": "losses", "value": 3,  "visibility": "public" },
-    { "key": "draws",  "value": 1                          }
-  ]
-}
+[
+  { "key": "wins",   "value": 10, "visibility": "public" },
+  { "key": "losses", "value": 3,  "visibility": "public" },
+  { "key": "draws",  "value": 1                          }
+]
 ```
 
 **Response `200`** — `{ "ok": true }`
@@ -250,7 +250,7 @@ Returns:
 
 ### `GET /leaderboard/:gameId/:key`
 
-Return the ranked leaderboard for a `public` numeric key.
+Return the leaderboard for a `public` numeric key, sorted by `order`. Rows carry no `rank` field: the position in the array is the rank (rank-of-me/around-me/ties are tracked in #39).
 
 **Query parameters**
 
@@ -269,8 +269,8 @@ GET /leaderboard/chess/wins?order=desc&limit=5
 
 ```json
 [
-  { "userId": "uuid1", "username": "alice", "value": 42, "rank": 1 },
-  { "userId": "uuid2", "username": "bob",   "value": 38, "rank": 2 }
+  { "userId": "uuid1", "username": "alice", "value": 42 },
+  { "userId": "uuid2", "username": "bob",   "value": 38 }
 ]
 ```
 

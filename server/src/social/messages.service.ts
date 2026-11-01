@@ -1,5 +1,5 @@
 import { v4 as uuidv4 } from 'uuid';
-import type { DirectMessage, DmConversation, DmConversationUnread, DmHistoryResult } from '@ethernal/shared';
+import type { DirectMessage, DmConversation, DmConversationUnread, DmHistoryResult, DmReadState, DmUnreadResult } from '@ethernal/shared';
 import { db } from '../db/database';
 import { HubError } from '../errors';
 import { sessionManager } from '../session/session.manager';
@@ -82,6 +82,31 @@ export async function markDelivered(userId: string, fromId?: string): Promise<vo
   for (const [sender, messageIds] of bySender) emitToUser(sender, 'dm:delivered', { byUserId: userId, messageIds });
 }
 
+async function readCursor(userId: string, withId: string): Promise<{ lastReadSeq: number; unreadCount: number; firstUnreadSeq?: number }> {
+  const res = await db.execute({
+    sql: `SELECT COALESCE(MAX(CASE WHEN read_at IS NOT NULL THEN rowid END), 0) AS last_read,
+                 SUM(CASE WHEN read_at IS NULL THEN 1 ELSE 0 END) AS unread,
+                 MIN(CASE WHEN read_at IS NULL THEN rowid END) AS first_unread
+          FROM direct_messages WHERE to_user = ? AND from_user = ? AND sent_at > ?`,
+    args: [userId, withId, cutoff()],
+  });
+  const r = res.rows[0];
+  return {
+    lastReadSeq: Number(r.last_read),
+    unreadCount: Number(r.unread ?? 0),
+    ...(r.first_unread !== null && r.first_unread !== undefined ? { firstUnreadSeq: Number(r.first_unread) } : {}),
+  };
+}
+
+async function peerCursor(userId: string, withId: string): Promise<number | undefined> {
+  if (!(await loadSettings(withId))?.dmReadReceipts) return undefined;
+  const res = await db.execute({
+    sql: 'SELECT MAX(rowid) AS seq FROM direct_messages WHERE from_user = ? AND to_user = ? AND read_at IS NOT NULL',
+    args: [userId, withId],
+  });
+  return Number(res.rows[0].seq ?? 0);
+}
+
 export async function history(userId: string, withId: string, opts: { before?: number; limit?: number } = {}): Promise<DmHistoryResult> {
   await assertFriends(userId, withId);
   const limit = Math.min(Math.max(Math.trunc(Number(opts.limit) || 50), 1), 100);
@@ -102,7 +127,21 @@ export async function history(userId: string, withId: string, opts: { before?: n
   const page = rows.slice(0, limit);
   const more = rows.length > limit;
   page.reverse();
-  return { messages: page, ...(more && page[0] ? { nextBefore: page[0].seq } : {}) };
+  const cursor = await readCursor(userId, withId);
+  const peer = await peerCursor(userId, withId);
+  return {
+    messages: page,
+    ...(more && page[0] ? { nextBefore: page[0].seq } : {}),
+    ...cursor,
+    ...(peer !== undefined ? { peerLastReadSeq: peer } : {}),
+  };
+}
+
+/** Chat öffnen: letzte Nachrichten + Lesestand von *vor* dem Öffnen, danach wird alles als gelesen markiert. */
+export async function openConversation(userId: string, withId: string, limit?: number): Promise<DmHistoryResult> {
+  const result = await history(userId, withId, { limit: limit ?? 10 });
+  await markConversationRead(userId, withId);
+  return result;
 }
 
 export async function conversations(userId: string): Promise<DmConversation[]> {
@@ -128,6 +167,7 @@ export async function conversations(userId: string): Promise<DmConversation[]> {
       username: String(msg.rows[0].other_name),
       lastMessage: last,
       unreadCount: Number(r.unread),
+      lastReadSeq: (await readCursor(userId, last.from === userId ? last.to : last.from)).lastReadSeq,
     });
   }
   return out;
@@ -135,30 +175,60 @@ export async function conversations(userId: string): Promise<DmConversation[]> {
 
 export async function unreadByConversation(userId: string): Promise<DmConversationUnread[]> {
   const res = await db.execute({
-    sql: `SELECT from_user, COUNT(*) AS n FROM direct_messages
-          WHERE to_user = ? AND read_at IS NULL AND sent_at > ? GROUP BY from_user ORDER BY from_user`,
+    sql: `SELECT from_user, COUNT(*) AS n, MIN(rowid) AS first_seq, MAX(rowid) AS last_seq, MAX(sent_at) AS last_at
+          FROM direct_messages
+          WHERE to_user = ? AND read_at IS NULL AND sent_at > ? GROUP BY from_user ORDER BY last_seq DESC`,
     args: [userId, cutoff()],
   });
-  return res.rows.map((r) => ({ withUserId: String(r.from_user), unreadCount: Number(r.n) }));
+  return res.rows.map((r) => ({
+    withUserId: String(r.from_user),
+    unreadCount: Number(r.n),
+    firstUnreadSeq: Number(r.first_seq),
+    lastSeq: Number(r.last_seq),
+    lastMessageAt: Number(r.last_at),
+  }));
 }
 
-export async function markConversationRead(userId: string, withId: string): Promise<number> {
+export async function unread(userId: string): Promise<DmUnreadResult> {
+  const list = await unreadByConversation(userId);
+  return { conversations: list, totalUnread: list.reduce((n, c) => n + c.unreadCount, 0) };
+}
+
+async function readState(userId: string, withId: string, marked: number): Promise<DmReadState> {
+  const cursor = await readCursor(userId, withId);
+  return {
+    withUserId: withId,
+    marked,
+    lastReadSeq: cursor.lastReadSeq,
+    unreadCount: cursor.unreadCount,
+    totalUnread: (await unread(userId)).totalUnread,
+  };
+}
+
+/** Setzt den Lesestand: alles bis `upToSeq` (Standard: alles) gilt als gelesen. */
+export async function markConversationRead(userId: string, withId: string, upToSeq?: number): Promise<DmReadState> {
   await assertFriends(userId, withId);
   const now = Date.now();
+  const limitSql = upToSeq !== undefined ? ' AND rowid <= ?' : '';
+  const base: Array<string | number> = [userId, withId, ...(upToSeq !== undefined ? [upToSeq] : [])];
   const last = await db.execute({
-    sql: 'SELECT MAX(rowid) AS seq FROM direct_messages WHERE to_user = ? AND from_user = ? AND read_at IS NULL',
-    args: [userId, withId],
+    sql: `SELECT MAX(rowid) AS seq FROM direct_messages WHERE to_user = ? AND from_user = ? AND read_at IS NULL${limitSql}`,
+    args: base,
   });
   const res = await db.execute({
     sql: `UPDATE direct_messages SET read_at = ?, delivered_at = COALESCE(delivered_at, ?)
-          WHERE to_user = ? AND from_user = ? AND read_at IS NULL`,
-    args: [now, now, userId, withId],
+          WHERE to_user = ? AND from_user = ? AND read_at IS NULL${limitSql}`,
+    args: [now, now, ...base],
   });
-  await markReadByKey(userId, dmKey(conversationId(userId, withId)));
-  if (res.rowsAffected > 0 && (await loadSettings(userId))?.dmReadReceipts) {
-    emitToUser(withId, 'dm:read', { byUserId: userId, upToSeq: Number(last.rows[0].seq) });
+  const state = await readState(userId, withId, res.rowsAffected);
+  if (state.unreadCount === 0) await markReadByKey(userId, dmKey(conversationId(userId, withId)));
+  if (res.rowsAffected > 0) {
+    emitToUser(userId, 'dm:readState', state);
+    if ((await loadSettings(userId))?.dmReadReceipts) {
+      emitToUser(withId, 'dm:read', { byUserId: userId, upToSeq: Number(last.rows[0].seq) });
+    }
   }
-  return res.rowsAffected;
+  return state;
 }
 
 export async function typing(userId: string, toId: string): Promise<void> {

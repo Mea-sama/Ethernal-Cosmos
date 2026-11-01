@@ -65,12 +65,13 @@ Full value lists: [enums.md](enums.md).
 | Method | Description |
 |--------|-------------|
 | `RegisterAsync(username, password)` | Create an account, store tokens, connect the socket. Returns `AuthResult`. |
-| `LoginAsync(username, password)` | Log in and connect. A second login of the same user replaces the first game session (`SessionReplaced`). |
+| `LoginAsync(username, password)` | Log in and connect. A second login of the same user replaces the first game session (`SessionReplaced`); set `EthernalClientOptions.ClientType = ClientType.Panel` for an additional companion session (overlay, second device) that coexists with the game session and also receives user-targeted events (DMs, `DirectMessageReadStateChanged`, join-request confirmations). |
 | `RefreshSocketAuthAsync()` | Renew the access token via the refresh token and pass it to the live socket (`auth:refresh`). |
 | `LogoutAsync()` | Revoke this refresh token, disconnect, forget tokens and the registered game. |
+| `DisconnectAsync()` | Close the socket only: tokens and game are kept and the hub holds your lobby seat for the game's reconnect grace period. Call `LoginAsync` to resume. |
 | `LogoutAllAsync()` | Revoke **all** refresh tokens of the account and disconnect every session. |
 
-Access tokens are short-lived. When the hub reports `AUTH_EXPIRED` the SDK refreshes the token and re-authenticates the socket automatically, so the session survives. If that fails, `AuthError` is raised and you should log in again. Use `RefreshSocketAuthAsync` to refresh proactively. `Connected`/`Disconnected` track the transport; on reconnect the SDK re-registers the game and the hub resumes your lobby (`SessionResumed`).
+Access tokens are short-lived. When the hub reports `AUTH_EXPIRED` the SDK refreshes the token and re-authenticates the socket automatically, so the session survives. If that fails, `AuthError` is raised and you should log in again. Use `RefreshSocketAuthAsync` to refresh proactively. `Connected`/`Disconnected` track the transport; `Disconnected` is raised exactly once per lost connection, and with `"io client disconnect"` after a local `DisconnectAsync`, `LogoutAsync` or dispose; on reconnect the SDK re-registers the game and the hub resumes your lobby (`SessionResumed`).
 
 ```csharp
 client.AuthError    += msg => Console.WriteLine("log in again: " + msg);
@@ -122,19 +123,28 @@ client.LobbyChanged += (lobby, reason) =>                  // same, with the rea
 
 ### Join requests
 
-For locked lobbies, `RequestJoinLobbyAsync(lobbyId)` / `RequestJoinLobbyByCodeAsync(code)` send a request and complete when the host accepts (you are then already a member) or throw `EthernalException` when declined, timed out or the lobby changed. `CancelJoinRequestAsync(lobbyId)` withdraws it. The host answers with `RespondJoinRequestAsync(requesterId, accept)`.
+For locked lobbies, `RequestJoinLobbyAsync(lobbyId)` / `RequestJoinLobbyByCodeAsync(code)` send a request and complete when the host accepts (you are then already a member) or throw `EthernalException` otherwise (the matching event is raised too):
 
-Events: host — `JoinRequestReceived`, `JoinRequestWithdrawn`; requester — `JoinRequestPending`, `JoinRequestAccepted` (`.Lobby`), `JoinRequestRejected` (`.Reason`: `JoinRequestRejectReason`).
+| Outcome | Exception code | Event |
+|---------|----------------|-------|
+| Declined, expired, host changed, lobby closed | `LOBBY_LOCKED` (`ErrorCode.LobbyLocked`) | `JoinRequestRejected` (`.Reason`) |
+| ↳ expiry (`ExpiresAt`, hub `joinRequestTimeoutMs`) | `LOBBY_LOCKED` | `JoinRequestRejected` (`Timeout`); host: `JoinRequestWithdrawn` (`Timeout`) |
+| Cancelled via `CancelJoinRequestAsync(lobbyId)` (any session of the user) | `JOIN_REQUEST_NOT_FOUND` | `JoinRequestWithdrawn` (`Cancelled`) on host **and** all requester sessions |
+
+`CancelJoinRequestAsync` throws `JOIN_REQUEST_NOT_FOUND` when no request is open. The host answers with `RespondJoinRequestAsync(requesterId, accept)`. After a reconnect pull the state with `GetJoinRequestsAsync()` → `JoinRequestsResult` (`Incoming` as host, `Outgoing` as requester; each `JoinRequestInfo` has `LobbyId`, `RequesterId`, `Username`, `ExpiresAt`).
+
+Events: host — `JoinRequestReceived` (`.ExpiresAt`), `JoinRequestWithdrawn` (`.LobbyId`, `.Reason`); requester — `JoinRequestPending` (`.ExpiresAt`), `JoinRequestAccepted` (`.Lobby`), `JoinRequestRejected` (`.Reason`: `JoinRequestRejectReason`), `JoinRequestWithdrawn` (cancel confirmation).
 
 ## Relay
 
-Messages are relayed unchanged by the hub to the other lobby members (never back to the sender).
+Messages are relayed unchanged by the hub to the other lobby members. By default they never go back to the sender; pass `echo: true` (all four send methods) to receive your own message too (all own sessions, via `Message`/`MessageBinary`) and to allow `SendToPlayerAsync` to yourself.
 
 ```csharp
 await client.SendToLobbyAsync("chat", new { text = "hi" });
 await client.SendToPlayerAsync(playerId, "whisper", new { text = "psst" });
 await client.SendToLobbyBinaryAsync(typeCode: 7, bytes);
 await client.SendToPlayerBinaryAsync(playerId, 7, bytes);
+await client.SendToLobbyAsync("state", new { x = 1 }, echo: true);   // sender receives it as well
 
 client.Message += m =>
 {
@@ -247,6 +257,20 @@ DmConversation[] convs = await client.ListConversationsAsync();                 
 int marked = await client.MarkConversationReadAsync(friendId);
 ```
 
+Read cursor / unread badges (`seq` values are per message, `long`):
+
+```csharp
+DmUnreadResult u = await client.GetDmUnreadAsync();    // u.TotalUnread; per chat: UnreadCount, FirstUnreadSeq, LastSeq, LastMessageAt
+// Open a chat: last 10 messages (limit optional) + read state from BEFORE opening, then everything is marked read
+DmHistoryResult chat = await client.OpenDmConversationAsync(friendId);
+// chat.LastReadSeq, chat.FirstUnreadSeq (draw the "new messages" divider), chat.UnreadCount, chat.PeerLastReadSeq (null if the friend disabled read receipts)
+DmReadState s = await client.MarkDmReadAsync(friendId, upToSeq: 42);   // partial; omit upToSeq for all
+// s.Marked, s.LastReadSeq, s.UnreadCount (this chat), s.TotalUnread (app badge)
+client.DirectMessageReadStateChanged += st => { };    // read cursor moved, also from your other sessions -> clear the badge
+```
+
+`GetDmHistoryAsync` also returns `LastReadSeq`, `FirstUnreadSeq`, `UnreadCount` and `PeerLastReadSeq`; `ListConversationsAsync` entries carry `LastReadSeq`. `MarkConversationReadAsync` remains as a shortcut that returns only the marked count.
+
 ### Lobby invites and joining friends
 
 ```csharp
@@ -273,7 +297,7 @@ Events: `LobbyInviteReceived`, `LobbyInviteCancelled` (`.Reason`: `LobbyInviteCa
 | Game | `GameStarting`, `GameState`, `GameEvent`, `GameOver` |
 | Relay & data | `Message`, `MessageBinary`, `UserData`, `PlayerData` |
 | Friends | `FriendPresenceChanged`, `FriendRequestReceived`, `FriendRequestAccepted`, `FriendRequestDeclined`, `FriendRequestCancelled`, `FriendRemoved` |
-| Notifications / DMs | `NotificationReceived`, `NotificationBacklogReceived`, `DirectMessageReceived`, `DirectMessageDelivered`, `DirectMessageRead`, `DirectMessageTyping` |
+| Notifications / DMs | `NotificationReceived`, `NotificationBacklogReceived`, `DirectMessageReceived`, `DirectMessageDelivered`, `DirectMessageRead`, `DirectMessageReadStateChanged`, `DirectMessageTyping` |
 | Invites | `LobbyInviteReceived`, `LobbyInviteCancelled`, `LobbyInviteDeclined` |
 
 Handlers run on the socket thread; keep them short and marshal to your UI/game thread. Call `DisposeAsync()` (or `await using`) when done.
@@ -286,8 +310,8 @@ Plain immutable classes in `EthernalCosmos.Client.Models` (see the XML docs for 
 - Session: `HelloPayload`, `SessionState`, `SessionStateResult`, `RegisterGameResult`, `GameInfo`, `SessionResumedData`, `SessionReplacedData`.
 - Auth/data: `AuthResult`, `PublicUser`, `UserDataEntry`, `UserDataPayload`, `PlayerDataPayload`, `LeaderboardEntry`.
 - Relay/game: `RelayMessage`, `RelayBinaryMessage`, `GameStartingData`, `PlayerKickedData`.
-- Join requests: `JoinRequestReceivedData`, `JoinRequestPendingData`, `JoinRequestAcceptedData`, `JoinRequestRejectedData`, `JoinRequestWithdrawnData`.
-- Social: `FriendInfo`, `FriendRequestInfo`, `FriendRequestsResult`, `FriendRequestAccepted`, `FriendRequestDeclined`, `FriendPresence`, `SocialSettings`, `SocialSnapshot`, `HubNotification`, `NotificationBacklog`, `NotificationCounts`, `NotificationListResult`, `NotificationMarkResult`, `DirectMessage`, `DmConversation`, `DmConversationUnread`, `DmHistoryResult`, `DmDeliveredData`, `DmReadData`, `DmTypingData`, `LobbyInvite`, `LobbyInviteCancelledData`, `LobbyInviteDeclinedData`, `FriendLobbyInfo`, `JoinFriendResult`.
+- Join requests: `JoinRequestReceivedData`, `JoinRequestPendingData`, `JoinRequestAcceptedData`, `JoinRequestRejectedData`, `JoinRequestWithdrawnData`, `JoinRequestInfo`, `JoinRequestsResult`.
+- Social: `FriendInfo`, `FriendRequestInfo`, `FriendRequestsResult`, `FriendRequestAccepted`, `FriendRequestDeclined`, `FriendPresence`, `SocialSettings`, `SocialSnapshot`, `HubNotification`, `NotificationBacklog`, `NotificationCounts`, `NotificationListResult`, `NotificationMarkResult`, `DirectMessage`, `DmConversation`, `DmConversationUnread`, `DmHistoryResult`, `DmReadState`, `DmUnreadResult`, `DmDeliveredData`, `DmReadData`, `DmTypingData`, `LobbyInvite`, `LobbyInviteCancelledData`, `LobbyInviteDeclinedData`, `FriendLobbyInfo`, `JoinFriendResult`.
 - Errors: `EthernalException`, `HubErrorPayload`.
 
 ## Tests

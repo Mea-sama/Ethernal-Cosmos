@@ -25,6 +25,9 @@ import type {
   DirectMessage,
   DmConversation,
   DmHistoryResult,
+  JoinRequestsResult,
+  DmReadState,
+  DmUnreadResult,
   LobbyInvite,
   FriendLobbyInfo,
 } from './social';
@@ -133,21 +136,23 @@ export interface ClientToServerEvents {
 
   /** Eigene, noch offene Beitrittsanfrage zurückziehen */
   cancelJoinRequest: (data: { lobbyId: string; requestId?: string }, ack?: Ack) => void;
+  /** Pull: pending join requests (host: incoming for own lobby; requester: own outgoing request) without events. */
+  getJoinRequests: (ack?: Ack<JoinRequestsResult>) => void;
 
   /** Host: eine eingegangene Beitrittsanfrage annehmen oder ablehnen */
   respondJoinRequest: (data: { requesterId: string; accept: boolean; requestId?: string }, ack?: Ack) => void;
 
   /** Nachricht an alle anderen Spieler in der Lobby senden (Relay) */
-  sendToLobby: (data: { type: string; payload: unknown; requestId?: string }, ack?: Ack) => void;
+  sendToLobby: (data: { type: string; payload: unknown; echo?: boolean; requestId?: string }, ack?: Ack) => void;
 
   /** Binäre Nachricht an alle anderen Spieler in der Lobby senden (Relay) */
-  sendToLobbyBinary: (data: { typeCode: number; payload: Uint8Array; requestId?: string }, ack?: Ack) => void;
+  sendToLobbyBinary: (data: { typeCode: number; payload: Uint8Array; echo?: boolean; requestId?: string }, ack?: Ack) => void;
 
   /** Nachricht direkt an einen einzelnen Spieler derselben Lobby senden (Relay) */
-  sendToPlayer: (data: { playerId: string; type: string; payload: unknown; requestId?: string }, ack?: Ack) => void;
+  sendToPlayer: (data: { playerId: string; type: string; payload: unknown; echo?: boolean; requestId?: string }, ack?: Ack) => void;
 
   /** Binäre Nachricht direkt an einen einzelnen Spieler derselben Lobby senden (Relay) */
-  sendToPlayerBinary: (data: { playerId: string; typeCode: number; payload: Uint8Array; requestId?: string }, ack?: Ack) => void;
+  sendToPlayerBinary: (data: { playerId: string; typeCode: number; payload: Uint8Array; echo?: boolean; requestId?: string }, ack?: Ack) => void;
 
   /** Eigene User-Daten für ein Spiel abrufen (Alternative zu REST GET /userdata/:gameId) */
   getUserData: (gameId: string, ack?: Ack<{ gameId: string; entries: UserDataEntry[] }>) => void;
@@ -196,7 +201,12 @@ export interface ClientToServerEvents {
   'dm:send': (data: { toUserId: string; text: string }, ack?: Ack<{ message: DirectMessage }>) => void;
   'dm:history': (data: { withUserId: string; before?: number; limit?: number }, ack?: Ack<DmHistoryResult>) => void;
   'dm:conversations': (ack?: Ack<{ conversations: DmConversation[] }>) => void;
-  'dm:markRead': (data: { withUserId: string }, ack?: Ack<{ marked: number }>) => void;
+  /** Opens a chat: last `limit` (default 10) messages + read state, then marks everything read. */
+  'dm:open': (data: { withUserId: string; limit?: number }, ack?: Ack<DmHistoryResult>) => void;
+  /** Marks incoming messages read up to `upToSeq` (default: all). */
+  'dm:markRead': (data: { withUserId: string; upToSeq?: number }, ack?: Ack<DmReadState>) => void;
+  /** Pull: chats with unread DMs, without events. */
+  'dm:unread': (ack?: Ack<DmUnreadResult>) => void;
   'dm:typing': (data: { toUserId: string }, ack?: Ack) => void;
   'lobby:invite': (data: { friendId: string }, ack?: Ack<{ invite: LobbyInvite }>) => void;
   'lobby:cancelInvite': (data: { inviteId: string }, ack?: Ack) => void;
@@ -278,16 +288,18 @@ export interface ServerToClientEvents {
   'dm:received': (message: DirectMessage) => void;
   'dm:delivered': (data: { byUserId: string; messageIds: string[] }) => void;
   'dm:read': (data: { byUserId: string; upToSeq: number }) => void;
+  /** The read cursor of a chat advanced (also sent to the user's other sessions so every device clears its badge). */
+  'dm:readState': (data: DmReadState) => void;
   'dm:typing': (data: { fromUserId: string }) => void;
   'lobby:inviteReceived': (invite: LobbyInvite) => void;
   'lobby:inviteCancelled': (data: { inviteId: string; lobbyId: string; reason: LobbyInviteCancelReason }) => void;
   'lobby:inviteDeclined': (data: { inviteId: string; userId: string }) => void;
 
   /** Host: eine neue Beitrittsanfrage ist eingegangen */
-  joinRequestReceived: (data: { lobbyId: string; requesterId: string; username: string }) => void;
+  joinRequestReceived: (data: { lobbyId: string; requesterId: string; username: string; expiresAt: number }) => void;
 
   /** Bestätigung an den Anfragenden: die Anfrage wurde gesendet und wartet auf den Host */
-  joinRequestPending: (data: { lobbyId: string }) => void;
+  joinRequestPending: (data: { lobbyId: string; expiresAt: number }) => void;
 
   /** Der Host hat die Anfrage angenommen — Beitritt wurde bereits serverseitig vollzogen */
   joinRequestAccepted: (data: { lobby: Lobby }) => void;
@@ -296,7 +308,7 @@ export interface ServerToClientEvents {
   joinRequestRejected: (data: { lobbyId: string; reason: JoinRequestRejectReason }) => void;
 
   /** Host: eine Anfrage wurde zurückgezogen oder ist ausgelaufen */
-  joinRequestWithdrawn: (data: { requesterId: string; reason: JoinRequestWithdrawReason }) => void;
+  joinRequestWithdrawn: (data: { lobbyId: string; requesterId: string; reason: JoinRequestWithdrawReason }) => void;
 }
 
 /** Interne Socket-Daten pro verbundenem Client */

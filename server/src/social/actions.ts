@@ -116,9 +116,15 @@ export const actions = {
   'dm:conversations': action({ limit: 'socialRead', schema: empty, run: async (userId) => ({ conversations: await messages.conversations(userId) }) }),
   'dm:markRead': action({
     limit: 'notificationWrite',
-    schema: z.object({ withUserId: id }),
-    run: async (userId, i) => ({ marked: await messages.markConversationRead(userId, i.withUserId) }),
+    schema: z.object({ withUserId: id, upToSeq: z.coerce.number().int().min(0).optional() }),
+    run: async (userId, i) => ({ ...(await messages.markConversationRead(userId, i.withUserId, i.upToSeq)) }),
   }),
+  'dm:open': action({
+    limit: 'socialRead',
+    schema: z.object({ withUserId: id, limit: z.coerce.number().int().min(1).max(100).optional() }),
+    run: async (userId, i) => ({ ...(await messages.openConversation(userId, i.withUserId, i.limit)) }),
+  }),
+  'dm:unread': action({ limit: 'socialRead', schema: empty, run: async (userId) => ({ ...(await messages.unread(userId)) }) }),
   'dm:typing': action({
     limit: 'dmTyping',
     schema: z.object({ toUserId: id }),

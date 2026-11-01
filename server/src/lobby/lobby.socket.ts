@@ -293,7 +293,7 @@ export function broadcastLobbyChange(io: AppServer, lobby: Lobby, reason?: Lobby
 // ─── Beitrittsanfragen für gesperrte Lobbys ───────────────────────────────────
 
 // lobbyId → (requesterId → ausstehende Anfrage mit Auto-Reject-Timer)
-const joinRequests = new Map<string, Map<string, { username: string; viaCode: boolean; timer: NodeJS.Timeout }>>();
+const joinRequests = new Map<string, Map<string, { username: string; viaCode: boolean; timer: NodeJS.Timeout; expiresAt: number }>>();
 const JOIN_REQUEST_TIMEOUT_MS = serverLimits.joinRequestTimeoutMs;
 
 function clearJoinRequest(lobbyId: string, requesterId: string): void {
@@ -327,14 +327,14 @@ function withdrawAllRequestsFor(
     clearJoinRequest(lobbyId, requesterId);
     if (opts.notifyRequester) io.to(userRoom(requesterId)).emit('joinRequestRejected', { lobbyId, reason: 'superseded' });
     const lobby = lobbyManager.getLobby(lobbyId);
-    if (lobby) io.to(userRoom(lobby.hostId)).emit('joinRequestWithdrawn', { requesterId, reason });
+    if (lobby) io.to(userRoom(lobby.hostId)).emit('joinRequestWithdrawn', { lobbyId, requesterId, reason });
   }
 }
 
 /** Stellt dem (neuen) Host alle offenen Beitrittsanfragen zu — nach Host-Wechsel oder Reconnect. */
 function redeliverJoinRequests(target: { emit: (...a: any[]) => unknown }, lobbyId: string): void {
   for (const [requesterId, entry] of joinRequests.get(lobbyId) ?? []) {
-    target.emit('joinRequestReceived', { lobbyId, requesterId, username: entry.username });
+    target.emit('joinRequestReceived', { lobbyId, requesterId, username: entry.username, expiresAt: entry.expiresAt });
   }
 }
 
@@ -586,7 +586,11 @@ export function registerIpcRouting(io: AppServer): void {
         break;
       }
       case 'SAVE_META': {
-        const { userId, gameId, entries } = msg.payload;
+        const { userId, gameId, entries } = msg.payload ?? ({} as Partial<typeof msg.payload>);
+        if (typeof userId !== 'string' || typeof gameId !== 'string' || !Array.isArray(entries)) {
+          console.warn(`[IPC] SAVE_META mit ungültigem Payload in Lobby ${lobbyId} verworfen`);
+          break;
+        }
         if (!lobbyManager.isParticipant(lobbyId, gameId, userId)) {
           console.warn(`[IPC] SAVE_META abgelehnt (${userId}/${gameId}) in Lobby ${lobbyId}`);
           break;
@@ -819,7 +823,25 @@ export function registerLobbyHandlers(io: AppServer): void {
       if (!joinRequests.get(lobbyId)?.has(userId)) throw new HubError('JOIN_REQUEST_NOT_FOUND');
       clearJoinRequest(lobbyId, userId);
       const lobby = lobbyManager.getLobby(lobbyId);
-      if (lobby) io.to(userRoom(lobby.hostId)).emit('joinRequestWithdrawn', { requesterId: userId, reason: 'cancelled' });
+      const withdrawn = { lobbyId, requesterId: userId, reason: 'cancelled' } as const;
+      if (lobby) io.to(userRoom(lobby.hostId)).emit('joinRequestWithdrawn', withdrawn);
+      // Confirmation to all sessions of the requester, so multi-device clients stay consistent
+      io.to(userRoom(userId)).emit('joinRequestWithdrawn', withdrawn);
+    });
+
+    // ── getJoinRequests (Pull-API) ───────────────────────────────────────────
+    handle(socket, 'getJoinRequests', { limit: 'getLobbyInfo' }, () => {
+      const info = (lobbyId: string, requesterId: string, e: { username: string; expiresAt: number }) => ({
+        lobbyId, requesterId, username: e.username, expiresAt: e.expiresAt,
+      });
+      const own = lobbyManager.getLobbyByUserId(userId);
+      const incoming = own && own.hostId === userId ? [...(joinRequests.get(own.id) ?? [])].map(([rid, e]) => info(own.id, rid, e)) : [];
+      let outgoing;
+      for (const [lobbyId, reqs] of joinRequests) {
+        const e = reqs.get(userId);
+        if (e) outgoing = info(lobbyId, userId, e);
+      }
+      return { incoming, ...(outgoing ? { outgoing } : {}) };
     });
 
     // ── respondJoinRequest (Host) ─────────────────────────────────────────────
@@ -1044,8 +1066,9 @@ export function startJoinRequest(
     return { pending: false, lobby: joined };
   }
 
-  if (joinRequests.get(lobby.id)?.has(userId)) {
-    io.to(userRoom(userId)).emit('joinRequestPending', { lobbyId: lobby.id });
+  const existing = joinRequests.get(lobby.id)?.get(userId);
+  if (existing) {
+    io.to(userRoom(userId)).emit('joinRequestPending', { lobbyId: lobby.id, expiresAt: existing.expiresAt });
     return { pending: true };
   }
   assertLobbyLimit(lobby.id, 'requestJoinLobby');
@@ -1055,15 +1078,16 @@ export function startJoinRequest(
   const timer = setTimeout(() => {
     clearJoinRequest(lobby.id, userId);
     io.to(userRoom(userId)).emit('joinRequestRejected', { lobbyId: lobby.id, reason: 'timeout' });
-    io.to(userRoom(lobby.hostId)).emit('joinRequestWithdrawn', { requesterId: userId, reason: 'timeout' });
+    io.to(userRoom(lobby.hostId)).emit('joinRequestWithdrawn', { lobbyId: lobby.id, requesterId: userId, reason: 'timeout' });
   }, JOIN_REQUEST_TIMEOUT_MS);
   timer.unref();
 
   const reqs = joinRequests.get(lobby.id) ?? new Map();
-  reqs.set(userId, { username, viaCode, timer });
+  const expiresAt = Date.now() + JOIN_REQUEST_TIMEOUT_MS;
+  reqs.set(userId, { username, viaCode, timer, expiresAt });
   joinRequests.set(lobby.id, reqs);
 
-  io.to(userRoom(userId)).emit('joinRequestPending', { lobbyId: lobby.id });
-  io.to(userRoom(lobby.hostId)).emit('joinRequestReceived', { lobbyId: lobby.id, requesterId: userId, username });
+  io.to(userRoom(userId)).emit('joinRequestPending', { lobbyId: lobby.id, expiresAt });
+  io.to(userRoom(lobby.hostId)).emit('joinRequestReceived', { lobbyId: lobby.id, requesterId: userId, username, expiresAt });
   return { pending: true };
 }

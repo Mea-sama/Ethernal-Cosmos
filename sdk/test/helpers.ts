@@ -15,7 +15,7 @@ export const EVENTS = [
   'lobbyCreated', 'lobbyUpdated', 'lobbyList', 'lobbyInfo', 'gameStarting', 'gameState', 'gameEvent', 'gameOver', 'gameCrashed',
   'playerKicked', 'message', 'messageBinary', 'userData', 'playerData',
   'friend:presence', 'friend:requestReceived', 'friend:requestAccepted', 'friend:requestDeclined', 'friend:requestCancelled', 'friend:removed',
-  'notification', 'notification:backlog', 'dm:received', 'dm:delivered', 'dm:read', 'dm:typing',
+  'notification', 'notification:backlog', 'dm:received', 'dm:delivered', 'dm:read', 'dm:readState', 'dm:typing',
   'lobby:inviteReceived', 'lobby:inviteCancelled', 'lobby:inviteDeclined',
   'joinRequestReceived', 'joinRequestPending', 'joinRequestAccepted', 'joinRequestRejected', 'joinRequestWithdrawn',
 ] as const;

@@ -175,15 +175,49 @@ public sealed class DmConversation
     [JsonPropertyName("lastMessage")] public DirectMessage LastMessage { get; init; } = new();
     /// <summary>Number of unread items.</summary>
     [JsonPropertyName("unreadCount")] public int           UnreadCount { get; init; }
+    /// <summary>Highest <c>seq</c> of an incoming message you have read (0 = none).</summary>
+    [JsonPropertyName("lastReadSeq")] public long          LastReadSeq { get; init; }
 }
 
-/// <summary>One page of DM history.</summary>
+/// <summary>One page of DM history, plus the read state of the chat.</summary>
 public sealed class DmHistoryResult
 {
     /// <summary>The messages, newest first.</summary>
     [JsonPropertyName("messages")]   public DirectMessage[] Messages   { get; init; } = [];
     /// <summary>Pass as <c>before</c> to load the next older page; null when there is no more.</summary>
     [JsonPropertyName("nextBefore")] public long?           NextBefore { get; init; }
+    /// <summary>Your read cursor: highest incoming <c>seq</c> read. For <see cref="EthernalClient.OpenDmConversationAsync"/> this is the value <b>before</b> opening.</summary>
+    [JsonPropertyName("lastReadSeq")]     public long  LastReadSeq     { get; init; }
+    /// <summary><c>seq</c> of the oldest unread incoming message (state before opening); draw the "new messages" divider here. Null when nothing is unread.</summary>
+    [JsonPropertyName("firstUnreadSeq")]  public long? FirstUnreadSeq  { get; init; }
+    /// <summary>Unread incoming messages of this chat (state before opening for <see cref="EthernalClient.OpenDmConversationAsync"/>).</summary>
+    [JsonPropertyName("unreadCount")]     public int   UnreadCount     { get; init; }
+    /// <summary>Highest <c>seq</c> of your messages the friend has read; null if the friend disabled read receipts.</summary>
+    [JsonPropertyName("peerLastReadSeq")] public long? PeerLastReadSeq { get; init; }
+}
+
+/// <summary>Read state of a chat: result of <see cref="EthernalClient.MarkDmReadAsync"/> and payload of <see cref="EthernalClient.DirectMessageReadStateChanged"/>.</summary>
+public sealed class DmReadState
+{
+    /// <summary>User id of the conversation partner.</summary>
+    [JsonPropertyName("withUserId")]  public string WithUserId  { get; init; } = "";
+    /// <summary>Messages newly marked read by this call.</summary>
+    [JsonPropertyName("marked")]      public int    Marked      { get; init; }
+    /// <summary>Highest incoming <c>seq</c> you have read.</summary>
+    [JsonPropertyName("lastReadSeq")] public long   LastReadSeq { get; init; }
+    /// <summary>Unread messages left in this chat.</summary>
+    [JsonPropertyName("unreadCount")] public int    UnreadCount { get; init; }
+    /// <summary>Unread DMs over all chats, for an app badge.</summary>
+    [JsonPropertyName("totalUnread")] public int    TotalUnread { get; init; }
+}
+
+/// <summary>Unread DM chats, for badges (<see cref="EthernalClient.GetDmUnreadAsync"/>).</summary>
+public sealed class DmUnreadResult
+{
+    /// <summary>Chats with unread messages, newest first.</summary>
+    [JsonPropertyName("conversations")] public DmConversationUnread[] Conversations { get; init; } = [];
+    /// <summary>Unread DMs over all chats.</summary>
+    [JsonPropertyName("totalUnread")]   public int                    TotalUnread   { get; init; }
 }
 
 /// <summary>Messages were delivered to the recipient.</summary>
@@ -285,6 +319,12 @@ public sealed class DmConversationUnread
     [JsonPropertyName("withUserId")]  public string WithUserId  { get; init; } = "";
     /// <summary>Number of unread items.</summary>
     [JsonPropertyName("unreadCount")] public int    UnreadCount { get; init; }
+    /// <summary><c>seq</c> of the oldest unread message: where the chat should open.</summary>
+    [JsonPropertyName("firstUnreadSeq")] public long FirstUnreadSeq { get; init; }
+    /// <summary><c>seq</c> of the newest message.</summary>
+    [JsonPropertyName("lastSeq")]        public long LastSeq        { get; init; }
+    /// <summary>Send time of the newest message (Unix ms), for sorting chats.</summary>
+    [JsonPropertyName("lastMessageAt")]  public long LastMessageAt  { get; init; }
 }
 
 /// <summary>Full social state, or a not-modified marker.</summary>

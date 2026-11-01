@@ -56,9 +56,11 @@ route('post', '/notifications/read', 'notification:markRead', (req) => body(req)
 route('get', '/notifications/counts', 'notification:counts', () => undefined);
 
 route('get', '/dm', 'dm:conversations', () => undefined);
+route('get', '/dm/unread', 'dm:unread', () => undefined);
 route('post', '/dm/:id', 'dm:send', (req) => ({ toUserId: req.params.id, text: body(req).text }), 201);
 route('get', '/dm/:id', 'dm:history', (req) => ({ withUserId: req.params.id, before: req.query.before, limit: req.query.limit }));
-route('post', '/dm/:id/read', 'dm:markRead', (req) => ({ withUserId: req.params.id }));
+route('post', '/dm/:id/read', 'dm:markRead', (req) => ({ withUserId: req.params.id, upToSeq: body(req).upToSeq }));
+route('post', '/dm/:id/open', 'dm:open', (req) => ({ withUserId: req.params.id, limit: body(req).limit }));
 
 route('get', '/lobby-invites', 'lobby:invites', () => undefined);
 
