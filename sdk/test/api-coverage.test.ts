@@ -1,14 +1,17 @@
 import { readFileSync, readdirSync } from 'fs';
 import path from 'path';
 import { describe, expect, it } from 'vitest';
-import { EthernalClient } from '../src';
+import { EthernalClient, GameServerClient } from '../src';
 
 // Internal helpers that live on the prototype but are not public API.
-const INTERNAL = new Set(['constructor', 'connectSocket', 'getSocket', 'call', 'joinRequestRace', 'abortJoinRace', 'storeTokens', 'doRefresh', 'authedFetch', 'post', 'reset']);
+const INTERNAL = new Set(['constructor', 'connectSocket', 'getSocket', 'call', 'joinRequestRace', 'abortJoinRace', 'storeTokens', 'doRefresh', 'authedFetch', 'post', 'reset', 'abort', 'decide']);
 
-const publicMethods = Object.getOwnPropertyNames(EthernalClient.prototype)
-  .filter((n) => !INTERNAL.has(n) && typeof (EthernalClient.prototype as any)[n] === 'function')
-  .sort();
+const methodsOf = (cls: { prototype: object }) =>
+  Object.getOwnPropertyNames(cls.prototype)
+    .filter((n) => !INTERNAL.has(n) && typeof (cls.prototype as any)[n] === 'function')
+    .sort();
+const publicMethods = methodsOf(EthernalClient);
+const gameServerMethods = methodsOf(GameServerClient);
 
 const testDir = __dirname;
 const testSources = readdirSync(testDir)
@@ -17,6 +20,12 @@ const testSources = readdirSync(testDir)
   .join('\n');
 const docs = readFileSync(path.join(__dirname, '../../docs/sdk-nodejs.md'), 'utf8');
 const eventsSrc = readFileSync(path.join(__dirname, '../../shared/src/types/events.ts'), 'utf8');
+
+const gsSrc = readFileSync(path.join(__dirname, '../../shared/src/types/gameserver.ts'), 'utf8');
+const gameServerEvents = (() => {
+  const block = /interface HubToGameServerEvents \{([\s\S]*?)\n\}/.exec(gsSrc)?.[1] ?? '';
+  return [...block.matchAll(/^\s*'?([A-Za-z:]+)'?\s*:/gm)].map((m) => m[1]);
+})();
 
 const serverEvents = (() => {
   const block = /interface ServerToClientEvents \{([\s\S]*?)\n\}/.exec(eventsSrc)?.[1] ?? '';
@@ -49,5 +58,26 @@ describe('EthernalClient API coverage', () => {
     const undocumented = serverEvents.filter((e) => !docs.includes(`\`${e}\``));
     expect(untested, `events without tests: ${untested.join(', ')}`).toEqual([]);
     expect(undocumented, `events missing in docs: ${undocumented.join(', ')}`).toEqual([]);
+  });
+});
+
+describe('GameServerClient API coverage', () => {
+  const gsTests = readFileSync(path.join(testDir, 'gameserver.test.ts'), 'utf8');
+  const gsDocs = docs.slice(docs.indexOf('## GameServerClient'));
+
+  it('finds a plausible public API surface', () => {
+    expect(gameServerMethods).toEqual(expect.arrayContaining(['connect', 'sendToLobby', 'kickPlayer', 'incrementUserData', 'drain']));
+    expect(gameServerEvents).toEqual(expect.arrayContaining(['lobby:assigned', 'player:action']));
+  });
+
+  it('every public method is exercised in gameserver.test.ts and documented', () => {
+    expect(gameServerMethods.filter((m) => !mentions(gsTests, m)), 'untested').toEqual([]);
+    expect(gameServerMethods.filter((m) => !mentions(gsDocs, m)), 'undocumented').toEqual([]);
+  });
+
+  it('every hub-to-server event is tested and documented', () => {
+    const quoted = (src: string, e: string) => src.includes(`'${e}'`);
+    expect(gameServerEvents.filter((e) => !quoted(gsTests, e)), 'untested').toEqual([]);
+    expect(gameServerEvents.filter((e) => !gsDocs.includes(`\`${e}\``)), 'undocumented').toEqual([]);
   });
 });
