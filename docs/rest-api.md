@@ -155,7 +155,7 @@ All `/userdata` endpoints require authentication (`Authorization: Bearer <access
 **Constraints**
 - `gameId`: 1–32 chars, `[a-z0-9-]`
 - `key`: 1–64 chars, `[a-zA-Z0-9_.-]`
-- `visibility`: one of `"private"`, `"lobby"`, `"public"` (default: `"private"`)
+- `visibility`: one of `"private"`, `"lobby"`, `"public"` (default: `"private"`; omitting it on an existing key keeps the current one). `"public"` marks a leaderboard key and can only be set by a game server: client writes with it fail with `403 NOT_ALLOWED` (never silently downgraded).
 
 ### `GET /userdata/:gameId`
 
@@ -169,7 +169,7 @@ Return all own KV entries for a game.
     "gameId":    "chess",
     "key":       "wins",
     "value":     42,
-    "visibility": "public",
+    "visibility": "lobby",
     "updatedAt": "2026-05-12T10:00:00.000Z"
   }
 ]
@@ -196,7 +196,7 @@ Create or update a single KV entry.
 ```json
 {
   "value":       "<any JSON value>",
-  "visibility":  "public"           // optional, default "private"
+  "visibility":  "lobby"            // optional, default "private" ("public" is server-only)
 }
 ```
 
@@ -222,8 +222,8 @@ A raw JSON array (not wrapped in an object):
 
 ```json
 [
-  { "key": "wins",   "value": 10, "visibility": "public" },
-  { "key": "losses", "value": 3,  "visibility": "public" },
+  { "key": "wins",   "value": 10, "visibility": "lobby" },
+  { "key": "losses", "value": 3,  "visibility": "lobby" },
   { "key": "draws",  "value": 1                          }
 ]
 ```

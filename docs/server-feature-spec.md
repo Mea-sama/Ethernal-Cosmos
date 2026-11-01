@@ -178,7 +178,7 @@ Store: key–value, PK `(user_id, game_id, key)`, value = any JSON (stored as te
 | FEAT-DATA-07 | `GET /leaderboard/:gameId/:key?order=asc\|desc&limit=1..100` | Top-N of `public` entries ordered by numeric cast of value; returns `{userId,username,value,updatedAt}`. Default `desc`, 10. |
 | FEAT-DATA-08 | Hosted subprocess may read/write via IPC (FEAT-GAME-03). |
 | FEAT-DATA-09 | Validation: `gameId` `^[a-z0-9-]{1,32}$`; `key` `^[a-zA-Z0-9_.-]{1,64}$`. |
-| QUIRK-DATA-01 | **Clients can write their own data directly** (PUT/PATCH), including `public` leaderboard keys ⇒ **leaderboards are client-forgeable** unless the game only ever trusts subprocess-written data. No server-authoritative/"read-only for client" flag exists. |
+| QUIRK-DATA-01 | **[FIXED #55]** Clients write only their own `private`/`lobby`/`friends` data; `public` (leaderboard key) is server-write-only (`NOT_ALLOWED` for clients, no silent downgrade) and implies `writeScope: server`. Game servers write over `/gameserver` (`data:set`/`data:bulk`/`data:get`, lobby-member check, 60 s after close, audited in `written_by`); `serverSupport: none` games cannot create `public` keys. Migration v6 downgrades existing client-written `public` rows to `private`. |
 | QUIRK-DATA-02 | `gameId` in data APIs is **not checked against the registry** — any string can be created, consuming storage (no per-user quota). No value size limit besides HTTP body limit (Express default 100 kB) / Socket.io frame. |
 | QUIRK-DATA-03 | Leaderboard: non-numeric values sort as 0 (not excluded); ties have no deterministic secondary order; no rank-of-me, no around-me, no pagination, no periodic reset (daily/weekly), no per-lobby/friend leaderboards. `limit` out of range silently falls back to 10. |
 | QUIRK-DATA-04 | `getPlayerData` returns `[]` for non-existent players (no 404; allows no enumeration but also no existence check). Presence IDs are public, so IDs are discoverable. |
@@ -275,11 +275,17 @@ Hub-side only: SDK parity is covered by the SDK test suites.
 | TEST-RECON-06 | explicit leaveLobby sends PLAYER_LEAVE immediately (no grace) |
 | TEST-DATA-01 | PUT without visibility keeps the existing visibility and bumps the version |
 | TEST-DATA-02 | serverKeys are read-only for clients (REST single+PATCH transactional, socket); subprocess writes via SAVE_META |
-| TEST-DATA-03 | visibility matrix: private never, lobby for lobby-mates, public for everyone |
+| TEST-DATA-03 | visibility matrix: private never, lobby for lobby-mates |
 | TEST-DATA-04 | validation: unknown game, bad key chars, value size, per-game quota |
 | TEST-DATA-05 | socket parity: setUserData / bulkSetUserData / deleteUserData / getUserData and codes |
 | TEST-DATA-06 | SAVE_META for a game other than the lobby game is discarded |
-| TEST-DATA-07 | leaderboard lists public numeric client keys sorted desc; private keys never appear |
+| TEST-DATA-07 | leaderboard lists public numeric keys written by the game server, sorted desc; private keys never appear |
+| TEST-DATA-08 | clients cannot set visibility `public` (`NOT_ALLOWED` over REST, socket, bulk), no silent downgrade |
+| TEST-DATA-09 | subprocess (serverSupport none) cannot create `public` keys; private `SAVE_META` still works |
+| TEST-GSDATA-01 | game server writes for lobby members (`data:set`/`data:bulk`/`data:get`); `public` implies server scope; the client cannot overwrite/delete |
+| TEST-GSDATA-02 | non-members, foreign lobbies, other servers: `NOT_ALLOWED`; invalid input; bulk is all-or-nothing |
+| TEST-GSDATA-03 | server may write for members who left or after the lobby closed (60 s window) |
+| TEST-GSDATA-04 | games without server support accept no `public` data from clients |
 | TEST-AUTH-01 | socket without refresh gets AUTH_EXPIRED after expiry and is disconnected |
 | TEST-AUTH-02 | auth:refresh keeps the socket alive beyond the original expiry |
 | TEST-AUTH-03 | auth:refresh with another user's token is INVALID_TOKEN |

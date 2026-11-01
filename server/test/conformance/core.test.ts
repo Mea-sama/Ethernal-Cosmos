@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
-  api, closeAll, connectClient, connectRegistered, ipcEvent, live, registerUser, sleep, startHub, type TestHub,
+  api, closeAll, connectClient, connectRegistered, gameServer, ipcEvent, live, registerUser, sleep, startHub, type TestHub,
 } from './util';
 
 let hub: TestHub;
@@ -480,10 +480,10 @@ describe('Reconnect grace', () => {
 describe('User data integrity', () => {
   it('TEST-DATA-01: PUT without visibility keeps the existing visibility and bumps the version', async () => {
     const u = await registerUser(hub);
-    await api(hub, u, 'PUT', '/userdata/relay/score', { value: 1, visibility: 'public' });
+    await api(hub, u, 'PUT', '/userdata/relay/score', { value: 1, visibility: 'lobby' });
     await api(hub, u, 'PUT', '/userdata/relay/score', { value: 2 });
     const { body } = await api(hub, u, 'GET', '/userdata/relay/score');
-    expect(body).toMatchObject({ value: 2, visibility: 'public', version: 2, writeScope: 'client' });
+    expect(body).toMatchObject({ value: 2, visibility: 'lobby', version: 2, writeScope: 'client' });
   });
 
   it('TEST-DATA-02: serverKeys are read-only for clients (REST single+PATCH transactional, socket); subprocess writes via SAVE_META', async () => {
@@ -501,20 +501,20 @@ describe('User data integrity', () => {
       if (r.status === 200) got = r.body;
       else await sleep(100);
     }
-    expect(got).toMatchObject({ value: 42, writeScope: 'server', visibility: 'public' });
+    expect(got).toMatchObject({ value: 42, writeScope: 'server', visibility: 'private' });
     expect((await api(hub, u, 'DELETE', '/userdata/fake/rank.points')).body.code).toBe('DATA_READ_ONLY');
     host.close();
   });
 
-  it('TEST-DATA-03: visibility matrix: private never, lobby for lobby-mates, public for everyone', async () => {
+  it('TEST-DATA-03: visibility matrix: private never, lobby for lobby-mates', async () => {
     const [a, b, stranger] = [await live(hub), await live(hub), await live(hub)];
     await a.emitAck('bulkSetUserData', { gameId: 'relay', entries: [
-      { key: 'priv', value: 1, visibility: 'private' }, { key: 'lob', value: 2, visibility: 'lobby' }, { key: 'pub', value: 3, visibility: 'public' }] });
+      { key: 'priv', value: 1, visibility: 'private' }, { key: 'lob', value: 2, visibility: 'lobby' }] });
     const lobby = (await a.emitAck('createLobby', { name: 'v' })).lobby;
     await b.emitAck('joinLobby', { lobbyId: lobby.id });
-    expect((await b.emitAck('getPlayerData', { playerId: a.user.userId, gameId: 'relay' })).entries.map((e: any) => e.key).sort()).toEqual(['lob', 'pub']);
-    expect((await stranger.emitAck('getPlayerData', { playerId: a.user.userId, gameId: 'relay' })).entries.map((e: any) => e.key)).toEqual(['pub']);
-    expect((await a.emitAck('getUserData', 'relay')).entries.map((e: any) => e.key).sort()).toEqual(['lob', 'priv', 'pub']);
+    expect((await b.emitAck('getPlayerData', { playerId: a.user.userId, gameId: 'relay' })).entries.map((e: any) => e.key).sort()).toEqual(['lob']);
+    expect((await stranger.emitAck('getPlayerData', { playerId: a.user.userId, gameId: 'relay' })).entries).toEqual([]);
+    expect((await a.emitAck('getUserData', 'relay')).entries.map((e: any) => e.key).sort()).toEqual(['lob', 'priv']);
     closeAll(a, b, stranger);
   });
 
@@ -554,17 +554,19 @@ describe('User data integrity', () => {
     host.close();
   });
 
-  it('TEST-DATA-07: leaderboard lists public numeric client keys sorted desc; private keys never appear', async () => {
-    const [a, b] = [await registerUser(hub), await registerUser(hub)];
-    await api(hub, a, 'PUT', '/userdata/relay/lb', { value: 10, visibility: 'public' });
-    await api(hub, b, 'PUT', '/userdata/relay/lb', { value: 30, visibility: 'public' });
-    const lb = await fetch(`${hub.url}/leaderboard/relay/lb?limit=5`, { headers: { Authorization: `Bearer ${a.accessToken}` } });
-    const rows = (await lb.json()) as Array<{ userId: string; value: number }>;
-    const ours = rows.filter((r) => [a.userId, b.userId].includes(r.userId));
-    expect(ours.map((r) => r.userId)).toEqual([b.userId, a.userId]);
-    await api(hub, a, 'PUT', '/userdata/relay/lbp', { value: 99, visibility: 'private' });
-    const priv = await fetch(`${hub.url}/leaderboard/relay/lbp`, { headers: { Authorization: `Bearer ${a.accessToken}` } });
-    expect(JSON.stringify(await priv.json())).not.toContain(a.userId);
+  it('TEST-DATA-07: leaderboard lists public numeric keys written by the game server, sorted desc; private keys never appear', async () => {
+    const gs = await gameServer(hub, 'gs-opt');
+    const [a, b] = [await live(hub, 'gs-opt'), await live(hub, 'gs-opt')];
+    const lobby = (await a.emitAck('createLobby', { name: 'lb' })).lobby;
+    await b.emitAck('joinLobby', { lobbyId: lobby.id });
+    for (const [c, v] of [[a, 10], [b, 30]] as const) {
+      expect((await gs.emitAck('data:set', { lobbyId: lobby.id, userId: c.user.userId, key: 'lb', value: v, visibility: 'public' })).ok).toBe(true);
+    }
+    await gs.emitAck('data:set', { lobbyId: lobby.id, userId: a.user.userId, key: 'lbp', value: 99 });
+    const rows = (await api(hub, a.user, 'GET', '/leaderboard/gs-opt/lb?limit=5')).body as Array<{ userId: string }>;
+    expect(rows.map((r) => r.userId)).toEqual([b.user.userId, a.user.userId]);
+    expect(JSON.stringify((await api(hub, a.user, 'GET', '/leaderboard/gs-opt/lbp')).body)).not.toContain(a.user.userId);
+    closeAll(a, b, gs);
   });
 });
 

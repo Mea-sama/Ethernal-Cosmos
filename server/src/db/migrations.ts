@@ -139,6 +139,16 @@ export const MIGRATIONS: Migration[] = [
       `CREATE INDEX IF NOT EXISTS idx_game_server_keys_game ON game_server_keys(game_id)`,
     ],
   },
+  {
+    version: 6,
+    name: 'user-data-server-authority',
+    statements: [
+      // Audit: Game-Server-ID bzw. 'subprocess' bei serverseitigen Schreibvorgängen, NULL = Besitzer
+      `ALTER TABLE user_data ADD COLUMN written_by TEXT`,
+      // 'public' (Bestenlisten-Key) darf nur noch ein Game-Server setzen: vom Client geschriebene Zeilen waren fälschbar
+      `UPDATE user_data SET visibility = 'private' WHERE visibility = 'public' AND write_scope = 'client'`,
+    ],
+  },
 ];
 
 export async function runMigrations(db: Client, migrations: Migration[] = MIGRATIONS): Promise<number[]> {

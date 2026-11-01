@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { DataVisibility, DataWriteScope, ErrorCode } from '../src';
-import { startHub, type TestHub } from '../../server/test/helpers/hub';
+import { connectGameServer, issueServerKey, startHub, type TestHub } from '../../server/test/helpers/hub';
 import { Fleet, rejectsWith, sleep, uname } from './helpers';
 
 let hub: TestHub;
@@ -22,10 +22,12 @@ describe('user data (socket)', () => {
     fleet = new Fleet(hub);
     const p = await fleet.player('other');
     await p.client.setUserData('other', 'level', 5);
-    await p.client.setUserData('other', 'title', 'Knight', DataVisibility.Public);
+    await p.client.setUserData('other', 'title', 'Knight', DataVisibility.Lobby);
+    // `public` marks leaderboard keys and can only be set by a game server
+    expect((await rejectsWith(p.client.setUserData('other', 'x', 1, DataVisibility.Public))).code).toBe(ErrorCode.NotAllowed);
     const entries = await p.client.getUserData('other');
     expect(entries.find((e) => e.key === 'level')).toMatchObject({ value: 5, visibility: DataVisibility.Private, writeScope: DataWriteScope.Client, version: 1 });
-    expect(entries.find((e) => e.key === 'title')).toMatchObject({ value: 'Knight', visibility: 'public', updatedAt: expect.any(Number) });
+    expect(entries.find((e) => e.key === 'title')).toMatchObject({ value: 'Knight', visibility: 'lobby', updatedAt: expect.any(Number) });
     const [evt] = await p.rec.waitFor('userData', (d: any) => d.gameId === 'other');
     expect(keys(evt.entries)).toEqual(expect.arrayContaining(['level', 'title']));
 
@@ -49,21 +51,20 @@ describe('user data (socket)', () => {
     expect(keys(await p.client.getUserData('other'))).not.toContain('ok-key');
   });
 
-  it('getPlayerData / playerData: public always, lobby only for lobby mates, private never', async () => {
+  it('getPlayerData / playerData: lobby only for lobby mates, private never', async () => {
     fleet = new Fleet(hub);
     const owner = await fleet.player('other');
     const mate = await fleet.player('other');
     const stranger = await fleet.player('other');
     await owner.client.bulkSetUserData('other', [
-      { key: 'pub', value: 1, visibility: DataVisibility.Public },
       { key: 'lob', value: 2, visibility: DataVisibility.Lobby },
       { key: 'priv', value: 3, visibility: DataVisibility.Private },
     ]);
-    expect(keys(await stranger.client.getPlayerData(owner.userId, 'other')).filter((k) => ['pub', 'lob', 'priv'].includes(k))).toEqual(['pub']);
+    expect(keys(await stranger.client.getPlayerData(owner.userId, 'other'))).toEqual([]);
     const lobby = await owner.client.createLobby({ name: 'data' });
     await mate.client.joinLobby(lobby.id);
     const visible = keys(await mate.client.getPlayerData(owner.userId, 'other'));
-    expect(visible).toEqual(expect.arrayContaining(['pub', 'lob']));
+    expect(visible).toEqual(['lob']);
     expect(visible).not.toContain('priv');
     const [evt] = await mate.rec.waitFor('playerData', (d: any) => d.playerId === owner.userId);
     expect(evt.gameId).toBe('other');
@@ -92,7 +93,7 @@ describe('user data (socket)', () => {
       entry = (await p.client.getUserData('fake')).find((e) => e.key === 'rank.points');
       if (!entry) await sleep(100);
     }
-    expect(entry).toMatchObject({ value: 42, writeScope: DataWriteScope.Server, visibility: 'public' });
+    expect(entry).toMatchObject({ value: 42, writeScope: DataWriteScope.Server, visibility: 'private' });
   });
 });
 
@@ -100,10 +101,10 @@ describe('user data (REST) and leaderboard', () => {
   it('setKey / getAllData / bulkSet / deleteKey', async () => {
     fleet = new Fleet(hub);
     const p = await fleet.player();
-    await p.client.setKey('other', 'wins', 3, DataVisibility.Public);
+    await p.client.setKey('other', 'wins', 3, DataVisibility.Lobby);
     await p.client.setKey('other', 'note', 'hi');
     let all = await p.client.getAllData('other');
-    expect(all.find((e) => e.key === 'wins')).toMatchObject({ value: 3, visibility: 'public' });
+    expect(all.find((e) => e.key === 'wins')).toMatchObject({ value: 3, visibility: 'lobby' });
     expect(all.find((e) => e.key === 'note')).toMatchObject({ value: 'hi', visibility: 'private' });
 
     await p.client.bulkSet('other', [{ key: 'x', value: 1 }, { key: 'y', value: 2, visibility: DataVisibility.Lobby }]);
@@ -125,23 +126,31 @@ describe('user data (REST) and leaderboard', () => {
     expect((await rejectsWith(p.client.bulkSet('other', []))).code).toBe(ErrorCode.InvalidInput);
   });
 
-  it('getLeaderboard sorts public numeric values, supports order and limit', async () => {
+  it('getLeaderboard sorts public numeric values written by a game server, supports order and limit', async () => {
     fleet = new Fleet(hub);
     const key = `score${uname('')}`.slice(0, 40);
-    const low = await fleet.player();
-    const mid = await fleet.player();
-    const high = await fleet.player();
-    await low.client.setKey('other', key, 10, DataVisibility.Public);
-    await mid.client.setKey('other', key, 20, DataVisibility.Public);
-    await high.client.setKey('other', key, 30, DataVisibility.Public);
-    const hidden = await fleet.player();
-    await hidden.client.setKey('other', key, 99, DataVisibility.Private);
+    const { key: serverKey } = await issueServerKey(hub, 'gs-opt');
+    const gs = await connectGameServer(hub, { serverKey, gameId: 'gs-opt', serverId: uname('sdk-lb') });
+    try {
+      const low = await fleet.player('gs-opt');
+      const mid = await fleet.player('gs-opt');
+      const high = await fleet.player('gs-opt');
+      const hidden = await fleet.player('gs-opt');
+      const lobby = await low.client.createLobby({ name: 'lb' });
+      for (const p of [mid, high, hidden]) await p.client.joinLobby(lobby.id);
+      const write = (p: typeof low, value: number, visibility?: string) =>
+        gs.emitAck('data:set', { lobbyId: lobby.id, userId: p.userId, key, value, visibility });
+      for (const [p, v] of [[low, 10], [mid, 20], [high, 30]] as const) await write(p, v, 'public');
+      await write(hidden, 99);
 
-    const desc = await low.client.getLeaderboard('other', key);
-    expect(desc.map((e) => e.userId)).toEqual([high.userId, mid.userId, low.userId]);
-    expect(desc[0]).toMatchObject({ username: high.username, value: 30, updatedAt: expect.any(Number) });
-    const asc = await low.client.getLeaderboard('other', key, { order: 'asc', limit: 2 });
-    expect(asc.map((e) => e.value)).toEqual([10, 20]);
-    expect(await low.client.getLeaderboard('other', 'no-such-key')).toEqual([]);
+      const desc = await low.client.getLeaderboard('gs-opt', key);
+      expect(desc.map((e) => e.userId)).toEqual([high.userId, mid.userId, low.userId]);
+      expect(desc[0]).toMatchObject({ username: high.username, value: 30, updatedAt: expect.any(Number) });
+      const asc = await low.client.getLeaderboard('gs-opt', key, { order: 'asc', limit: 2 });
+      expect(asc.map((e) => e.value)).toEqual([10, 20]);
+      expect(await low.client.getLeaderboard('gs-opt', 'no-such-key')).toEqual([]);
+    } finally {
+      gs.close();
+    }
   });
 });

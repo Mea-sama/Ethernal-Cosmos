@@ -56,6 +56,23 @@ Each event is authorised per lobby: a server may only act on lobbies assigned to
 `lobby:kick { lobbyId, userId }`, `lobby:setState { lobbyId, state: 'in_progress' | 'closed' }`, `lobby:setSettings { lobbyId, settings }`,
 `lobby:gameOver { lobbyId, result? }`, `lobby:close { lobbyId }`, `server:status { draining?, capacity? }`.
 
+## Player data (server-authoritative)
+
+Game servers write per-player data over the socket; clients can only write their own `private`/`lobby`/`friends` data.
+Every event is acked; `userId` must be a (current or former) member of a lobby bound to this server, up to 60 s after that
+lobby closed (match results after leaving or closing). Anything else fails with `NOT_ALLOWED`. Writes are audited (`user_data.written_by` = `serverId`).
+
+| Event | Payload | Ack |
+|---|---|---|
+| `data:set` | `{ lobbyId, userId, key, value, visibility?, writeScope? }` | `{ ok }` |
+| `data:bulk` | `{ lobbyId, userId, entries: [{ key, value, visibility?, writeScope? }] }` (1–100, all-or-nothing) | `{ ok }` |
+| `data:get` | `{ lobbyId, userId }` | `{ ok, entries: UserDataEntry[] }` |
+
+`visibility: 'public'` marks a **leaderboard/result key**: only a game server can set it (clients get `NOT_ALLOWED`), it always implies
+`writeScope: 'server'` (clients cannot overwrite or delete it) and games with `serverSupport: none` cannot use it (`NOT_ALLOWED`).
+Without `visibility` the existing visibility is kept (new keys: `private`). Limits are the same as for clients
+(16 KiB per value, 200 keys / 512 KiB per user and game: `DATA_VALUE_TOO_LARGE`, `DATA_QUOTA_EXCEEDED`).
+
 ## Failure behaviour
 
 | Situation | What happens |

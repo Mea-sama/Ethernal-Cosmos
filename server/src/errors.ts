@@ -66,6 +66,7 @@ const MESSAGES: Record<ErrorCode, string> = {
   NO_GAME_SERVER_AVAILABLE: 'Kein Game-Server verfügbar',
   NOT_LOBBY_SERVER: 'Diese Lobby gehört nicht zu diesem Game-Server',
   SERVER_UNAVAILABLE: 'Game-Server nicht erreichbar',
+  NOT_ALLOWED: 'Nicht erlaubt',
 };
 
 /** Fehler mit stabilem Code; wird von Socket-Handlern (Ack/errorDetail) und REST (`code`) ausgewertet. */
@@ -126,6 +127,7 @@ const HTTP_STATUS: Partial<Record<ErrorCode, number>> = {
   GAME_SERVER_NOT_ALLOWED: 403,
   NO_GAME_SERVER_AVAILABLE: 503,
   NOT_LOBBY_SERVER: 403,
+  NOT_ALLOWED: 403,
   SERVER_UNAVAILABLE: 503,
   USERNAME_TAKEN: 409,
   DATA_VALUE_TOO_LARGE: 413,

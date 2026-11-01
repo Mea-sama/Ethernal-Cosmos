@@ -84,7 +84,7 @@ A lobby groups players for a single game session. It has:
 Each game can store arbitrary JSON values per user, per key. Keys have a `visibility`:
 - `'private'` — only visible to the owner
 - `'lobby'` — visible to players in the same lobby
-- `'public'` — visible to anyone (used for leaderboards)
+- `'public'` — leaderboard key: written only by a game server, exposed only via the leaderboard endpoints
 
 → See [REST API Reference](rest-api.md#user-data)
 

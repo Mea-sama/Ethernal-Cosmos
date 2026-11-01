@@ -13,6 +13,11 @@ export const DATA_LIMITS = {
 
 export type DataActor = 'client' | 'server';
 
+/** Zeichnet bei serverseitigen Schreibvorgängen auf, wer geschrieben hat (`written_by`). */
+export interface WriteContext {
+  writtenBy?: string;
+}
+
 export interface DataWrite {
   key: string;
   value?: unknown;
@@ -20,6 +25,11 @@ export interface DataWrite {
   visibility?: DataVisibility;
   /** Nur für actor='server': Schreibschutz für den Client setzen/aufheben. */
   writeScope?: DataWriteScope;
+}
+
+/** Bestenlisten gibt es nur für Spiele mit Game-Server-Unterstützung (Anti-Fälschung). */
+export function gameHasLeaderboards(gameId: string): boolean {
+  return (getGame(gameId)?.serverSupport ?? 'none') !== 'none';
 }
 
 function matchesServerKey(gameId: string, key: string): boolean {
@@ -30,6 +40,7 @@ function matchesServerKey(gameId: string, key: string): boolean {
 /**
  * Schreibt einen oder mehrere Keys in einer Transaktion (alles oder nichts).
  * - actor='client': schreibgeschützte Keys (writeScope='server' oder game.serverKeys) → DATA_READ_ONLY
+ * - Sichtbarkeit 'public' (Bestenlisten-Key) darf nur ein Server setzen und nur bei serverSupport != none → sonst NOT_ALLOWED
  * - Limits für Wertgröße, Key-Anzahl und Gesamtgröße pro User/Spiel
  * - version wird pro Schreibvorgang erhöht
  */
@@ -37,10 +48,14 @@ export async function writeEntries(
   userId: string,
   gameId: string,
   entries: DataWrite[],
-  actor: DataActor = 'client'
+  actor: DataActor = 'client',
+  ctx: WriteContext = {}
 ): Promise<void> {
   if (!getGame(gameId)) throw new HubError('UNKNOWN_GAME');
   if (entries.length === 0) return;
+  for (const e of entries) {
+    if (e.visibility === 'public' && (actor === 'client' || !gameHasLeaderboards(gameId))) throw new HubError('NOT_ALLOWED');
+  }
 
   const serialized = entries.map((e) => {
     const json = JSON.stringify(e.value ?? null);
@@ -69,11 +84,14 @@ export async function writeEntries(
       if (actor === 'client' && (row?.write_scope === 'server' || matchesServerKey(gameId, e.key))) {
         throw new HubError('DATA_READ_ONLY');
       }
+      const visibility = e.visibility ?? (row?.visibility as DataVisibility | undefined) ?? 'private';
       const scope: DataWriteScope =
-        actor === 'server'
+        actor === 'server' && visibility === 'public'
+          ? 'server'
+          : actor === 'server'
           ? e.writeScope ?? (row?.write_scope as DataWriteScope | undefined) ?? (matchesServerKey(gameId, e.key) ? 'server' : 'client')
           : 'client';
-      const visibility = e.visibility ?? (row?.visibility as DataVisibility | undefined) ?? 'private';
+      const writtenBy = actor === 'server' ? ctx.writtenBy ?? 'subprocess' : null;
 
       if (!row) keyCount += 1;
       totalBytes += Buffer.byteLength(e.json) - (row?.size ?? 0);
@@ -84,14 +102,14 @@ export async function writeEntries(
 
       await tx.execute({
         sql: `
-          INSERT INTO user_data (user_id, game_id, key, value, visibility, updated_at, write_scope, version)
-          VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+          INSERT INTO user_data (user_id, game_id, key, value, visibility, updated_at, write_scope, version, written_by)
+          VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)
           ON CONFLICT(user_id, game_id, key)
           DO UPDATE SET value = excluded.value, visibility = excluded.visibility,
                         updated_at = excluded.updated_at, write_scope = excluded.write_scope,
-                        version = user_data.version + 1
+                        version = user_data.version + 1, written_by = excluded.written_by
         `,
-        args: [userId, gameId, e.key, e.json, visibility, now, scope],
+        args: [userId, gameId, e.key, e.json, visibility, now, scope, writtenBy],
       });
     }
     await tx.commit();
@@ -109,9 +127,10 @@ export async function setKey(
   key: string,
   value: unknown,
   visibility?: DataVisibility,
-  actor: DataActor = 'client'
+  actor: DataActor = 'client',
+  ctx: WriteContext = {}
 ): Promise<void> {
-  await writeEntries(userId, gameId, [{ key, value, visibility }], actor);
+  await writeEntries(userId, gameId, [{ key, value, visibility }], actor, ctx);
 }
 
 export async function getKey(
@@ -163,9 +182,10 @@ export async function bulkSet(
   userId: string,
   gameId: string,
   entries: DataWrite[],
-  actor: DataActor = 'client'
+  actor: DataActor = 'client',
+  ctx: WriteContext = {}
 ): Promise<void> {
-  await writeEntries(userId, gameId, entries, actor);
+  await writeEntries(userId, gameId, entries, actor, ctx);
 }
 
 // ─── Fremde Daten (sichtbare Keys) ────────────────────────────────────────────

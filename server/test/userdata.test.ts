@@ -8,10 +8,10 @@ afterAll(async () => { await hub.stop(); });
 describe('User-Daten Integrität (#19)', () => {
   it('PUT ohne visibility behält die bestehende Sichtbarkeit', async () => {
     const u = await registerUser(hub);
-    await api(hub, u, 'PUT', '/userdata/relay/score', { value: 1, visibility: 'public' });
+    await api(hub, u, 'PUT', '/userdata/relay/score', { value: 1, visibility: 'lobby' });
     await api(hub, u, 'PUT', '/userdata/relay/score', { value: 2 });
     const { body } = await api(hub, u, 'GET', '/userdata/relay/score');
-    expect(body).toMatchObject({ value: 2, visibility: 'public', version: 2, writeScope: 'client' });
+    expect(body).toMatchObject({ value: 2, visibility: 'lobby', version: 2, writeScope: 'client' });
   });
 
   it('unbekannte gameId wird abgelehnt', async () => {
@@ -34,7 +34,7 @@ describe('User-Daten Integrität (#19)', () => {
     for (let i = 0; i < 50; i++) {
       const r = await api(hub, u, 'GET', '/userdata/fake/rank.points');
       if (r.status === 200) {
-        expect(r.body).toMatchObject({ value: 42, writeScope: 'server', visibility: 'public' });
+        expect(r.body).toMatchObject({ value: 42, writeScope: 'server', visibility: 'private' });
         expect((await api(hub, u, 'DELETE', '/userdata/fake/rank.points')).body.code).toBe('DATA_READ_ONLY');
         host.close();
         return;
@@ -81,18 +81,18 @@ describe('User-Daten Integrität (#19)', () => {
     c.close();
   });
 
-  it('Sichtbarkeit: lobby-Daten nur für Mitspieler, public für alle, private nie', async () => {
+  it('Sichtbarkeit: lobby-Daten nur für Mitspieler, private nie', async () => {
     const a = await connectRegistered(hub, await registerUser(hub), 'relay');
     const b = await connectRegistered(hub, await registerUser(hub), 'relay');
     const stranger = await connectRegistered(hub, await registerUser(hub), 'relay');
     await a.emitAck('bulkSetUserData', { gameId: 'relay', entries: [
-      { key: 'priv', value: 1, visibility: 'private' }, { key: 'lob', value: 2, visibility: 'lobby' }, { key: 'pub', value: 3, visibility: 'public' } ] });
+      { key: 'priv', value: 1, visibility: 'private' }, { key: 'lob', value: 2, visibility: 'lobby' } ] });
     const lobby = (await a.emitAck('createLobby', { name: 'v' })).lobby;
     await b.emitAck('joinLobby', { lobbyId: lobby.id });
     const mate = await b.emitAck('getPlayerData', { playerId: a.user.userId, gameId: 'relay' });
-    expect(mate.entries.map((e: any) => e.key).sort()).toEqual(['lob', 'pub']);
+    expect(mate.entries.map((e: any) => e.key)).toEqual(['lob']);
     const other = await stranger.emitAck('getPlayerData', { playerId: a.user.userId, gameId: 'relay' });
-    expect(other.entries.map((e: any) => e.key)).toEqual(['pub']);
+    expect(other.entries).toEqual([]);
     for (const c of [a, b, stranger]) c.close();
   });
 });

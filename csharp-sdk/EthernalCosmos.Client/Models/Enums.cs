@@ -209,7 +209,7 @@ public enum DataVisibility
     [WireValue("private")] Private,
     /// <summary>owner and lobby members</summary>
     [WireValue("lobby")] Lobby,
-    /// <summary>everyone (also on leaderboards)</summary>
+    /// <summary>leaderboard key; only a game server can set it</summary>
     [WireValue("public")] Public,
 }
 
@@ -469,4 +469,6 @@ public enum ErrorCode
     [WireValue("INVITE_NOT_FOUND")] InviteNotFound,
     /// <summary>Wire value <c>MESSAGE_TOO_LONG</c>.</summary>
     [WireValue("MESSAGE_TOO_LONG")] MessageTooLong,
+    /// <summary>Wire value <c>NOT_ALLOWED</c>.</summary>
+    [WireValue("NOT_ALLOWED")] NotAllowed,
 }
