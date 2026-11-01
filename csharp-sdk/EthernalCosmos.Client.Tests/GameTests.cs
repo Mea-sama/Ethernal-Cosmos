@@ -60,7 +60,7 @@ public class GameTests(HubFixture hub)
         var entry = Assert.Single(entries);
         Assert.Equal("rank.points", entry.Key);
         Assert.Equal(DataWriteScope.Server, entry.WriteScope);
-        Assert.Equal(DataVisibility.Public, entry.Visibility);
+        Assert.Equal(DataVisibility.Friends, entry.Visibility);
 
         var socketWrite = await Assert.ThrowsAsync<EthernalException>(() => host.Client.SetUserDataAsync("echo", "rank.points", 1));
         Assert.Equal(ErrorCode.DataReadOnly, socketWrite.Error);

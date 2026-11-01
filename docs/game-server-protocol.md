@@ -3,7 +3,7 @@
 A **game server** is a service that runs the authoritative game logic for lobbies of one game. It is not a lobby participant:
 one server serves N lobbies, a lobby has 0..1 server. Whether a game uses servers is the registry attribute
 [`serverSupport`](enums.md#serversupport) (`none` | `optional` | `required`). Enum values used below are listed in [enums.md](enums.md).
-The Node.js SDK ships `GameServerClient` (see [Using `GameServerClient`](#using-gameserverclient)); the protocol below is what it speaks, for other languages use plain `socket.io-client`.
+Both SDKs ship `GameServerClient` (Node.js: [Using `GameServerClient`](#using-gameserverclient); C#: [Using GameServerClient (C#)](#using-gameserverclient-c)); the protocol below is what it speaks, for other languages use plain `socket.io-client`.
 
 ## Connecting
 
@@ -103,3 +103,20 @@ await gs.drain();
 ```
 
 It maps `lobby:assigned` acks to `onAssign`, `lobby:relay/state/kick/setState/setSettings/gameOver/close` to `sendToLobby`/`sendToPlayer`/`sendState`/`kickPlayer`/`setLobbyState`/`setLobbySettings`/`gameOver`/`closeLobby`, `server:status` to `updateStatus`/`drain`/`heartbeat`, and the `data:*` events to `setUserData`/`bulkSetUserData`/`getUserData`/`incrementUserData`/`setUserDataIf`/`transactUserData`. Reconnecting with the same `serverId` resumes automatically.
+
+## Using GameServerClient (C#)
+
+The C# SDK wraps this protocol in `GameServerClient` (details: [sdk-csharp.md](sdk-csharp.md#gameserverclient)).
+
+```csharp
+await using var server = new GameServerClient(new GameServerClientOptions
+{
+    ServerUrl = "http://localhost:12346", ServerKey = "esk_...", GameId = "chess", ServerId = "chess-eu-1", Capacity = 20,
+});
+server.LobbyAssigned += a => Console.WriteLine($"{a.Lobby.Id}: {a.Reason}"); // NewLobby or ServerRebound (PreviousServerId, LostAt)
+await server.ConnectAsync();                                                 // resumes within the grace period
+
+await server.SetDataAsync(lobbyId, userId, "rank.points", 1200);           // members only, else NOT_ALLOWED
+await server.RelayToLobbyAsync(lobbyId, "round", new { n = 1 });
+await server.DrainAsync();                                                   // no new lobbies; existing ones keep running
+```

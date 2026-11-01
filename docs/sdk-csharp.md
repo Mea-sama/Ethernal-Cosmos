@@ -103,7 +103,8 @@ Task<Lobby> CreateLobbyAsync(string name, bool isPrivate = false, Dictionary<str
 | `LeaveLobbyAsync()` | Leave the current lobby. |
 | `ListLobbiesAsync()` | Public, joinable lobbies of the registered game (`Lobby.ServerBound`, `Region`, `Joinable` are set in listings). Result also raises `LobbyList`. |
 | `GetLobbyInfoAsync()` | Your current lobby (members see `Server` and `ServerStatus`). Also raises `LobbyInfo`. |
-| `KickPlayerAsync(playerId)` | Host only. The kicked player gets `PlayerKicked`. |
+| `KickPlayerAsync(playerId, reason?)` | Host only. The kicked player gets `PlayerKicked` (`LobbyId`, optional `Reason`, max. 200 chars) and cannot rejoin this lobby: `JoinLobbyAsync` throws `KICKED_FROM_LOBBY` (`ErrorCode.KickedFromLobby`). |
+| `UnkickPlayerAsync(playerId)` | Host only. Lifts the kick so the player may join again (idempotent). |
 | `TransferHostAsync(playerId)` | Host only. |
 | `LockLobbyAsync()` / `UnlockLobbyAsync()` | Host only. A locked lobby requires accepted join requests. |
 | `SetLobbyStateAsync(LobbyStatus state)` | Host only; `LobbyStatus.InProgress` or `LobbyStatus.Closed` (other values are rejected with `INVALID_INPUT`). |
@@ -167,10 +168,13 @@ Socket:
 | Method | Description |
 |--------|-------------|
 | `GetUserDataAsync(gameId)` | Own entries (`UserDataEntry[]`). |
-| `GetPlayerDataAsync(playerId, gameId)` | Entries of another player in your lobby that you may see (`lobby`/`public` visibility). |
-| `SetUserDataAsync(gameId, key, value, visibility?)` | Write one key. |
+| `GetPlayerDataAsync(playerId, gameId)` | Entries of another player you may see: `lobby` entries when you share their lobby, `friends` entries when you are friends. Without either relation the call throws `NOT_ALLOWED`; `public` entries are never returned (use the leaderboard). |
+| `SetUserDataAsync(gameId, key, value, visibility?)` | Write one key. Clients may use `Private`, `Lobby` and `Friends`; `Public` throws `NOT_ALLOWED` (public keys are written by game servers, see [`GameServerClient`](#gameserverclient)). |
 | `BulkSetUserDataAsync(gameId, entries)` | `IEnumerable<(string Key, object? Value, DataVisibility? Visibility)>`. |
 | `DeleteUserDataAsync(gameId, key)` | Idempotent delete. |
+| `IncrementUserDataAsync(gameId, key, by, visibility?)` | Atomically add `by` to a numeric key (missing = 0); returns `UserDataWriteResult` (`Value`, `Version`). |
+| `SetUserDataIfAsync(gameId, key, value, expectedVersion, visibility?)` | Compare-and-set (`0` = key must not exist). On mismatch throws `VERSION_CONFLICT`; `ex.Conflict.Current` holds the current `Value` and `Version`. |
+| `TransactUserDataAsync(gameId, ops)` | 1–100 `UserDataOp` (`Set`, `Increment`, `SetIf`, `Delete` factories) all-or-nothing; returns one `UserDataOpResult` per op. |
 
 REST (same data):
 
@@ -180,9 +184,10 @@ REST (same data):
 | `DeleteKeyAsync(gameId, key)` | Delete a key. |
 | `BulkSetAsync(gameId, entries)` | Up to 100 entries per call. |
 | `GetAllDataAsync(gameId)` | All own entries. |
-| `GetLeaderboardAsync(gameId, key, order = "desc", limit = 10)` | Public numeric leaderboard (`LeaderboardEntry[]`). |
+| `GetLeaderboardAsync(gameId, key, order = "desc", limit = 10, ct, offset?, friendsOnly = false)` | Leaderboard of a `Public` numeric key (`LeaderboardEntry[]`: `Rank`, `UserId`, `Username`, `Value`, `UpdatedAt`). `offset` pages, `friendsOnly` = `scope=friends` (you and your friends). Only games with server support have leaderboards (others: `NOT_FOUND`). |
+| `GetLeaderboardWithMeAsync(gameId, key, order, limit, ct, offset?, friendsOnly, around = false, range?)` | Same, as `LeaderboardResult { Entries, Me, Total }`. `Me` is your own row/rank (null when unranked; also works when you are hidden). `around: true` returns a window of `range` (1–50) rows around you instead of the top. |
 
-`DataVisibility`: `Private`, `Lobby`, `Public`. `UserDataEntry` also reports `WriteScope` (`Client`, `Server` — server-written keys cannot be changed by clients) and `Version`. `Value` is `object?` backed by `JsonElement`: `((JsonElement)entry.Value!).GetInt32()`. Events `UserData` (`UserDataPayload`) and `PlayerData` (`PlayerDataPayload`) deliver pushed data.
+`DataVisibility`: `Private`, `Lobby`, `Friends`, `Public`. `Public` is server-write-only and feeds the leaderboard; players can opt out of leaderboards with `SetSocialSettingsAsync(leaderboardVisible: false)`. `UserDataEntry` also reports `WriteScope` (`Client`, `Server` — server-written keys cannot be changed by clients) and `Version`. `Value` is `object?` backed by `JsonElement`: `((JsonElement)entry.Value!).GetInt32()`. Events `UserData` (`UserDataPayload`) and `PlayerData` (`PlayerDataPayload`) deliver pushed data.
 
 ## Social
 
@@ -215,6 +220,8 @@ SocialSettings s = await client.SetSocialSettingsAsync(
     mutedNotificationTypes: new[] { NotificationType.Dm });   // only non-null arguments change
 await client.GetSocialSettingsAsync();
 ```
+
+`SocialSettings.LeaderboardVisible` (default true; set with `leaderboardVisible:`) controls whether you appear in leaderboards.
 
 `FriendPresenceStatus`: `Online`, `Away`, `Busy`, `Offline` (`FriendPresence.GameId`/`LobbyJoinable` tell whether the friend is playing); own status (`OwnPresenceStatus`): `Online`, `Away`, `Busy`, `Invisible`. Online friends get a `NotificationType.FriendOnline` notification when you become visible.
 
@@ -271,6 +278,14 @@ client.DirectMessageReadStateChanged += st => { };    // read cursor moved, also
 
 `GetDmHistoryAsync` also returns `LastReadSeq`, `FirstUnreadSeq`, `UnreadCount` and `PeerLastReadSeq`; `ListConversationsAsync` entries carry `LastReadSeq`. `MarkConversationReadAsync` remains as a shortcut that returns only the marked count.
 
+### Blocks
+
+| Method | Description |
+|--------|-------------|
+| `BlockUserAsync(userId)` | Idempotent. Removes the friendship and pending requests/invites in both directions; their later friend requests are ignored. Returns `BlockedUserInfo` (`UserId`, `Username`, `BlockedAt`). Throws `BLOCK_LIMIT_REACHED` at the cap. |
+| `UnblockUserAsync(userId)` | Idempotent. Does not restore the friendship. |
+| `GetBlockedUsersAsync()` | Your blocked users (`BlockedUserInfo[]`). |
+
 ### Lobby invites and joining friends
 
 ```csharp
@@ -285,6 +300,59 @@ JoinFriendResult j = await client.JoinFriendAsync(friendId);  // j.Lobby, or j.P
 ```
 
 Events: `LobbyInviteReceived`, `LobbyInviteCancelled` (`.Reason`: `LobbyInviteCancelReason`), `LobbyInviteDeclined`.
+
+## Account
+
+| Method | Description |
+|--------|-------------|
+| `ChangePasswordAsync(currentPassword, newPassword)` | Invalidates all tokens of the account and disconnects your other sessions (`SessionReplaced`, reason `PasswordChanged`). The new tokens are stored in the client, which keeps its socket; the returned `AuthResult` carries them too. Wrong password: `INVALID_CREDENTIALS`. |
+| `DeleteAccountAsync(password)` | Permanently deletes the account and all its data (GDPR); every session is disconnected and the client is logged out. |
+| `ExportAccountDataAsync()` | Everything the hub stores about you as `AccountExport` (`Profile`, `UserData`, `Friends`, `Messages`, `Notifications`, `Settings`, `Blocks`). |
+
+## Errors and rate limits
+
+Every failing call throws `EthernalException` with a stable `Code` / `Error` ([`ErrorCode`](enums.md#errorcode)) and a message. `RATE_LIMITED` (`ErrorCode.RateLimited`) additionally sets `RetryAfterMs` (wait that long before retrying): for REST calls (429), for socket acks and for refused connections (`LoginAsync`/`RegisterAsync` when `maxSessionsPerUser` / `maxConnectionsPerIp` is hit, and `GameServerClient.ConnectAsync`). `ex.ErrorData` holds the structured error `data` when the hub sent one; `ex.Conflict` is parsed for `VERSION_CONFLICT`.
+
+```csharp
+try { await client.CreateLobbyAsync("x"); }
+catch (EthernalException ex) when (ex.Error == ErrorCode.RateLimited) { await Task.Delay(ex.RetryAfterMs ?? 1000); }
+```
+
+## GameServerClient
+
+`GameServerClient` (same assembly) lets a **game server** — a service running the authoritative logic of many lobbies of one game — talk to the hub's `/gameserver` namespace. Protocol: [game-server-protocol.md](game-server-protocol.md). The game needs `serverSupport` `optional` or `required`; keys are issued with the admin API.
+
+```csharp
+await using var server = new GameServerClient(new GameServerClientOptions
+{
+    ServerUrl = "http://localhost:12346", ServerKey = "esk_...", GameId = "chess",
+    ServerId = "chess-eu-1", Region = "eu", Capacity = 20,
+});
+server.LobbyAssigned += a => Console.WriteLine($"{a.Lobby.Id} {a.Reason} (previous {a.PreviousServerId}, lost at {a.LostAt})");
+server.PlayerAction  += async a => await server.RelayToLobbyAsync(a.LobbyId, "moved", a.Payload);
+GameServerHello hello = await server.ConnectAsync();   // hello.Resumed, hello.Lobbies
+```
+
+| Member | Description |
+|--------|-------------|
+| `GameServerClientOptions` | `ServerUrl`, `ServerKey`, `GameId`, `ServerId`, `Region`, `Capacity`, `Version`, `RequestTimeout`. |
+| `ConnectAsync()` | Connect and wait for `hello`. The same `ServerId` within the hub's resume grace (`SERVER_RESUME_GRACE_MS`) resumes the server and its lobbies (`Resumed == true`). Throws `EthernalException` with `INVALID_SERVER_KEY`, `UNKNOWN_GAME`, `GAME_SERVER_NOT_ALLOWED`, `INVALID_INPUT` or `RATE_LIMITED` (`RetryAfterMs`). |
+| `DisconnectAsync()` / `DisposeAsync()` | Close the socket. The hub holds the lobbies for the grace period; afterwards it rebinds them to another server of the game. |
+| `ServerId`, `IsConnected`, `Lobbies` | Own id, connection state and a snapshot of the lobbies assigned to this server. |
+| `AssignmentHandler` | `Func<AssignInfo, Task<AssignmentDecision>>`; return `AssignmentDecision.Accept` or `AssignmentDecision.Reject(reason)` (the hub waits `SERVER_ASSIGN_TIMEOUT_MS`). Default: accept. |
+| `RelayAsync(lobbyId, type, payload, toUserId)` | Typed message to all members (`RelayToLobbyAsync`) or one member (`RelayToPlayerAsync`); returns the sequence number. Players receive it as `Message`. There is no `echo` for servers: a server is not a member and never receives its own messages. |
+| `SendStateAsync(lobbyId, state, toUserId?)` | State to all / one member (`GameState` event). |
+| `KickPlayerAsync(lobbyId, userId, reason?)` | Kick with reason; the player gets `PlayerKicked` and cannot rejoin until the host calls `UnkickPlayerAsync`. |
+| `SetLobbyStateAsync(lobbyId, state)` | `LobbyStatus.InProgress` or `Closed`. |
+| `SetLobbySettingsAsync(lobbyId, settings)` | Replace the lobby settings. |
+| `GameOverAsync(lobbyId, result?)` / `CloseLobbyAsync(lobbyId)` | Announce the result (`GameOver` event) and close / close silently. |
+| `ReportStatusAsync(draining?, capacity?)` | Heartbeat and status; returns `GameServerInfo` (`Load`, `Capacity`, `Draining`, ...). |
+| `DrainAsync(draining = true)` | A draining server gets no new lobbies; members see `ServerStatus == Draining`. |
+| `SetDataAsync`, `BulkSetDataAsync`, `GetDataAsync`, `IncrementDataAsync`, `SetDataIfAsync`, `TransactDataAsync` | Authoritative player data (`lobbyId`, `userId`, ...), same semantics as the client calls plus `Public` visibility and `DataWriteScope.Server`. The player must be (or just have been, up to 60 s) a member of a lobby bound to this server, otherwise `NOT_ALLOWED`. |
+
+Events (all typed): `Connected`, `Disconnected(string)`, `Hello`, `LobbyAssigned` (`AssignInfo`: `Lobby`, `Players`, `Reason`, `PreviousServerId`, `LostAt`), `LobbyUpdated`, `LobbyClosed`, `PlayerJoined`, `PlayerLeft`, `PlayerDisconnected`, `PlayerReconnected`, `PlayerAction` (`PayloadAs<T>()`), `ServerError`.
+
+`AssignInfo.Reason` is `LobbyAssignReason.NewLobby` (fresh, empty state) or `ServerRebound` — a **takeover** of a lobby whose server was lost; the hub keeps no game state, so restore it from your own storage using `Lobby.Id` (`PreviousServerId` and `LostAt` identify the lost server).
 
 ## Event reference
 
@@ -308,11 +376,13 @@ Plain immutable classes in `EthernalCosmos.Client.Models` (see the XML docs for 
 
 - Lobby: `Lobby` (`Id`, `GameId`, `Name`, `HostId`, `Players`, `MaxPlayers`, `Status`, `IsPrivate`, `Hosted`, `InviteCode`, `Settings`, `Locked`, `CreatedAt`, `Server`, `ServerStatus`, `ServerBound`, `Region`, `Joinable`), `LobbyPlayer` (`Connected` is false during the reconnect grace period), `LobbyServerBinding`.
 - Session: `HelloPayload`, `SessionState`, `SessionStateResult`, `RegisterGameResult`, `GameInfo`, `SessionResumedData`, `SessionReplacedData`.
-- Auth/data: `AuthResult`, `PublicUser`, `UserDataEntry`, `UserDataPayload`, `PlayerDataPayload`, `LeaderboardEntry`.
+- Auth/data: `AuthResult`, `PublicUser`, `UserDataEntry`, `UserDataPayload`, `PlayerDataPayload`, `LeaderboardEntry`, `LeaderboardResult`, `UserDataWriteResult`, `UserDataOp`, `UserDataOpResult`, `VersionConflict`, `VersionConflictState`.
+- Game server: `GameServerClientOptions`, `GameServerHello`, `GameServerInfo`, `GameServerPlayer`, `AssignInfo`, `AssignmentDecision`, `GameServerLobbyUpdate`, `GameServerLobbyClosed`, `GameServerPlayerJoined`, `GameServerPlayerLeft`, `GameServerPlayerPresence`, `PlayerAction`, `GameServerDataEntry`.
+- Account/blocks: `BlockedUserInfo`, `AccountExport`, `AccountProfile`, `ExportedUserData`.
 - Relay/game: `RelayMessage`, `RelayBinaryMessage`, `GameStartingData`, `PlayerKickedData`.
 - Join requests: `JoinRequestReceivedData`, `JoinRequestPendingData`, `JoinRequestAcceptedData`, `JoinRequestRejectedData`, `JoinRequestWithdrawnData`, `JoinRequestInfo`, `JoinRequestsResult`.
 - Social: `FriendInfo`, `FriendRequestInfo`, `FriendRequestsResult`, `FriendRequestAccepted`, `FriendRequestDeclined`, `FriendPresence`, `SocialSettings`, `SocialSnapshot`, `HubNotification`, `NotificationBacklog`, `NotificationCounts`, `NotificationListResult`, `NotificationMarkResult`, `DirectMessage`, `DmConversation`, `DmConversationUnread`, `DmHistoryResult`, `DmReadState`, `DmUnreadResult`, `DmDeliveredData`, `DmReadData`, `DmTypingData`, `LobbyInvite`, `LobbyInviteCancelledData`, `LobbyInviteDeclinedData`, `FriendLobbyInfo`, `JoinFriendResult`.
-- Errors: `EthernalException`, `HubErrorPayload`.
+- Errors: `EthernalException` (`Code`, `Error`, `RetryAfterMs`, `ErrorData`, `Conflict`), `HubErrorPayload`.
 
 ## Tests
 
@@ -323,4 +393,4 @@ npm ci && npm run build
 dotnet test csharp-sdk
 ```
 
-A meta-test fails when a public `EthernalClient` member is neither exercised by the tests nor mentioned in this document.
+`GameServerTests` start sample game servers (`GameServerClient`) against the hub, issue keys with `ADMIN_TOKEN=admin-test` and cover two simultaneous lobbies, data authorization, drain, resume and the `ServerRebound` takeover. A meta-test fails when a public `EthernalClient` or `GameServerClient` member is neither exercised by the tests nor mentioned in this document.
