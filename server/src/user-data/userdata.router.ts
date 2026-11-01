@@ -2,10 +2,10 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { requireAuth } from '../auth/auth.middleware';
 import { lobbyManager } from '../lobby/lobby.manager';
-import { GameIdSchema, KeySchema, VisibilitySchema, BulkEntriesSchema } from './userdata.schemas';
+import { GameIdSchema, KeySchema, VisibilitySchema, BulkEntriesSchema, IncrementBodySchema, SetIfBodySchema, OpsSchema } from './userdata.schemas';
 import { getGame } from '../games/game.registry';
 import { HubError, isHubError, sendHubError } from '../errors';
-import { setKey, getKey, deleteKey, getAllOwn, bulkSet, getVisibleData, getLeaderboard } from './userdata.service';
+import { setKey, getKey, deleteKey, getAllOwn, bulkSet, applyOps, getVisibleData, getLeaderboard } from './userdata.service';
 
 function handleError(res: import('express').Response, tag: string, err: unknown): void {
   if (isHubError(err)) {
@@ -102,6 +102,51 @@ userDataRouter.patch('/:gameId', async (req, res): Promise<void> => {
     res.json({ ok: true });
   } catch (err) {
     handleError(res, '[UserData] PATCH /:gameId Fehler:', err);
+  }
+});
+
+/** POST /userdata/:gameId/:key/increment — atomar erhöhen { by, visibility? } → { key, value, version } */
+userDataRouter.post('/:gameId/:key/increment', async (req, res): Promise<void> => {
+  const gameId = GameIdSchema.safeParse(req.params.gameId);
+  const key    = KeySchema.safeParse(req.params.key);
+  const body   = IncrementBodySchema.safeParse(req.body);
+  if (!gameId.success || !key.success) { res.status(400).json({ error: 'Ungültige Parameter' }); return; }
+  if (!body.success) { sendHubError(res, new HubError('INVALID_INPUT')); return; }
+  try {
+    const [result] = await applyOps(req.auth!.userId, gameId.data, [{ op: 'increment', key: key.data, by: body.data.by, visibility: body.data.visibility }]);
+    res.json(result);
+  } catch (err) {
+    handleError(res, '[UserData] POST increment Fehler:', err);
+  }
+});
+
+/** POST /userdata/:gameId/:key/setIf — Compare-and-set { value, expectedVersion, visibility? } → { key, value, version } | 409 VERSION_CONFLICT */
+userDataRouter.post('/:gameId/:key/setIf', async (req, res): Promise<void> => {
+  const gameId = GameIdSchema.safeParse(req.params.gameId);
+  const key    = KeySchema.safeParse(req.params.key);
+  const body   = SetIfBodySchema.safeParse(req.body);
+  if (!gameId.success || !key.success) { res.status(400).json({ error: 'Ungültige Parameter' }); return; }
+  if (!body.success) { sendHubError(res, new HubError('INVALID_INPUT')); return; }
+  try {
+    const [result] = await applyOps(req.auth!.userId, gameId.data, [
+      { op: 'setIf', key: key.data, value: body.data.value, expectedVersion: body.data.expectedVersion, visibility: body.data.visibility },
+    ]);
+    res.json(result);
+  } catch (err) {
+    handleError(res, '[UserData] POST setIf Fehler:', err);
+  }
+});
+
+/** POST /userdata/:gameId/transact — { ops: [...] } alles oder nichts → { results } */
+userDataRouter.post('/:gameId/transact', async (req, res): Promise<void> => {
+  const gameId = GameIdSchema.safeParse(req.params.gameId);
+  if (!gameId.success) { res.status(400).json({ error: 'Ungültige Spiel-ID' }); return; }
+  const body = z.object({ ops: OpsSchema }).safeParse(req.body);
+  if (!body.success) { sendHubError(res, new HubError('INVALID_INPUT')); return; }
+  try {
+    res.json({ results: await applyOps(req.auth!.userId, gameId.data, body.data.ops) });
+  } catch (err) {
+    handleError(res, '[UserData] POST transact Fehler:', err);
   }
 });
 

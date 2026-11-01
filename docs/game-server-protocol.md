@@ -67,6 +67,12 @@ lobby closed (match results after leaving or closing). Anything else fails with 
 | `data:set` | `{ lobbyId, userId, key, value, visibility?, writeScope? }` | `{ ok }` |
 | `data:bulk` | `{ lobbyId, userId, entries: [{ key, value, visibility?, writeScope? }] }` (1–100, all-or-nothing) | `{ ok }` |
 | `data:get` | `{ lobbyId, userId }` | `{ ok, entries: UserDataEntry[] }` |
+| `data:increment` | `{ lobbyId, userId, key, by, visibility?, writeScope? }` | `{ ok, key, value, version }` |
+| `data:setIf` | `{ lobbyId, userId, key, value, expectedVersion, visibility?, writeScope? }` | `{ ok, key, value, version }` or error `VERSION_CONFLICT` with `error.data.current` |
+| `data:transact` | `{ lobbyId, userId, ops: [set\|increment\|setIf\|delete] }` (1–100, all-or-nothing) | `{ ok, results: [{ key, value?, version }] }` |
+
+
+Subprocess games use the same operations over IPC: `INCREMENT_USER_DATA {requestId,userId,gameId,key,by}`, `SET_USER_DATA_IF {…,key,value,expectedVersion}`, `TRANSACT_USER_DATA {…,ops}` (participants only); the hub answers with `USER_DATA_OP_RESPONSE {requestId, ok, results | error:{code,message,data?}}`.
 
 `visibility: 'public'` marks a **leaderboard/result key**: only a game server can set it (clients get `NOT_ALLOWED`), it always implies
 `writeScope: 'server'` (clients cannot overwrite or delete it) and games with `serverSupport: none` cannot use it (`NOT_ALLOWED`).

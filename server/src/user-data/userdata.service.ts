@@ -37,68 +37,153 @@ function matchesServerKey(gameId: string, key: string): boolean {
   return patterns.some((p) => new RegExp(`^(?:${p})$`).test(key));
 }
 
+/** Eine Operation einer atomaren Transaktion (`transact`) */
+export type DataOp =
+  | ({ op: 'set' } & DataWrite)
+  | { op: 'increment'; key: string; by: number; visibility?: DataVisibility; writeScope?: DataWriteScope }
+  | { op: 'setIf'; key: string; value?: unknown; expectedVersion: number; visibility?: DataVisibility; writeScope?: DataWriteScope }
+  | { op: 'delete'; key: string };
+
+/** Ergebnis einer Operation: neuer Wert + neue Version (bei `delete` ohne Wert, version 0) */
+export interface DataOpResult {
+  key: string;
+  value?: unknown;
+  version: number;
+}
+
+// Alle Schreibvorgänge laufen nacheinander (ein Hub-Prozess): keine SQLITE_BUSY-Konflikte, Zähler sind race-frei.
+let writeChain: Promise<unknown> = Promise.resolve();
+function exclusive<T>(fn: () => Promise<T>): Promise<T> {
+  const run = writeChain.then(fn, fn);
+  writeChain = run.catch(() => undefined);
+  return run;
+}
+
+interface RowState {
+  size: number;
+  visibility: string;
+  write_scope: string;
+  version: number;
+  /** nur gefüllt, wenn in dieser Transaktion gelesen oder geschrieben */
+  json?: string;
+}
+
 /**
- * Schreibt einen oder mehrere Keys in einer Transaktion (alles oder nichts).
+ * Führt Operationen in einer Transaktion aus (alles oder nichts), Ergebnis je Operation in Reihenfolge.
  * - actor='client': schreibgeschützte Keys (writeScope='server' oder game.serverKeys) → DATA_READ_ONLY
  * - Sichtbarkeit 'public' (Bestenlisten-Key) darf nur ein Server setzen und nur bei serverSupport != none → sonst NOT_ALLOWED
+ * - increment: Zahl, |by| und Ergebnis im Safe-Integer-Bereich, Typkonflikt → INVALID_INPUT; fehlender Key zählt als 0
+ * - setIf: expectedVersion (0 = Key darf nicht existieren), sonst VERSION_CONFLICT mit aktuellem Wert/Version
  * - Limits für Wertgröße, Key-Anzahl und Gesamtgröße pro User/Spiel
  * - version wird pro Schreibvorgang erhöht
  */
-export async function writeEntries(
+export function applyOps(
   userId: string,
   gameId: string,
-  entries: DataWrite[],
+  ops: DataOp[],
   actor: DataActor = 'client',
   ctx: WriteContext = {}
-): Promise<void> {
-  if (!getGame(gameId)) throw new HubError('UNKNOWN_GAME');
-  if (entries.length === 0) return;
-  for (const e of entries) {
-    if (e.visibility === 'public' && (actor === 'client' || !gameHasLeaderboards(gameId))) throw new HubError('NOT_ALLOWED');
+): Promise<DataOpResult[]> {
+  if (!getGame(gameId)) return Promise.reject(new HubError('UNKNOWN_GAME'));
+  if (ops.length === 0) return Promise.resolve([]);
+  if (ops.length > 100) return Promise.reject(new HubError('INVALID_INPUT'));
+  for (const o of ops) {
+    if (o.op !== 'delete' && o.visibility === 'public' && (actor === 'client' || !gameHasLeaderboards(gameId))) {
+      return Promise.reject(new HubError('NOT_ALLOWED'));
+    }
+    if (o.op === 'increment' && !(typeof o.by === 'number' && Number.isFinite(o.by) && Math.abs(o.by) <= Number.MAX_SAFE_INTEGER)) {
+      return Promise.reject(new HubError('INVALID_INPUT', 'by muss eine endliche Zahl im Safe-Integer-Bereich sein'));
+    }
+    if (o.op === 'setIf' && !(Number.isInteger(o.expectedVersion) && o.expectedVersion >= 0)) {
+      return Promise.reject(new HubError('INVALID_INPUT', 'expectedVersion muss eine ganze Zahl >= 0 sein'));
+    }
   }
+  return exclusive(() => runOps(userId, gameId, ops, actor, ctx));
+}
 
-  const serialized = entries.map((e) => {
-    const json = JSON.stringify(e.value ?? null);
-    if (Buffer.byteLength(json) > DATA_LIMITS.maxValueBytes) throw new HubError('DATA_VALUE_TOO_LARGE');
-    return { ...e, json };
-  });
-
+async function runOps(userId: string, gameId: string, ops: DataOp[], actor: DataActor, ctx: WriteContext): Promise<DataOpResult[]> {
   const tx = await db.transaction('write');
   try {
     const existing = await tx.execute({
-      sql: 'SELECT key, length(value) AS size, visibility, write_scope FROM user_data WHERE user_id = ? AND game_id = ?',
+      sql: 'SELECT key, length(value) AS size, visibility, write_scope, version FROM user_data WHERE user_id = ? AND game_id = ?',
       args: [userId, gameId],
     });
-    const byKey = new Map<string, { size: number; visibility: string; write_scope: string }>(
+    const byKey = new Map<string, RowState>(
       existing.rows.map((r) => [
         r.key as string,
-        { size: Number(r.size), visibility: r.visibility as string, write_scope: r.write_scope as string },
+        { size: Number(r.size), visibility: r.visibility as string, write_scope: r.write_scope as string, version: Number(r.version) },
       ])
     );
     let totalBytes = [...byKey.values()].reduce((sum, r) => sum + r.size, 0);
     let keyCount = byKey.size;
-
     const now = Date.now();
-    for (const e of serialized) {
-      const row = byKey.get(e.key);
-      if (actor === 'client' && (row?.write_scope === 'server' || matchesServerKey(gameId, e.key))) {
-        throw new HubError('DATA_READ_ONLY');
+    const results: DataOpResult[] = [];
+
+    const currentJson = async (key: string, row: RowState): Promise<string> => {
+      if (row.json === undefined) {
+        const r = await tx.execute({ sql: 'SELECT value FROM user_data WHERE user_id = ? AND game_id = ? AND key = ?', args: [userId, gameId, key] });
+        row.json = r.rows[0].value as string;
       }
-      const visibility = e.visibility ?? (row?.visibility as DataVisibility | undefined) ?? 'private';
+      return row.json;
+    };
+    const readOnlyForClient = (key: string, row?: RowState): boolean =>
+      actor === 'client' && (row?.write_scope === 'server' || matchesServerKey(gameId, key));
+
+    for (const o of ops) {
+      const row = byKey.get(o.key);
+
+      if (o.op === 'delete') {
+        if (readOnlyForClient(o.key, row)) throw new HubError('DATA_READ_ONLY');
+        if (row) {
+          await tx.execute({ sql: 'DELETE FROM user_data WHERE user_id = ? AND game_id = ? AND key = ?', args: [userId, gameId, o.key] });
+          byKey.delete(o.key);
+          totalBytes -= row.size;
+          keyCount -= 1;
+        }
+        results.push({ key: o.key, version: 0 });
+        continue;
+      }
+
+      if (readOnlyForClient(o.key, row)) throw new HubError('DATA_READ_ONLY');
+
+      let value: unknown;
+      if (o.op === 'set') {
+        value = o.value;
+      } else if (o.op === 'setIf') {
+        if ((row?.version ?? 0) !== o.expectedVersion) {
+          const current = row ? { value: JSON.parse(await currentJson(o.key, row)), version: row.version } : null;
+          throw new HubError('VERSION_CONFLICT', undefined, undefined, { current });
+        }
+        value = o.value;
+      } else {
+        const base = row ? JSON.parse(await currentJson(o.key, row)) : 0;
+        if (typeof base !== 'number' || !Number.isFinite(base)) throw new HubError('INVALID_INPUT', 'Wert ist keine Zahl');
+        const next = base + o.by;
+        if (!Number.isFinite(next) || Math.abs(next) > Number.MAX_SAFE_INTEGER) throw new HubError('INVALID_INPUT', 'Ergebnis außerhalb des Safe-Integer-Bereichs');
+        value = next;
+      }
+
+      const json = JSON.stringify(value ?? null);
+      const size = Buffer.byteLength(json);
+      if (size > DATA_LIMITS.maxValueBytes) throw new HubError('DATA_VALUE_TOO_LARGE');
+
+      const visibility = o.visibility ?? (row?.visibility as DataVisibility | undefined) ?? 'private';
+      const writeScope = 'writeScope' in o ? o.writeScope : undefined;
       const scope: DataWriteScope =
         actor === 'server' && visibility === 'public'
           ? 'server'
           : actor === 'server'
-          ? e.writeScope ?? (row?.write_scope as DataWriteScope | undefined) ?? (matchesServerKey(gameId, e.key) ? 'server' : 'client')
+          ? writeScope ?? (row?.write_scope as DataWriteScope | undefined) ?? (matchesServerKey(gameId, o.key) ? 'server' : 'client')
           : 'client';
       const writtenBy = actor === 'server' ? ctx.writtenBy ?? 'subprocess' : null;
 
       if (!row) keyCount += 1;
-      totalBytes += Buffer.byteLength(e.json) - (row?.size ?? 0);
+      totalBytes += size - (row?.size ?? 0);
       if (keyCount > DATA_LIMITS.maxKeysPerGame || totalBytes > DATA_LIMITS.maxTotalBytesPerGame) {
         throw new HubError('DATA_QUOTA_EXCEEDED');
       }
-      byKey.set(e.key, { size: Buffer.byteLength(e.json), visibility, write_scope: scope });
+      const version = (row?.version ?? 0) + 1;
+      byKey.set(o.key, { size, visibility, write_scope: scope, version, json });
 
       await tx.execute({
         sql: `
@@ -109,16 +194,29 @@ export async function writeEntries(
                         updated_at = excluded.updated_at, write_scope = excluded.write_scope,
                         version = user_data.version + 1, written_by = excluded.written_by
         `,
-        args: [userId, gameId, e.key, e.json, visibility, now, scope, writtenBy],
+        args: [userId, gameId, o.key, json, visibility, now, scope, writtenBy],
       });
+      results.push({ key: o.key, value, version });
     }
     await tx.commit();
+    return results;
   } catch (err) {
     await tx.rollback().catch(() => undefined);
     throw err;
   } finally {
     tx.close();
   }
+}
+
+/** Mehrere Keys atomar schreiben (alles oder nichts). */
+export async function writeEntries(
+  userId: string,
+  gameId: string,
+  entries: DataWrite[],
+  actor: DataActor = 'client',
+  ctx: WriteContext = {}
+): Promise<void> {
+  await applyOps(userId, gameId, entries.map((e) => ({ op: 'set' as const, ...e })), actor, ctx);
 }
 
 export async function setKey(
@@ -152,15 +250,7 @@ export async function deleteKey(
   key: string,
   actor: DataActor = 'client'
 ): Promise<void> {
-  if (!getGame(gameId)) throw new HubError('UNKNOWN_GAME');
-  if (actor === 'client') {
-    const existing = await getKey(userId, gameId, key);
-    if (existing?.writeScope === 'server' || matchesServerKey(gameId, key)) throw new HubError('DATA_READ_ONLY');
-  }
-  await db.execute({
-    sql: 'DELETE FROM user_data WHERE user_id = ? AND game_id = ? AND key = ?',
-    args: [userId, gameId, key],
-  });
+  await applyOps(userId, gameId, [{ op: 'delete', key }], actor);
 }
 
 // ─── Eigene Daten (alle Keys) ─────────────────────────────────────────────────

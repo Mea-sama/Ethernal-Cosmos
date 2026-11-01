@@ -8,7 +8,7 @@ import type {
   NotificationType,
   SessionReplacedReason,
 } from './enums';
-import type { Lobby, GameInfo, RelayMessage, RelayBinaryMessage, UserDataEntry } from './index';
+import type { Lobby, GameInfo, RelayMessage, RelayBinaryMessage, UserDataEntry, UserDataOp, UserDataOpResult } from './index';
 import type { Ack, HubErrorPayload } from './errors';
 import type { ServerPreference } from './gameserver';
 import type {
@@ -165,6 +165,24 @@ export interface ClientToServerEvents {
 
   /** Mehrere eigene Keys atomar schreiben (Alternative zu REST PATCH) */
   bulkSetUserData: (data: { gameId: string; entries: BulkDataEntry[]; requestId?: string }, ack?: Ack) => void;
+
+  /** Eigenen numerischen Key atomar um `by` erhöhen (fehlender Key = 0). Nur client-beschreibbare Keys, nie `public`. */
+  incrementUserData: (
+    data: { gameId: string; key: string; by: number; visibility?: DataVisibility; requestId?: string },
+    ack?: Ack<{ key: string; value: number; version: number }>
+  ) => void;
+
+  /** Compare-and-set: schreibt nur, wenn die Version stimmt (0 = Key existiert nicht), sonst VERSION_CONFLICT (`error.data.current`) */
+  setUserDataIf: (
+    data: { gameId: string; key: string; value: unknown; expectedVersion: number; visibility?: DataVisibility; requestId?: string },
+    ack?: Ack<{ key: string; value: unknown; version: number }>
+  ) => void;
+
+  /** Mehrere Operationen (set/increment/setIf/delete) alles-oder-nichts, max. 100 */
+  transactUserData: (
+    data: { gameId: string; ops: UserDataOp[]; requestId?: string },
+    ack?: Ack<{ results: UserDataOpResult[] }>
+  ) => void;
 
   /** Einen eigenen Key löschen (Alternative zu REST DELETE) */
   deleteUserData: (data: { gameId: string; key: string; requestId?: string }, ack?: Ack) => void;

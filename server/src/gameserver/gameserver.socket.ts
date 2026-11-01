@@ -25,8 +25,8 @@ import {
   validateMessageType,
   type AppServer,
 } from '../lobby/lobby.socket';
-import { bulkSet, getAllOwn } from '../user-data/userdata.service';
-import { KeySchema, VisibilitySchema } from '../user-data/userdata.schemas';
+import { applyOps, bulkSet, getAllOwn } from '../user-data/userdata.service';
+import { KeySchema, OpsSchema, VisibilitySchema } from '../user-data/userdata.schemas';
 import { setGameServerHooks } from './hooks';
 import { verifyGameServerKey } from './keys.service';
 
@@ -394,6 +394,29 @@ export function registerGameServerNamespace(io: AppServer): void {
       const { userId } = dataTarget(socket, data);
       const { entries } = z.object({ entries: z.array(ServerEntrySchema).min(1).max(100) }).passthrough().parse(data);
       await bulkSet(userId, hs.gameId, entries, 'server', { writtenBy: hs.serverId });
+    });
+
+    onServerEvent(socket, 'data:increment', async (data) => {
+      const { userId } = dataTarget(socket, data);
+      const { key, by, visibility, writeScope } = z
+        .object({ key: KeySchema, by: z.number().finite(), visibility: VisibilitySchema.optional(), writeScope: z.enum(['client', 'server']).optional() })
+        .passthrough()
+        .parse(data);
+      const [result] = await applyOps(userId, hs.gameId, [{ op: 'increment', key, by, visibility, writeScope }], 'server', { writtenBy: hs.serverId });
+      return { ...result };
+    });
+
+    onServerEvent(socket, 'data:setIf', async (data) => {
+      const { userId } = dataTarget(socket, data);
+      const { expectedVersion, ...rest } = ServerEntrySchema.extend({ expectedVersion: z.number().int().min(0) }).passthrough().parse(data);
+      const [result] = await applyOps(userId, hs.gameId, [{ op: 'setIf', key: rest.key, value: rest.value, expectedVersion, visibility: rest.visibility, writeScope: rest.writeScope }], 'server', { writtenBy: hs.serverId });
+      return { ...result };
+    });
+
+    onServerEvent(socket, 'data:transact', async (data) => {
+      const { userId } = dataTarget(socket, data);
+      const { ops } = z.object({ ops: OpsSchema }).passthrough().parse(data);
+      return { results: await applyOps(userId, hs.gameId, ops, 'server', { writtenBy: hs.serverId }) };
     });
 
     onServerEvent(socket, 'data:get', async (data) => {

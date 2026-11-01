@@ -285,6 +285,18 @@ Request own KV data. Server responds with `userData`.
 
 ---
 
+#### `incrementUserData` / `setUserDataIf` / `transactUserData`
+
+```ts
+socket.emit('incrementUserData', { gameId, key, by: number, visibility? }, ack); // → { key, value, version }
+socket.emit('setUserDataIf',     { gameId, key, value, expectedVersion: number, visibility? }, ack); // → { key, value, version }
+socket.emit('transactUserData',  { gameId, ops: UserDataOp[] }, ack);            // → { results: UserDataOpResult[] }
+```
+
+Atomic counterparts of the REST routes (see `rest-api.md`). On a version mismatch the ack error is `VERSION_CONFLICT` with `error.data.current = { value, version } | null`.
+
+---
+
 #### `getPlayerData`
 
 ```ts

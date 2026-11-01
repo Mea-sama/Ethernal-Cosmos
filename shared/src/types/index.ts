@@ -1,4 +1,4 @@
-import type { DataVisibility, DataWriteScope, LobbyChangeReason, LobbyServerStatus, LobbyStatus, ServerSupport } from './enums';
+import type { DataVisibility, DataWriteScope, ErrorCode, LobbyChangeReason, LobbyServerStatus, LobbyStatus, ServerSupport } from './enums';
 
 // ─── User ────────────────────────────────────────────────────────────────────
 
@@ -145,7 +145,14 @@ export type IpcHubToGame =
    *  der Reconnect-Gnadenfrist) — im Gegensatz zu PLAYER_DISCONNECT gibt es keine Rückkehr mehr. */
   | { type: 'PLAYER_LEAVE'; payload: { userId: string } }
   /** Antwort auf GET_USER_DATA */
-  | { type: 'USER_DATA_RESPONSE'; payload: { requestId: string; userId: string; gameId: string; data: Record<string, unknown> } };
+  | { type: 'USER_DATA_RESPONSE'; payload: { requestId: string; userId: string; gameId: string; data: Record<string, unknown> } }
+  /** Antwort auf INCREMENT_USER_DATA / SET_USER_DATA_IF / TRANSACT_USER_DATA */
+  | { type: 'USER_DATA_OP_RESPONSE'; payload: IpcDataOpResponse };
+
+/** Antwort des Hubs auf eine atomare Daten-Operation des Subprocess */
+export type IpcDataOpResponse =
+  | { requestId: string; ok: true; results: UserDataOpResult[] }
+  | { requestId: string; ok: false; error: { code: ErrorCode; message: string; data?: Record<string, unknown> } };
 
 /** Nachrichten vom Game-Subprocess an den Hub (via IPC) */
 export type IpcGameToHub =
@@ -165,7 +172,13 @@ export type IpcGameToHub =
   | { type: 'SAVE_META'; payload: { userId: string; gameId: string; entries: Array<{ key: string; value: unknown; visibility?: DataVisibility; writeScope?: DataWriteScope }> } }
   | { type: 'LOG'; payload: string }
   /** Subprocess möchte User-Daten aus dem Hub lesen */
-  | { type: 'GET_USER_DATA'; payload: { requestId: string; userId: string; gameId: string } };
+  | { type: 'GET_USER_DATA'; payload: { requestId: string; userId: string; gameId: string } }
+  /** Atomar erhöhen; Antwort `USER_DATA_OP_RESPONSE` (results[0] = neuer Wert + Version) */
+  | { type: 'INCREMENT_USER_DATA'; payload: { requestId: string; userId: string; gameId: string; key: string; by: number; visibility?: DataVisibility } }
+  /** Compare-and-set; bei Konflikt `error.code = VERSION_CONFLICT` mit `error.data.current` */
+  | { type: 'SET_USER_DATA_IF'; payload: { requestId: string; userId: string; gameId: string; key: string; value: unknown; expectedVersion: number; visibility?: DataVisibility } }
+  /** Alles-oder-nichts-Transaktion (max. 100 Operationen) */
+  | { type: 'TRANSACT_USER_DATA'; payload: { requestId: string; userId: string; gameId: string; ops: UserDataOp[] } };
 
 // ─── User Data ──────────────────────────────────────────────────────────────
 
@@ -183,6 +196,26 @@ export interface UserDataEntry {
   version: number;
 }
 
+/** Eine Operation einer atomaren Transaktion (`transactUserData`, `data:transact`, IPC `TRANSACT_USER_DATA`) */
+export type UserDataOp =
+  | { op: 'set'; key: string; value: unknown; visibility?: DataVisibility }
+  /** Zahl um `by` erhöhen (fehlender Key zählt als 0); |by| und Ergebnis ≤ Number.MAX_SAFE_INTEGER */
+  | { op: 'increment'; key: string; by: number; visibility?: DataVisibility }
+  /** Nur schreiben, wenn `version` == expectedVersion (0 = Key existiert noch nicht), sonst VERSION_CONFLICT */
+  | { op: 'setIf'; key: string; value: unknown; expectedVersion: number; visibility?: DataVisibility }
+  | { op: 'delete'; key: string };
+
+/** Neuer Wert + neue Version einer Operation (`delete`: ohne value, version 0) */
+export interface UserDataOpResult {
+  key: string;
+  value?: unknown;
+  version: number;
+}
+
+/** Antwort auf einen VERSION_CONFLICT (`error.data.current`): aktueller Stand oder null, wenn der Key nicht existiert */
+export interface UserDataConflict {
+  current: { value: unknown; version: number } | null;
+}
 
 // ─── Presence ────────────────────────────────────────────────────────────────
 

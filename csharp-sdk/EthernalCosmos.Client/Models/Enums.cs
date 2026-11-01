@@ -471,4 +471,6 @@ public enum ErrorCode
     [WireValue("MESSAGE_TOO_LONG")] MessageTooLong,
     /// <summary>Wire value <c>NOT_ALLOWED</c>.</summary>
     [WireValue("NOT_ALLOWED")] NotAllowed,
+    /// <summary>Wire value <c>VERSION_CONFLICT</c>.</summary>
+    [WireValue("VERSION_CONFLICT")] VersionConflict,
 }

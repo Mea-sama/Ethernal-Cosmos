@@ -3,7 +3,7 @@
 
 import type { Ack } from './errors';
 import type { DataWriteScope, DataVisibility, LobbyAssignReason, ServerMode, LobbyChangeReason, LobbyClosedReason, PlayerLeftReason } from './enums';
-import type { Lobby, LobbyStatus, UserDataEntry } from './index';
+import type { Lobby, LobbyStatus, UserDataEntry, UserDataOp, UserDataOpResult } from './index';
 
 /** Handshake (socket.handshake.auth) eines Game-Servers */
 export interface GameServerHandshake {
@@ -92,6 +92,12 @@ export interface GameServerToHubEvents {
   'data:set': (data: GameServerDataTarget & GameServerDataEntry, ack?: Ack) => void;
   /** Mehrere Keys atomar schreiben (alles oder nichts, max. 100) */
   'data:bulk': (data: GameServerDataTarget & { entries: GameServerDataEntry[] }, ack?: Ack) => void;
+  /** Atomar erhöhen (fehlender Key = 0); Ack liefert neuen Wert + Version */
+  'data:increment': (data: GameServerDataTarget & { key: string; by: number; visibility?: DataVisibility; writeScope?: DataWriteScope }, ack?: Ack<{ key: string; value: number; version: number }>) => void;
+  /** Compare-and-set; bei Konflikt `error.code = VERSION_CONFLICT`, `error.data.current` */
+  'data:setIf': (data: GameServerDataTarget & GameServerDataEntry & { expectedVersion: number }, ack?: Ack<{ key: string; value: unknown; version: number }>) => void;
+  /** Alles-oder-nichts-Transaktion aus set/increment/setIf/delete (max. 100) */
+  'data:transact': (data: GameServerDataTarget & { ops: UserDataOp[] }, ack?: Ack<{ results: UserDataOpResult[] }>) => void;
   /** Alle Daten des Users für dieses Spiel lesen */
   'data:get': (data: GameServerDataTarget, ack?: Ack<{ entries: UserDataEntry[] }>) => void;
   /** Auslastung/Draining melden */

@@ -182,7 +182,7 @@ Store: key–value, PK `(user_id, game_id, key)`, value = any JSON (stored as te
 | QUIRK-DATA-02 | `gameId` in data APIs is **not checked against the registry** — any string can be created, consuming storage (no per-user quota). No value size limit besides HTTP body limit (Express default 100 kB) / Socket.io frame. |
 | QUIRK-DATA-03 | Leaderboard: non-numeric values sort as 0 (not excluded); ties have no deterministic secondary order; no rank-of-me, no around-me, no pagination, no periodic reset (daily/weekly), no per-lobby/friend leaderboards. `limit` out of range silently falls back to 10. |
 | QUIRK-DATA-04 | `getPlayerData` returns `[]` for non-existent players (no 404; allows no enumeration but also no existence check). Presence IDs are public, so IDs are discoverable. |
-| QUIRK-DATA-05 | No atomic increment/compare-and-set/transactions across keys from clients (read-modify-write races for counters; bulk is atomic only within one call). No TTL/expiry, no schema/versioning, no history, no export/delete-all (GDPR) endpoint. |
+| QUIRK-DATA-05 | **[FIXED #38]** Atomic `increment`, `setIf` (compare version; `VERSION_CONFLICT` 409 with `data.current`) and all-or-nothing `transact` over REST (`POST /userdata/:gameId/:key/increment`, `/:key/setIf`, `/:gameId/transact`), sockets (`incrementUserData`, `setUserDataIf`, `transactUserData`), `/gameserver` (`data:increment`/`data:setIf`/`data:transact`) and subprocess IPC. Still: no TTL/expiry, no schema/versioning, no history, no export/delete-all (GDPR) endpoint. |
 | QUIRK-DATA-06 | Socket `getUserData`/`getPlayerData` are read-only; writes are REST-only (and IPC). |
 | GAP-DATA-01 | No profile/avatar/bio/level/XP/currency/inventory/achievement concept at hub level; games must model these as keys. No global (cross-game) profile namespace (use a reserved gameId by convention). No data for friends-only visibility (`friends` level). No cloud-save blobs (>100 kB) or binary data. |
 
@@ -286,6 +286,12 @@ Hub-side only: SDK parity is covered by the SDK test suites.
 | TEST-GSDATA-02 | non-members, foreign lobbies, other servers: `NOT_ALLOWED`; invalid input; bulk is all-or-nothing |
 | TEST-GSDATA-03 | server may write for members who left or after the lobby closed (60 s window) |
 | TEST-GSDATA-04 | games without server support accept no `public` data from clients |
+| TEST-DATA-10 | parallel `incrementUserData` sums exactly (missing key = 0, negative/fractional deltas) |
+| TEST-DATA-11 | increment/setIf type and range errors `INVALID_INPUT`; `public` → `NOT_ALLOWED`; server keys → `DATA_READ_ONLY` |
+| TEST-DATA-12 | `setIf` version compare (0 = must not exist); `VERSION_CONFLICT` (409) carries current value/version |
+| TEST-DATA-13 | `transactUserData` all-or-nothing with per-op results |
+| TEST-GSDATA-05 | game server `data:increment`/`data:setIf`/`data:transact` for members |
+| TEST-GSDATA-06 | subprocess IPC `INCREMENT_USER_DATA`/`SET_USER_DATA_IF`/`TRANSACT_USER_DATA` → `USER_DATA_OP_RESPONSE` |
 | TEST-AUTH-01 | socket without refresh gets AUTH_EXPIRED after expiry and is disconnected |
 | TEST-AUTH-02 | auth:refresh keeps the socket alive beyond the original expiry |
 | TEST-AUTH-03 | auth:refresh with another user's token is INVALID_TOKEN |

@@ -3,8 +3,10 @@ import path from 'path';
 import fs from 'fs';
 import { getGame } from './game.registry';
 import { lobbyManager } from '../lobby/lobby.manager';
-import { getAllOwnAsRecord } from '../user-data/userdata.service';
-import { HubError } from '../errors';
+import { applyOps, getAllOwnAsRecord, type DataOp } from '../user-data/userdata.service';
+import { OpsSchema, GameIdSchema, KeySchema, VisibilitySchema } from '../user-data/userdata.schemas';
+import { HubError, isHubError } from '../errors';
+import { z } from 'zod';
 import { DATA_DIR } from '../config/env';
 import type { Lobby, IpcHubToGame, IpcGameToHub } from '@ethernal/shared';
 
@@ -177,7 +179,42 @@ class InstanceManager {
         );
       return;
     }
+    if (msg.type === 'INCREMENT_USER_DATA' || msg.type === 'SET_USER_DATA_IF' || msg.type === 'TRANSACT_USER_DATA') {
+      this.handleDataOp(lobby, msg);
+      return;
+    }
     this.onMessage?.(lobby.id, msg);
+  }
+
+  /** Atomare Daten-Operationen des Subprocess (server-vertraut, nur für Teilnehmer der Lobby und ihr Spiel). */
+  private handleDataOp(lobby: Lobby, msg: Extract<IpcGameToHub, { type: 'INCREMENT_USER_DATA' | 'SET_USER_DATA_IF' | 'TRANSACT_USER_DATA' }>): void {
+    const requestId = typeof msg.payload?.requestId === 'string' ? msg.payload.requestId : '';
+    const respond = (payload: Extract<IpcHubToGame, { type: 'USER_DATA_OP_RESPONSE' }>['payload']): void =>
+      this.sendToInstance(lobby.id, { type: 'USER_DATA_OP_RESPONSE', payload });
+    const run = async (): Promise<void> => {
+      const base = z.object({ requestId: z.string(), userId: z.string().min(1).max(64), gameId: GameIdSchema });
+      const { userId, gameId } = base.passthrough().parse(msg.payload);
+      if (!lobbyManager.isParticipant(lobby.id, gameId, userId)) {
+        console.warn(`[IPC] ${msg.type} abgelehnt (${userId}/${gameId}) in Lobby ${lobby.id}`);
+        throw new HubError('NOT_ALLOWED');
+      }
+      let ops: DataOp[];
+      if (msg.type === 'INCREMENT_USER_DATA') {
+        const p = z.object({ key: KeySchema, by: z.number().finite(), visibility: VisibilitySchema.optional() }).parse(msg.payload);
+        ops = [{ op: 'increment', ...p }];
+      } else if (msg.type === 'SET_USER_DATA_IF') {
+        const p = z.object({ key: KeySchema, value: z.unknown(), expectedVersion: z.number().int().min(0), visibility: VisibilitySchema.optional() }).parse(msg.payload);
+        ops = [{ op: 'setIf', ...p }];
+      } else {
+        ops = z.object({ ops: OpsSchema }).parse(msg.payload).ops;
+      }
+      respond({ requestId, ok: true, results: await applyOps(userId, gameId, ops, 'server', { writtenBy: 'subprocess' }) });
+    };
+    run().catch((err) => {
+      const e = isHubError(err) ? err : err instanceof z.ZodError ? new HubError('INVALID_INPUT') : new HubError('INTERNAL');
+      if (e.code === 'INTERNAL') console.error(`[IPC] ${msg.type} fehlgeschlagen:`, err);
+      respond({ requestId, ok: false, error: { code: e.code, message: e.message, ...(e.data ? { data: e.data } : {}) } });
+    });
   }
 
   sendToInstance(lobbyId: string, msg: IpcHubToGame): void {

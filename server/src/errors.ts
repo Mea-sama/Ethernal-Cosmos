@@ -67,6 +67,7 @@ const MESSAGES: Record<ErrorCode, string> = {
   NOT_LOBBY_SERVER: 'Diese Lobby gehört nicht zu diesem Game-Server',
   SERVER_UNAVAILABLE: 'Game-Server nicht erreichbar',
   NOT_ALLOWED: 'Nicht erlaubt',
+  VERSION_CONFLICT: 'Versionskonflikt: der Wert wurde zwischenzeitlich geändert',
 };
 
 /** Fehler mit stabilem Code; wird von Socket-Handlern (Ack/errorDetail) und REST (`code`) ausgewertet. */
@@ -75,6 +76,8 @@ export class HubError extends Error {
     public readonly code: ErrorCode,
     message?: string,
     public readonly retryAfterMs?: number,
+    /** Zusatzdaten für den Client, z.B. `{ current }` bei VERSION_CONFLICT */
+    public readonly data?: Record<string, unknown>,
   ) {
     super(message ?? MESSAGES[code]);
     this.name = 'HubError';
@@ -87,6 +90,7 @@ export class HubError extends Error {
       ...(extra.event ? { event: extra.event } : {}),
       ...(extra.requestId ? { requestId: extra.requestId } : {}),
       ...(this.retryAfterMs !== undefined ? { retryAfterMs: this.retryAfterMs } : {}),
+      ...(this.data ? { data: this.data } : {}),
     };
   }
 }
@@ -128,6 +132,7 @@ const HTTP_STATUS: Partial<Record<ErrorCode, number>> = {
   NO_GAME_SERVER_AVAILABLE: 503,
   NOT_LOBBY_SERVER: 403,
   NOT_ALLOWED: 403,
+  VERSION_CONFLICT: 409,
   SERVER_UNAVAILABLE: 503,
   USERNAME_TAKEN: 409,
   DATA_VALUE_TOO_LARGE: 413,
@@ -141,5 +146,5 @@ export function httpStatusFor(code: ErrorCode): number {
 
 /** Sendet einen HubError als REST-Antwort: `{ error: message, code }` (abwärtskompatibel zu `error`). */
 export function sendHubError(res: import('express').Response, err: HubError): void {
-  res.status(httpStatusFor(err.code)).json({ error: err.message, code: err.code });
+  res.status(httpStatusFor(err.code)).json({ error: err.message, code: err.code, ...(err.data ? { data: err.data } : {}) });
 }

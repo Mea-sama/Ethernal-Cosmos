@@ -242,5 +242,6 @@ export const ErrorCode = {
   InviteNotFound: 'INVITE_NOT_FOUND',
   MessageTooLong: 'MESSAGE_TOO_LONG',
   NotAllowed: 'NOT_ALLOWED',
+  VersionConflict: 'VERSION_CONFLICT',
 } as const;
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];

@@ -330,3 +330,4 @@ Used in: `errorDetail`, ack errors, REST error `code`
 | `INVITE_NOT_FOUND` | `ErrorCode.InviteNotFound` |  |
 | `MESSAGE_TOO_LONG` | `ErrorCode.MessageTooLong` |  |
 | `NOT_ALLOWED` | `ErrorCode.NotAllowed` |  |
+| `VERSION_CONFLICT` | `ErrorCode.VersionConflict` |  |

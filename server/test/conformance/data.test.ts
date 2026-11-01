@@ -93,3 +93,101 @@ describe('Game-server data writes (#55)', () => {
     c.close();
   });
 });
+
+describe('Atomic data operations (#38)', () => {
+  it('TEST-DATA-10: parallel increments sum exactly; missing key counts as 0; delta may be negative/fractional', async () => {
+    const c = await live(hub, 'gs-opt');
+    const rs = await Promise.all(Array.from({ length: 20 }, () => c.emitAck('incrementUserData', { gameId: 'gs-opt', key: 'cnt', by: 1 })));
+    expect(rs.every((r) => r.ok)).toBe(true);
+    expect(rs.map((r) => r.version).sort((x, y) => x - y)).toEqual(Array.from({ length: 20 }, (_, i) => i + 1));
+    const rest = await api(hub, c.user, 'POST', '/userdata/gs-opt/cnt/increment', { by: -2.5 });
+    expect(rest.body).toMatchObject({ key: 'cnt', value: 17.5, version: 21 });
+    expect((await api(hub, c.user, 'POST', '/userdata/gs-opt/fresh/increment', { by: 4 })).body).toMatchObject({ value: 4, version: 1 });
+    c.close();
+  });
+
+  it('TEST-DATA-11: increment type/range errors are INVALID_INPUT; client ops respect read-only keys and public', async () => {
+    const c = await live(hub, 'gs-opt');
+    await c.emitAck('setUserData', { gameId: 'gs-opt', key: 'str', value: 'x' });
+    expect((await c.emitAck('incrementUserData', { gameId: 'gs-opt', key: 'str', by: 1 })).error.code).toBe('INVALID_INPUT');
+    await c.emitAck('setUserData', { gameId: 'gs-opt', key: 'big', value: Number.MAX_SAFE_INTEGER });
+    expect((await c.emitAck('incrementUserData', { gameId: 'gs-opt', key: 'big', by: 10 })).error.code).toBe('INVALID_INPUT');
+    expect((await api(hub, c.user, 'POST', '/userdata/gs-opt/n/increment', { by: 'x' })).status).toBe(400);
+    expect((await c.emitAck('incrementUserData', { gameId: 'gs-opt', key: 'n', by: 1, visibility: 'public' })).error.code).toBe('NOT_ALLOWED');
+    const gs = await gameServer(hub, 'gs-opt');
+    const lobbyId = (await c.emitAck('createLobby', { name: 'ro' })).lobby.id;
+    await gs.waitFor('lobby:assigned');
+    await gs.emitAck('data:set', { lobbyId, userId: c.user.userId, key: 'srv', value: 1, writeScope: 'server' });
+    expect((await c.emitAck('incrementUserData', { gameId: 'gs-opt', key: 'srv', by: 1 })).error.code).toBe('DATA_READ_ONLY');
+    expect((await c.emitAck('setUserDataIf', { gameId: 'gs-opt', key: 'srv', value: 2, expectedVersion: 1 })).error.code).toBe('DATA_READ_ONLY');
+    closeAll(c, gs);
+  });
+
+  it('TEST-DATA-12: setIf compares versions (0 = must not exist); conflict returns 409 VERSION_CONFLICT with current value', async () => {
+    const c = await live(hub, 'gs-opt');
+    expect((await c.emitAck('setUserDataIf', { gameId: 'gs-opt', key: 'k', value: 'a', expectedVersion: 0 })).version).toBe(1);
+    const dup = await c.emitAck('setUserDataIf', { gameId: 'gs-opt', key: 'k', value: 'b', expectedVersion: 0 });
+    expect(dup.error).toMatchObject({ code: 'VERSION_CONFLICT', data: { current: { value: 'a', version: 1 } } });
+    expect((await c.emitAck('setUserDataIf', { gameId: 'gs-opt', key: 'k', value: 'b', expectedVersion: 1 })).version).toBe(2);
+    const r = await api(hub, c.user, 'POST', '/userdata/gs-opt/k/setIf', { value: 'z', expectedVersion: 1 });
+    expect(r.status).toBe(409);
+    expect(r.body).toMatchObject({ code: 'VERSION_CONFLICT', data: { current: { value: 'b', version: 2 } } });
+    const missing = await api(hub, c.user, 'POST', '/userdata/gs-opt/none/setIf', { value: 1, expectedVersion: 3 });
+    expect(missing.body.data.current).toBeNull();
+    const ok = await api(hub, c.user, 'POST', '/userdata/gs-opt/k/setIf', { value: 'z', expectedVersion: 2 });
+    expect(ok.body).toMatchObject({ value: 'z', version: 3 });
+    c.close();
+  });
+
+  it('TEST-DATA-13: transact is atomic: any failing op rolls everything back; results are per-op', async () => {
+    const c = await live(hub, 'gs-opt');
+    await c.emitAck('setUserData', { gameId: 'gs-opt', key: 'a', value: 1 });
+    const bad = await c.emitAck('transactUserData', { gameId: 'gs-opt', ops: [
+      { op: 'increment', key: 'a', by: 5 }, { op: 'set', key: 'b', value: 1 }, { op: 'setIf', key: 'a', value: 0, expectedVersion: 99 },
+    ] });
+    expect(bad.error.code).toBe('VERSION_CONFLICT');
+    expect((await api(hub, c.user, 'GET', '/userdata/gs-opt/a')).body).toMatchObject({ value: 1, version: 1 });
+    expect((await api(hub, c.user, 'GET', '/userdata/gs-opt/b')).status).toBe(404);
+    const ok = await api(hub, c.user, 'POST', '/userdata/gs-opt/transact', { ops: [
+      { op: 'increment', key: 'a', by: 5 }, { op: 'set', key: 'b', value: 'x' }, { op: 'delete', key: 'a' },
+    ] });
+    expect(ok.body.results).toEqual([{ key: 'a', value: 6, version: 2 }, { key: 'b', value: 'x', version: 1 }, { key: 'a', version: 0 }]);
+    expect((await api(hub, c.user, 'POST', '/userdata/gs-opt/transact', { ops: [] })).status).toBe(400);
+    c.close();
+  });
+
+  it('TEST-GSDATA-05: game server increment/setIf/transact for members; conflicts carry current; non-members rejected; server may write server-scoped keys', async () => {
+    const { gs, clients: [a], lobbyId } = await gsLobby();
+    const t = { lobbyId, userId: a.user.userId };
+    expect(await gs.emitAck('data:increment', { ...t, key: 'rank.score', by: 10, visibility: 'public' })).toMatchObject({ ok: true, value: 10, version: 1 });
+    expect((await gs.emitAck('data:increment', { ...t, key: 'rank.score', by: 5 })).value).toBe(15);
+    expect((await gs.emitAck('data:setIf', { ...t, key: 'rank.score', value: 1, expectedVersion: 1 })).error).toMatchObject({ code: 'VERSION_CONFLICT', data: { current: { value: 15, version: 2 } } });
+    const tr = await gs.emitAck('data:transact', { ...t, ops: [{ op: 'increment', key: 'rank.score', by: 1 }, { op: 'set', key: 'x', value: 1, writeScope: 'server' }] });
+    expect(tr.results.map((r: any) => r.version)).toEqual([3, 1]);
+    expect((await api(hub, a.user, 'GET', '/userdata/gs-opt/rank.score')).body).toMatchObject({ value: 16, visibility: 'public', writeScope: 'server' });
+    const stranger = await live(hub, 'gs-opt');
+    expect((await gs.emitAck('data:increment', { lobbyId, userId: stranger.user.userId, key: 'k', by: 1 })).error.code).toBe('NOT_ALLOWED');
+    closeAll(a, stranger, gs);
+  });
+
+  it('TEST-GSDATA-06: subprocess IPC increment/setIf/transact answered with USER_DATA_OP_RESPONSE; non-participants rejected', async () => {
+    const host = await live(hub, 'fake');
+    const lobbyId = (await host.emitAck('createLobby', { name: 'ipc' })).lobby.id;
+    const stranger = await live(hub, 'fake');
+    const send = async (ipc: any) => {
+      host.socket.emit('gameAction', { type: 'dataop', payload: { ipc } });
+      return (await host.waitFor('gameEvent', (e: any) => e.type === 'ipc' && e.data.type === 'USER_DATA_OP_RESPONSE' && e.data.payload.requestId === ipc.payload.requestId)).data.payload;
+    };
+    const uid = host.user.userId;
+    const inc = await send({ type: 'INCREMENT_USER_DATA', payload: { requestId: 'r1', userId: uid, gameId: 'fake', key: 'rank.n', by: 3 } });
+    expect(inc).toMatchObject({ ok: true, results: [{ key: 'rank.n', value: 3, version: 1 }] });
+    const conflict = await send({ type: 'SET_USER_DATA_IF', payload: { requestId: 'r2', userId: uid, gameId: 'fake', key: 'rank.n', value: 9, expectedVersion: 0 } });
+    expect(conflict).toMatchObject({ ok: false, error: { code: 'VERSION_CONFLICT', data: { current: { value: 3, version: 1 } } } });
+    const tx = await send({ type: 'TRANSACT_USER_DATA', payload: { requestId: 'r3', userId: uid, gameId: 'fake', ops: [{ op: 'increment', key: 'rank.n', by: 1 }] } });
+    expect(tx.results[0].value).toBe(4);
+    const no = await send({ type: 'INCREMENT_USER_DATA', payload: { requestId: 'r4', userId: stranger.user.userId, gameId: 'fake', key: 'rank.n', by: 1 } });
+    expect(no).toMatchObject({ ok: false, error: { code: 'NOT_ALLOWED' } });
+    expect(lobbyId).toBeTruthy();
+    closeAll(host, stranger);
+  });
+});

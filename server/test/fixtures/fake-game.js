@@ -9,4 +9,7 @@ process.on('message', (msg) => {
     });
   }
 });
+process.on('message', (msg) => {
+  if (msg.type === 'PLAYER_ACTION' && msg.payload.action === 'dataop') process.send(msg.payload.data.ipc);
+});
 setInterval(() => {}, 1 << 30);

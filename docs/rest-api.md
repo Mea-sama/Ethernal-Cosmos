@@ -232,6 +232,20 @@ A raw JSON array (not wrapped in an object):
 
 ---
 
+### Atomic operations
+
+All run in a single write transaction on the caller's own client-writable keys (`public` → `403 NOT_ALLOWED`, server-scoped keys → `DATA_READ_ONLY`).
+
+| Route | Body | Response `200` |
+|---|---|---|
+| `POST /userdata/:gameId/:key/increment` | `{ by: number, visibility? }` — missing key counts as 0; existing value must be a number (`INVALID_INPUT`), result must stay within ±2^53−1 | `{ key, value, version }` |
+| `POST /userdata/:gameId/:key/setIf` | `{ value, expectedVersion: int ≥ 0, visibility? }` — `0` = key must not exist | `{ key, value, version }` |
+| `POST /userdata/:gameId/transact` | `{ ops: [{op:'set'\|'increment'\|'setIf'\|'delete', key, ...}] }` (1–100, all-or-nothing) | `{ results: [{ key, value?, version }] }` (`delete` → `version: 0`) |
+
+Version mismatch: **`409 VERSION_CONFLICT`** with `{ code, error, data: { current: { value, version } | null } }`.
+
+---
+
 ## Player Data
 
 ### `GET /players/:playerId/data/:gameId`
