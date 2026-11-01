@@ -5,7 +5,7 @@ import { verifyToken, setSessionTerminator } from '../auth/auth.service';
 import { lobbyManager } from './lobby.manager';
 import { getGame } from '../games/game.registry';
 import { instanceManager } from '../games/instance.manager';
-import { applyOps, bulkSet, deleteKey, getAllOwn, getVisibleData, writeEntries } from '../user-data/userdata.service';
+import { applyOps, bulkSet, deleteKey, getAllOwn, getPlayerData, writeEntries } from '../user-data/userdata.service';
 import { GameIdSchema, KeySchema, VisibilitySchema, BulkEntriesSchema, OpsSchema } from '../user-data/userdata.schemas';
 import { serverLimits } from '../config/limits';
 import { HubError, isHubError } from '../errors';
@@ -991,10 +991,7 @@ export function registerLobbyHandlers(io: AppServer): void {
         new HubError('INVALID_INPUT', 'Ungültige Spiel-ID'),
       );
       if (!getGame(gameId)) throw new HubError('UNKNOWN_GAME');
-      const requesterLobby = lobbyManager.getLobbyByUserId(userId);
-      const targetLobby = lobbyManager.getLobbyByUserId(playerId);
-      const inSameLobby = !!(requesterLobby && targetLobby && requesterLobby.id === targetLobby.id);
-      const entries = await getVisibleData(playerId, gameId, inSameLobby);
+      const entries = await getPlayerData(userId, playerId, gameId);
       socket.emit('playerData', { playerId, gameId, entries });
       return { playerId, gameId, entries };
     });

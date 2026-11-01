@@ -174,17 +174,17 @@ Store: key–value, PK `(user_id, game_id, key)`, value = any JSON (stored as te
 | FEAT-DATA-03 | `PUT /userdata/:gameId/:key {value, visibility?}` | Upsert. **Omitting `visibility` resets it to `private`** (does not preserve the previous visibility). |
 | FEAT-DATA-04 | `PATCH /userdata/:gameId` `[ {key,value,visibility?}, … ]` | Bulk upsert, 1–100 entries, single batch transaction. |
 | FEAT-DATA-05 | `DELETE /userdata/:gameId/:key` | Delete own key (204 even if missing). |
-| FEAT-DATA-06 | `GET /players/:playerId/data/:gameId` / socket `getPlayerData` | Another user’s entries: `public` always; `lobby` only if requester and target are **currently in the same lobby**; `private` never. Works for offline users (`public` only). Own ID works via same rule. |
+| FEAT-DATA-06 | `GET /players/:playerId/data/:gameId` / socket `getPlayerData` | Visibility `friends` (client-writable). Self: `private`+`lobby`+`friends`. Friend: `friends`, plus `lobby` while both are in the same lobby of that game. Lobby-mate (non-friend): `lobby`. Everyone else, including non-existent users: identical `NOT_ALLOWED` (403). `public` is leaderboard-only and never returned here. |
 | FEAT-DATA-07 | `GET /leaderboard/:gameId/:key?order=asc\|desc&limit=1..100&offset=0&scope=all\|friends&me=true&around=me&range=1..50` | Leaderboard over `public` (server-written) numeric keys (`num_value`, indexed); only `serverSupport != none` games (else 404). Order: value, earlier `updatedAt`, `userId`; rows `{rank,userId,username,value,updatedAt}`. Default `desc`, 10. Plain response is an array; with `me=true`/`around=me` it is `{entries, me, total}` (`me` = own row+rank or `null`, also if hidden). Invalid params → 400 `INVALID_INPUT`. Users with `leaderboardVisible=false` (social setting, default true) are omitted from entries/ranks. |
 | FEAT-DATA-08 | Hosted subprocess may read/write via IPC (FEAT-GAME-03). |
 | FEAT-DATA-09 | Validation: `gameId` `^[a-z0-9-]{1,32}$`; `key` `^[a-zA-Z0-9_.-]{1,64}$`. |
 | QUIRK-DATA-01 | **[FIXED #55]** Clients write only their own `private`/`lobby`/`friends` data; `public` (leaderboard key) is server-write-only (`NOT_ALLOWED` for clients, no silent downgrade) and implies `writeScope: server`. Game servers write over `/gameserver` (`data:set`/`data:bulk`/`data:get`, lobby-member check, 60 s after close, audited in `written_by`); `serverSupport: none` games cannot create `public` keys. Migration v6 downgrades existing client-written `public` rows to `private`. |
 | QUIRK-DATA-02 | `gameId` in data APIs is **not checked against the registry** — any string can be created, consuming storage (no per-user quota). No value size limit besides HTTP body limit (Express default 100 kB) / Socket.io frame. |
 | QUIRK-DATA-03 | **[FIXED #39]** Leaderboards are deterministic, ranked, paginated, with own-rank/around-me. Still open: **periodic resets (daily/weekly) are not implemented** (follow-up); no per-lobby leaderboards. |
-| QUIRK-DATA-04 | `getPlayerData` returns `[]` for non-existent players (no 404; allows no enumeration but also no existence check). Presence IDs are public, so IDs are discoverable. |
+| QUIRK-DATA-04 | **[FIXED #42]** `getPlayerData` no longer returns `[]` for strangers/unknown users: `NOT_ALLOWED` is identical for both (no enumeration via this endpoint). Presence IDs are still discoverable. |
 | QUIRK-DATA-05 | **[FIXED #38]** Atomic `increment`, `setIf` (compare version; `VERSION_CONFLICT` 409 with `data.current`) and all-or-nothing `transact` over REST (`POST /userdata/:gameId/:key/increment`, `/:key/setIf`, `/:gameId/transact`), sockets (`incrementUserData`, `setUserDataIf`, `transactUserData`), `/gameserver` (`data:increment`/`data:setIf`/`data:transact`) and subprocess IPC. Still: no TTL/expiry, no schema/versioning, no history, no export/delete-all (GDPR) endpoint. |
 | QUIRK-DATA-06 | Socket `getUserData`/`getPlayerData` are read-only; writes are REST-only (and IPC). |
-| GAP-DATA-01 | No profile/avatar/bio/level/XP/currency/inventory/achievement concept at hub level; games must model these as keys. No global (cross-game) profile namespace (use a reserved gameId by convention). No data for friends-only visibility (`friends` level). No cloud-save blobs (>100 kB) or binary data. |
+| GAP-DATA-01 | No profile/avatar/bio/level/XP/currency/inventory/achievement concept at hub level; games must model these as keys. No global (cross-game) profile namespace (use a reserved gameId by convention). (`friends` visibility added in #42.) No cloud-save blobs (>100 kB) or binary data. |
 
 ## 9. Rate limiting & abuse controls (`LIMIT`)
 
@@ -275,7 +275,7 @@ Hub-side only: SDK parity is covered by the SDK test suites.
 | TEST-RECON-06 | explicit leaveLobby sends PLAYER_LEAVE immediately (no grace) |
 | TEST-DATA-01 | PUT without visibility keeps the existing visibility and bumps the version |
 | TEST-DATA-02 | serverKeys are read-only for clients (REST single+PATCH transactional, socket); subprocess writes via SAVE_META |
-| TEST-DATA-03 | visibility matrix: private never, lobby for lobby-mates |
+| TEST-DATA-03 | `getPlayerData` matrix: private never; lobby for lobby-mates (same game); friends for friends; self sees all except `public`; strangers and unknown users get identical `NOT_ALLOWED` |
 | TEST-DATA-04 | validation: unknown game, bad key chars, value size, per-game quota |
 | TEST-DATA-05 | socket parity: setUserData / bulkSetUserData / deleteUserData / getUserData and codes |
 | TEST-DATA-06 | SAVE_META for a game other than the lobby game is discarded |
@@ -290,12 +290,14 @@ Hub-side only: SDK parity is covered by the SDK test suites.
 | TEST-DATA-11 | increment/setIf type and range errors `INVALID_INPUT`; `public` → `NOT_ALLOWED`; server keys → `DATA_READ_ONLY` |
 | TEST-DATA-12 | `setIf` version compare (0 = must not exist); `VERSION_CONFLICT` (409) carries current value/version |
 | TEST-DATA-13 | `transactUserData` all-or-nothing with per-op results |
+| TEST-DATA-14 | clients may write `friends` data; REST `GET /players/:id/data/:gameId` follows the same rules as the socket |
 | TEST-GSDATA-05 | game server `data:increment`/`data:setIf`/`data:transact` for members |
 | TEST-GSDATA-06 | subprocess IPC `INCREMENT_USER_DATA`/`SET_USER_DATA_IF`/`TRANSACT_USER_DATA` → `USER_DATA_OP_RESPONSE` |
 | TEST-LB-01 | leaderboard rows carry `rank`; deterministic ties (value, earlier `updatedAt`, `userId`); asc/desc; non-numeric excluded |
 | TEST-LB-02 | `offset`/`limit` pagination with absolute ranks; invalid params → 400 `INVALID_INPUT`; `serverSupport: none` games → 404 |
 | TEST-LB-03 | `me=true` / `around=me&range=N` (own rank, total, window); `leaderboardVisible=false` hides the player but keeps own `me` |
 | TEST-LB-04 | social setting `leaderboardVisible` (default true, type-validated, kept across other updates) |
+| TEST-LB-05 | `scope=friends` leaderboard (friends + self, own rank among them); `public` never readable via `getPlayerData` |
 | TEST-AUTH-01 | socket without refresh gets AUTH_EXPIRED after expiry and is disconnected |
 | TEST-AUTH-02 | auth:refresh keeps the socket alive beyond the original expiry |
 | TEST-AUTH-03 | auth:refresh with another user's token is INVALID_TOKEN |

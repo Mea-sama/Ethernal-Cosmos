@@ -209,6 +209,8 @@ public enum DataVisibility
     [WireValue("private")] Private,
     /// <summary>owner and lobby members</summary>
     [WireValue("lobby")] Lobby,
+    /// <summary>owner and friends</summary>
+    [WireValue("friends")] Friends,
     /// <summary>leaderboard key; only a game server can set it</summary>
     [WireValue("public")] Public,
 }

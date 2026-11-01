@@ -92,7 +92,7 @@ describe('User-Daten Integrität (#19)', () => {
     const mate = await b.emitAck('getPlayerData', { playerId: a.user.userId, gameId: 'relay' });
     expect(mate.entries.map((e: any) => e.key)).toEqual(['lob']);
     const other = await stranger.emitAck('getPlayerData', { playerId: a.user.userId, gameId: 'relay' });
-    expect(other.entries).toEqual([]);
+    expect(other.error.code).toBe('NOT_ALLOWED');
     for (const c of [a, b, stranger]) c.close();
   });
 });

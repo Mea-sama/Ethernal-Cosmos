@@ -306,7 +306,7 @@ socket.emit('getPlayerData', {
 });
 ```
 
-Request another player's visible KV data. Server responds with `playerData`.
+Request a player's KV data you may see (self: private/lobby/friends; friend: friends (+ lobby in a shared lobby); lobby-mate: lobby). Everyone else, including unknown players, gets `NOT_ALLOWED`. Server responds with `playerData`.
 
 ---
 

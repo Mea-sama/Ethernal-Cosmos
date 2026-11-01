@@ -163,6 +163,7 @@ Used in: `UserDataEntry.visibility`, `setUserData`
 |---|---|---|
 | `private` | `DataVisibility.Private` | only the owner |
 | `lobby` | `DataVisibility.Lobby` | owner and lobby members |
+| `friends` | `DataVisibility.Friends` | owner and friends |
 | `public` | `DataVisibility.Public` | leaderboard key; only a game server can set it |
 
 ## DataWriteScope

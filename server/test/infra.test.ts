@@ -18,6 +18,22 @@ describe('Migrationen (#12)', () => {
     expect((await db.execute('SELECT version FROM schema_migrations ORDER BY version')).rows.map((r) => Number(r.version))).toEqual([1, 2, 3, 4, 5, 6, 7]);
   });
 
+  it('v6/v7: client-written public rows become private; num_value is backfilled for numbers only', async () => {
+    const db = createClient({ url: ':memory:' });
+    await runMigrations(db, MIGRATIONS.filter((m) => m.version <= 5));
+    await db.execute("INSERT INTO users (id, username, password_hash, created_at) VALUES ('u','n','h',1)");
+    const ins = (key: string, value: string, vis: string, scope: string): Promise<unknown> =>
+      db.execute({ sql: 'INSERT INTO user_data (user_id, game_id, key, value, visibility, updated_at, write_scope) VALUES (?,?,?,?,?,1,?)', args: ['u', 'g', key, value, vis, scope] });
+    await ins('forged', '99', 'public', 'client');
+    await ins('real', '7.5', 'public', 'server');
+    await ins('text', '"x"', 'public', 'server');
+    await runMigrations(db);
+    const rows = Object.fromEntries((await db.execute('SELECT key, visibility, num_value FROM user_data')).rows.map((r) => [r.key, r]));
+    expect(rows.forged).toMatchObject({ visibility: 'private', num_value: 99 });
+    expect(rows.real).toMatchObject({ visibility: 'public', num_value: 7.5 });
+    expect(rows.text).toMatchObject({ visibility: 'public', num_value: null });
+  });
+
   it('Bestehende DB ohne schema_migrations (alte Installation) wird ohne Datenverlust übernommen', async () => {
     const db = createClient({ url: ':memory:' });
     await db.execute('CREATE TABLE users (id TEXT PRIMARY KEY, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, created_at INTEGER NOT NULL)');

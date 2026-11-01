@@ -107,6 +107,7 @@ export type JoinRequestWithdrawReason = (typeof JoinRequestWithdrawReason)[keyof
 export const DataVisibility = {
   Private: 'private', // only the owner
   Lobby: 'lobby', // owner and lobby members
+  Friends: 'friends', // owner and friends
   Public: 'public', // leaderboard key; only a game server can set it
 } as const;
 export type DataVisibility = (typeof DataVisibility)[keyof typeof DataVisibility];

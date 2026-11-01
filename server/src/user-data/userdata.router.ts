@@ -1,11 +1,10 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { requireAuth } from '../auth/auth.middleware';
-import { lobbyManager } from '../lobby/lobby.manager';
 import { GameIdSchema, KeySchema, VisibilitySchema, BulkEntriesSchema, IncrementBodySchema, SetIfBodySchema, OpsSchema } from './userdata.schemas';
 import { getGame } from '../games/game.registry';
 import { HubError, isHubError, sendHubError } from '../errors';
-import { setKey, getKey, deleteKey, getAllOwn, bulkSet, applyOps, getVisibleData, getLeaderboard } from './userdata.service';
+import { setKey, getKey, deleteKey, getAllOwn, bulkSet, applyOps, getPlayerData, getLeaderboard } from './userdata.service';
 
 function handleError(res: import('express').Response, tag: string, err: unknown): void {
   if (isHubError(err)) {
@@ -157,22 +156,18 @@ playerDataRouter.use(requireAuth);
 
 /**
  * GET /players/:playerId/data/:gameId
- * Gibt die sichtbaren Keys eines anderen Spielers zurück.
- * Lobby-Keys nur sichtbar wenn Requester + Target in derselben aktiven Lobby.
+ * Sichtbare Keys eines Spielers: selbst private/lobby/friends; Freund friends (+ lobby in gemeinsamer Lobby);
+ * Lobby-Mitglied lobby; sonst 403 NOT_ALLOWED (auch für unbekannte User).
  */
 playerDataRouter.get('/:playerId/data/:gameId', async (req, res): Promise<void> => {
   const gameId = GameIdSchema.safeParse(req.params.gameId);
   if (!gameId.success) { res.status(400).json({ error: 'Ungültige Spiel-ID' }); return; }
 
-  const requesterId    = req.auth!.userId;
-  const { playerId }   = req.params;
-  const requesterLobby = lobbyManager.getLobbyByUserId(requesterId);
-  const targetLobby    = lobbyManager.getLobbyByUserId(playerId);
-  const inSameLobby    = !!(requesterLobby && targetLobby && requesterLobby.id === targetLobby.id);
+  const { playerId } = req.params;
 
   if (!knownGame(res, gameId.data)) return;
   try {
-    res.json(await getVisibleData(playerId, gameId.data, inSameLobby));
+    res.json(await getPlayerData(req.auth!.userId, playerId, gameId.data));
   } catch (err) {
     handleError(res, '[PlayerData] GET Fehler:', err);
   }

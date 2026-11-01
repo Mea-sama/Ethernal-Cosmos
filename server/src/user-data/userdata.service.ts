@@ -2,7 +2,8 @@ import { db } from '../db/database';
 import type { DataVisibility, DataWriteScope, UserDataEntry } from '@ethernal/shared';
 import { HubError } from '../errors';
 import { getGame } from '../games/game.registry';
-import { friendIds } from '../social/friends.service';
+import { areFriends, friendIds } from '../social/friends.service';
+import { lobbyManager } from '../lobby/lobby.manager';
 
 // ─── Limits ───────────────────────────────────────────────────────────────────
 
@@ -283,16 +284,26 @@ export async function bulkSet(
 // ─── Fremde Daten (sichtbare Keys) ────────────────────────────────────────────
 
 /**
- * Gibt die sichtbaren Keys eines anderen Spielers zurück.
- * - inSameLobby=true  → public + lobby
- * - inSameLobby=false → nur public
+ * Daten eines Spielers für einen Betrachter (#42):
+ *  - selbst: private + lobby + friends
+ *  - Freund: friends, dazu lobby wenn beide in derselben Lobby dieses Spiels sind
+ *  - Lobby-Mitglied (kein Freund): lobby
+ *  - sonst (auch unbekannte User): NOT_ALLOWED – nicht von „existiert nicht" unterscheidbar
+ * `public` (Bestenlistenschlüssel) ist nie über diesen Weg lesbar.
  */
-export async function getVisibleData(
-  targetId: string,
-  gameId: string,
-  inSameLobby: boolean
-): Promise<UserDataEntry[]> {
-  const visibilities = inSameLobby ? ['public', 'lobby'] : ['public'];
+export async function getPlayerData(requesterId: string, targetId: string, gameId: string): Promise<UserDataEntry[]> {
+  const visibilities: DataVisibility[] = [];
+  if (requesterId === targetId) {
+    visibilities.push('private', 'lobby', 'friends');
+  } else {
+    const a = lobbyManager.getLobbyByUserId(requesterId);
+    const b = lobbyManager.getLobbyByUserId(targetId);
+    const sameLobby = !!(a && b && a.id === b.id && a.gameId === gameId);
+    const friends = await areFriends(requesterId, targetId);
+    if (friends) visibilities.push('friends');
+    if (sameLobby) visibilities.push('lobby');
+    if (visibilities.length === 0) throw new HubError('NOT_ALLOWED');
+  }
   const placeholders = visibilities.map(() => '?').join(', ');
   const result = await db.execute({
     sql: `SELECT key, value, visibility, updated_at, write_scope, version FROM user_data

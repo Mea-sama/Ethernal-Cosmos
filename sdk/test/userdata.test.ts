@@ -60,7 +60,7 @@ describe('user data (socket)', () => {
       { key: 'lob', value: 2, visibility: DataVisibility.Lobby },
       { key: 'priv', value: 3, visibility: DataVisibility.Private },
     ]);
-    expect(keys(await stranger.client.getPlayerData(owner.userId, 'other'))).toEqual([]);
+    expect((await rejectsWith(stranger.client.getPlayerData(owner.userId, 'other'))).code).toBe(ErrorCode.NotAllowed);
     const lobby = await owner.client.createLobby({ name: 'data' });
     await mate.client.joinLobby(lobby.id);
     const visible = keys(await mate.client.getPlayerData(owner.userId, 'other'));

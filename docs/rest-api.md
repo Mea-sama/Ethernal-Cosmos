@@ -155,7 +155,7 @@ All `/userdata` endpoints require authentication (`Authorization: Bearer <access
 **Constraints**
 - `gameId`: 1–32 chars, `[a-z0-9-]`
 - `key`: 1–64 chars, `[a-zA-Z0-9_.-]`
-- `visibility`: one of `"private"`, `"lobby"`, `"public"` (default: `"private"`; omitting it on an existing key keeps the current one). `"public"` marks a leaderboard key and can only be set by a game server: client writes with it fail with `403 NOT_ALLOWED` (never silently downgraded).
+- `visibility`: one of `"private"`, `"lobby"`, `"friends"`, `"public"` (default: `"private"`; omitting it on an existing key keeps the current one). `"public"` marks a leaderboard key and can only be set by a game server: client writes with it fail with `403 NOT_ALLOWED` (never silently downgraded).
 
 ### `GET /userdata/:gameId`
 
@@ -250,11 +250,13 @@ Version mismatch: **`409 VERSION_CONFLICT`** with `{ code, error, data: { curren
 
 ### `GET /players/:playerId/data/:gameId`
 
-Return visible KV entries for another user.
+Return the KV entries of a user that the caller may see:
+- **Self:** `private`, `lobby` and `friends` entries
+- **Friend:** `friends` entries, plus `lobby` entries while both are in the same lobby of this game
+- **Lobby-mate (not a friend):** `lobby` entries
+- **Anyone else, including non-existent users:** `403 NOT_ALLOWED` (identical response, no existence leak)
 
-Returns:
-- All `public` entries
-- `lobby` entries only if the requesting user and target user are in the same lobby
+`public` entries are leaderboard keys and are never returned here (see Leaderboard).
 
 **Response `200`** — array of `UserDataEntry`
 

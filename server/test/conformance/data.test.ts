@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { api, closeAll, gameServer, live, sleep, startHub, type GsClient, type TestClient, type TestHub } from './util';
+import { api, befriend, closeAll, gameServer, live, sleep, startHub, type GsClient, type TestClient, type TestHub } from './util';
 
 let hub: TestHub;
 beforeAll(async () => { hub = await startHub(); });
@@ -250,5 +250,41 @@ describe('Leaderboards (#39)', () => {
     expect((await c.emitAck('social:setSettings', { leaderboardVisible: false })).settings.leaderboardVisible).toBe(false);
     expect((await c.emitAck('social:setSettings', { status: 'away' })).settings.leaderboardVisible).toBe(false);
     c.close();
+  });
+});
+
+describe('Friends visibility (#42)', () => {
+  it('TEST-DATA-14: clients may write friends-visibility data; owner reads it; GET /players enforces the same rules as the socket', async () => {
+    const a = await live(hub, 'gs-opt');
+    const friend = await live(hub, 'gs-opt');
+    const stranger = await live(hub, 'gs-opt');
+    await befriend(a, friend);
+    expect((await a.emitAck('setUserData', { gameId: 'gs-opt', key: 'fr', value: 1, visibility: 'friends' })).ok).toBe(true);
+    expect((await api(hub, a.user, 'PUT', '/userdata/gs-opt/fr2', { value: 2, visibility: 'friends' })).status).toBe(200);
+    expect((await api(hub, a.user, 'GET', '/userdata/gs-opt/fr')).body.visibility).toBe('friends');
+    expect((await api(hub, friend.user, 'GET', `/players/${a.user.userId}/data/gs-opt`)).body.map((e: any) => e.key)).toEqual(['fr', 'fr2']);
+    expect((await api(hub, stranger.user, 'GET', `/players/${a.user.userId}/data/gs-opt`)).status).toBe(403);
+    expect((await api(hub, a.user, 'GET', `/players/${a.user.userId}/data/gs-opt`)).body).toHaveLength(2);
+    expect((await api(hub, a.user, 'PUT', '/userdata/gs-opt/x', { value: 1, visibility: 'nope' })).status).toBe(400);
+    closeAll(a, friend, stranger);
+  });
+
+  it('TEST-LB-05: scope=friends ranks only friends and self (own rank among friends); public data is never exposed via getPlayerData', async () => {
+    const { gs, clients: [a, b, c], lobbyId } = await gsLobby(3);
+    await befriend(a, b);
+    for (const [cl, v] of [[a, 10], [b, 30], [c, 20]] as const) {
+      await gs.emitAck('data:set', { lobbyId, userId: cl.user.userId, key: 'lb5', value: v, visibility: 'public' });
+    }
+    const all = (await api(hub, a.user, 'GET', '/leaderboard/gs-opt/lb5')).body as any[];
+    expect(all.map((r) => r.value)).toEqual([30, 20, 10]);
+    const fr = (await api(hub, a.user, 'GET', '/leaderboard/gs-opt/lb5?scope=friends&me=true')).body;
+    expect(fr.entries.map((r: any) => [r.userId, r.rank])).toEqual([[b.user.userId, 1], [a.user.userId, 2]]);
+    expect(fr.me).toMatchObject({ rank: 2 });
+    expect(fr.total).toBe(2);
+    const solo = (await api(hub, c.user, 'GET', '/leaderboard/gs-opt/lb5?scope=friends')).body as any[];
+    expect(solo.map((r) => r.userId)).toEqual([c.user.userId]);
+    const seen = await a.emitAck('getPlayerData', { playerId: a.user.userId, gameId: 'gs-opt' });
+    expect(seen.entries).toEqual([]);
+    closeAll(a, b, c, gs);
   });
 });
