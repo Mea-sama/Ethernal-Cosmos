@@ -13,6 +13,7 @@ import type {
 } from '@ethernal/shared';
 import { initDatabase } from './db/database';
 import { authRouter } from './auth/auth.router';
+import { accountRouter } from './account/account.router';
 import { userDataRouter, playerDataRouter, leaderboardRouter } from './user-data/userdata.router';
 import { dudgQuestionsRouter } from './games/dudg/dudg-questions.router';
 import { registerSocketAuth, registerLobbyHandlers, registerIpcRouting } from './lobby/lobby.socket';
@@ -216,6 +217,7 @@ app.get('/games', (_req, res) => {
 });
 
 app.use('/auth', authRouter);
+app.use('/account', accountRouter);
 app.use('/userdata', restRateLimit('userdata'), userDataRouter);
 app.use('/players', restRateLimit('players'), playerDataRouter);
 app.use('/leaderboard', restRateLimit('leaderboard'), leaderboardRouter);

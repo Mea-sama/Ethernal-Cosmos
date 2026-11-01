@@ -125,9 +125,10 @@ export async function updateSettings(userId: string, patch: unknown): Promise<Se
 
 export async function setLastSeen(userId: string, at: number): Promise<void> {
   await db.execute({
-    sql: `INSERT INTO social_settings (user_id, last_seen) VALUES (?, ?)
+    // Nur für existierende Accounts (ein Disconnect nach Account-Löschung darf keine Zeile neu anlegen)
+    sql: `INSERT INTO social_settings (user_id, last_seen) SELECT ?, ? WHERE EXISTS (SELECT 1 FROM users WHERE id = ?)
           ON CONFLICT(user_id) DO UPDATE SET last_seen = excluded.last_seen`,
-    args: [userId, at],
+    args: [userId, at, userId],
   });
   const hit = cache.get(userId);
   if (hit) hit.lastSeen = at;

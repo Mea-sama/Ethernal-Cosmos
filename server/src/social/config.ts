@@ -30,5 +30,7 @@ export const socialConfig = {
   /** Einladung umgeht Lobby-Sperre (Default: ja) */
   get inviteBypassLock(): boolean { return process.env.LOBBY_INVITE_BYPASS_LOCK !== 'false'; },
 
+  get maxBlocks(): number { return num('BLOCKS_MAX', 500); },
+
   get purgeIntervalMs(): number { return num('SOCIAL_PURGE_INTERVAL_MS', 60 * 60_000); },
 };

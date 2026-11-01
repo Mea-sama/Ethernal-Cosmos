@@ -20,6 +20,8 @@ export interface PublicUser {
 export interface AuthPayload {
   userId: string;
   username: string;
+  /** Token-Version (ungültig, sobald das Passwort geändert wurde); fehlt = 0 */
+  tv?: number;
 }
 
 /** Antwort auf register/login/refresh */

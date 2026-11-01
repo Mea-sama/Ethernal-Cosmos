@@ -9,6 +9,13 @@ export interface FriendInfo {
 }
 
 
+/** Entry of the caller's private block list (never visible to the blocked user) */
+export interface BlockedUserInfo {
+  userId: string;
+  username: string;
+  blockedAt: number;
+}
+
 export interface FriendRequestInfo {
   id: string;
   /** Bei eingehenden Anfragen der Absender, bei ausgehenden der Empfänger */
@@ -187,4 +194,30 @@ export interface JoinRequestsResult {
   incoming: JoinRequestInfo[];
   /** The caller's own open request, if any */
   outgoing?: JoinRequestInfo;
+}
+
+/** `GET /account/export` — everything the hub stores about the caller (never other users' private data). */
+export interface AccountExport {
+  exportedAt: number;
+  profile: { id: string; username: string; createdAt: number };
+  userData: Array<{ gameId: string; key: string; value: unknown; visibility: string; updatedAt: number }>;
+  friends: FriendInfo[];
+  /** Direct messages sent or received by the caller within the retention window */
+  messages: DirectMessage[];
+  notifications: HubNotification[];
+  settings: SocialSettings;
+  blocks: BlockedUserInfo[];
+}
+
+/** Body of `POST /auth/password` */
+export interface ChangePasswordRequest {
+  currentPassword: string;
+  newPassword: string;
+  /** Socket.io id of the calling session; this socket is not kicked */
+  socketId?: string;
+}
+
+/** Body of `DELETE /auth/account` */
+export interface DeleteAccountRequest {
+  password: string;
 }

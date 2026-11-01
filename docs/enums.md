@@ -114,6 +114,7 @@ Used in: `player:left` (game server)
 | `left` | `PlayerLeftReason.Left` | player left voluntarily |
 | `kicked` | `PlayerLeftReason.Kicked` | player was kicked |
 | `timeout` | `PlayerLeftReason.Timeout` | reconnect grace expired |
+| `account_deleted` | `PlayerLeftReason.AccountDeleted` | the account was deleted |
 
 ## SessionReplacedReason
 
@@ -124,6 +125,17 @@ Used in: `session:replaced`
 | Wire value | Node.js / C# member | Meaning |
 |---|---|---|
 | `new_session` | `SessionReplacedReason.NewSession` | the same account connected from a new session |
+| `password_changed` | `SessionReplacedReason.PasswordChanged` | the password was changed from another session |
+
+## FriendRemovedReason
+
+Reason of `friend:removed` (absent = plain unfriend/block).
+
+Used in: -
+
+| Wire value | Node.js / C# member | Meaning |
+|---|---|---|
+| `account_deleted` | `FriendRemovedReason.AccountDeleted` | the friend deleted their account |
 
 ## JoinRequestRejectReason
 
@@ -333,3 +345,4 @@ Used in: `errorDetail`, ack errors, REST error `code`
 | `MESSAGE_TOO_LONG` | `ErrorCode.MessageTooLong` |  |
 | `NOT_ALLOWED` | `ErrorCode.NotAllowed` |  |
 | `VERSION_CONFLICT` | `ErrorCode.VersionConflict` |  |
+| `BLOCK_LIMIT_REACHED` | `ErrorCode.BlockLimitReached` |  |

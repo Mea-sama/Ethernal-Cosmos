@@ -1,6 +1,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import type {
   FriendInfo,
+  FriendRemovedReason,
   FriendRequestInfo,
   FriendRequestResult,
   FriendRequestSource,
@@ -11,6 +12,7 @@ import { HubError } from '../errors';
 import { lobbyManager } from '../lobby/lobby.manager';
 import { socialConfig } from './config';
 import { emitToUser } from './bus';
+import { isBlockedEither } from './blocks.service';
 import { dropNotifications, notify } from './notifications.service';
 
 /** Hooks, die andere Social-Module bei Freundschafts-Ende registrieren (vermeidet Import-Zyklen). */
@@ -95,6 +97,10 @@ async function findRequestBetween(from: string, to: string): Promise<RequestRow 
   return res.rows.length ? toRequest(res.rows[0] as unknown as Record<string, unknown>) : undefined;
 }
 
+/** Filter für Anfragen (Alias r), die nicht durch einen Block versteckt sind */
+const VISIBLE_REQUEST = `NOT EXISTS (SELECT 1 FROM user_blocks b WHERE
+  (b.blocker_id = r.from_user AND b.blocked_id = r.to_user) OR (b.blocker_id = r.to_user AND b.blocked_id = r.from_user))`;
+
 const requestKey = (id: string): string => `friend_request:${id}`;
 
 async function establish(requesterId: string, responderId: string, requestId: string | undefined): Promise<void> {
@@ -127,7 +133,9 @@ async function createRequest(fromId: string, toId: string, source: FriendRequest
   if (await areFriends(fromId, toId)) return;
   if ((await friendCount(fromId)) >= socialConfig.maxFriends) throw new HubError('FRIEND_LIMIT_REACHED');
 
-  const inverse = await findRequestBetween(toId, fromId);
+  const blocked = await isBlockedEither(fromId, toId);
+
+  const inverse = blocked ? undefined : await findRequestBetween(toId, fromId);
   if (inverse) {
     if ((await friendCount(toId)) >= socialConfig.maxFriends) return;
     await establish(toId, fromId, inverse.id);
@@ -137,7 +145,7 @@ async function createRequest(fromId: string, toId: string, source: FriendRequest
   if ((await count('SELECT COUNT(*) AS n FROM friend_requests WHERE from_user = ? AND expires_at > ?', [fromId, Date.now()])) >= socialConfig.maxOutgoingRequests) {
     throw new HubError('REQUEST_LIMIT_REACHED');
   }
-  if ((await count('SELECT COUNT(*) AS n FROM friend_requests WHERE to_user = ? AND expires_at > ?', [toId, Date.now()])) >= socialConfig.maxIncomingRequests) return;
+  if ((await count(`SELECT COUNT(*) AS n FROM friend_requests r WHERE r.to_user = ? AND r.expires_at > ? AND ${VISIBLE_REQUEST}`, [toId, Date.now()])) >= socialConfig.maxIncomingRequests) return;
 
   const now = Date.now();
   const id = uuidv4();
@@ -146,6 +154,8 @@ async function createRequest(fromId: string, toId: string, source: FriendRequest
     sql: 'INSERT INTO friend_requests (id, from_user, to_user, source, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)',
     args: [id, fromId, toId, source, now, expiresAt],
   });
+  // Shadow-Anfrage: für den Absender sichtbar wie jede andere, dem Empfänger wird nie etwas zugestellt oder angezeigt
+  if (blocked) return;
   const sender = await userInfo(fromId);
   if (!sender) return;
   const request: FriendRequestInfo = { id, user: sender, source, createdAt: now, expiresAt };
@@ -184,7 +194,7 @@ export async function requestFromLobby(fromId: string, targetId: string): Promis
 
 export async function respond(userId: string, requestId: string, accept: boolean): Promise<void> {
   const req = await findRequest(requestId);
-  if (!req || req.to !== userId) throw new HubError('FRIEND_REQUEST_NOT_FOUND');
+  if (!req || req.to !== userId || (await isBlockedEither(req.from, req.to))) throw new HubError('FRIEND_REQUEST_NOT_FOUND');
   if (accept) {
     if ((await friendCount(userId)) >= socialConfig.maxFriends) throw new HubError('FRIEND_LIMIT_REACHED');
     if ((await friendCount(req.from)) >= socialConfig.maxFriends) {
@@ -206,10 +216,35 @@ export async function cancel(userId: string, requestId: string): Promise<void> {
   if (!req || req.from !== userId) throw new HubError('FRIEND_REQUEST_NOT_FOUND');
   await db.execute({ sql: 'DELETE FROM friend_requests WHERE id = ?', args: [requestId] });
   await dropNotifications(req.to, requestKey(requestId));
-  emitToUser(req.to, 'friend:requestCancelled', { requestId });
+  if (!(await isBlockedEither(req.from, req.to))) emitToUser(req.to, 'friend:requestCancelled', { requestId });
 }
 
-async function dropFriendship(a: string, b: string): Promise<boolean> {
+/** Entfernt offene Anfragen zwischen zwei Usern in beide Richtungen; der Empfänger einer abgebrochenen Anfrage erhält friend:requestCancelled. */
+export async function dropRequestsBetween(a: string, b: string): Promise<void> {
+  const reqs = await db.execute({
+    sql: `SELECT id, from_user, to_user FROM friend_requests WHERE (from_user = ? AND to_user = ?) OR (from_user = ? AND to_user = ?)`,
+    args: [a, b, b, a],
+  });
+  await db.execute({
+    sql: `DELETE FROM friend_requests WHERE (from_user = ? AND to_user = ?) OR (from_user = ? AND to_user = ?)`,
+    args: [a, b, b, a],
+  });
+  for (const r of reqs.rows) {
+    const id = String(r.id);
+    await dropNotifications(String(r.to_user), requestKey(id));
+    emitToUser(String(r.to_user), 'friend:requestCancelled', { requestId: id });
+  }
+}
+
+/** Verwirft (still) alle Anfragen zwischen zwei Usern, z.B. Shadow-Anfragen nach dem Aufheben eines Blocks. */
+export async function dropShadowRequests(a: string, b: string): Promise<void> {
+  await db.execute({
+    sql: `DELETE FROM friend_requests WHERE (from_user = ? AND to_user = ?) OR (from_user = ? AND to_user = ?)`,
+    args: [a, b, b, a],
+  });
+}
+
+export async function dropFriendship(a: string, b: string): Promise<boolean> {
   const [x, y] = pair(a, b);
   const res = await db.execute({ sql: 'DELETE FROM friendships WHERE user_a = ? AND user_b = ?', args: [x, y] });
   if (res.rowsAffected === 0) return false;
@@ -230,7 +265,7 @@ export async function listRequests(userId: string): Promise<FriendRequestsResult
   const [inc, out] = await Promise.all([
     db.execute({
       sql: `SELECT r.*, u.username AS other_name FROM friend_requests r JOIN users u ON u.id = r.from_user
-            WHERE r.to_user = ? AND r.expires_at > ? ORDER BY r.created_at DESC`,
+            WHERE r.to_user = ? AND r.expires_at > ? AND ${VISIBLE_REQUEST} ORDER BY r.created_at DESC`,
       args: [userId, now],
     }),
     db.execute({
@@ -256,10 +291,10 @@ export async function purgeExpiredRequests(): Promise<number> {
 }
 
 /** Löscht alle Freundschafts-Daten eines Users (Kaskade bei Account-Löschung). Gibt die bisherigen Freunde zurück. */
-export async function purgeUserFriends(userId: string): Promise<void> {
+export async function purgeUserFriends(userId: string, reason?: FriendRemovedReason): Promise<void> {
   const friends = await friendIds(userId);
   for (const f of friends) {
-    if (await dropFriendship(userId, f)) emitToUser(f, 'friend:removed', { userId });
+    if (await dropFriendship(userId, f)) emitToUser(f, 'friend:removed', reason ? { userId, reason } : { userId });
   }
   const reqs = await db.execute({
     sql: 'SELECT id, from_user, to_user FROM friend_requests WHERE from_user = ? OR to_user = ?',

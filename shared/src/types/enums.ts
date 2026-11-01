@@ -74,14 +74,22 @@ export const PlayerLeftReason = {
   Left: 'left', // player left voluntarily
   Kicked: 'kicked', // player was kicked
   Timeout: 'timeout', // reconnect grace expired
+  AccountDeleted: 'account_deleted', // the account was deleted
 } as const;
 export type PlayerLeftReason = (typeof PlayerLeftReason)[keyof typeof PlayerLeftReason];
 
 /** Reason of `session:replaced`. */
 export const SessionReplacedReason = {
   NewSession: 'new_session', // the same account connected from a new session
+  PasswordChanged: 'password_changed', // the password was changed from another session
 } as const;
 export type SessionReplacedReason = (typeof SessionReplacedReason)[keyof typeof SessionReplacedReason];
+
+/** Reason of `friend:removed` (absent = plain unfriend/block). */
+export const FriendRemovedReason = {
+  AccountDeleted: 'account_deleted', // the friend deleted their account
+} as const;
+export type FriendRemovedReason = (typeof FriendRemovedReason)[keyof typeof FriendRemovedReason];
 
 /** Why a join request was rejected or ended. */
 export const JoinRequestRejectReason = {
@@ -245,5 +253,6 @@ export const ErrorCode = {
   MessageTooLong: 'MESSAGE_TOO_LONG',
   NotAllowed: 'NOT_ALLOWED',
   VersionConflict: 'VERSION_CONFLICT',
+  BlockLimitReached: 'BLOCK_LIMIT_REACHED',
 } as const;
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];

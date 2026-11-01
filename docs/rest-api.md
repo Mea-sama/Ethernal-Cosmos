@@ -148,6 +148,34 @@ Revoke a refresh token. After this call the refresh token cannot be used again. 
 
 ---
 
+### `POST /auth/password`
+
+Change the password (requires `Authorization: Bearer`). Revokes **all** refresh tokens and invalidates all previously issued access tokens (JWT claim `tv` is checked against the user's token version). Other sockets of the user receive `session:replaced { reason: "password_changed" }` and are disconnected. Rate limited per user (`accountPassword`).
+
+**Request body**
+
+```json
+{ "currentPassword": "string", "newPassword": "string (8–128)", "socketId": "optional socket.io id of the calling session, which is not kicked" }
+```
+
+**Response `200`** — fresh `AuthResult` (`user`, `accessToken`, `refreshToken`) for the calling session. Errors: `INVALID_CREDENTIALS` (401, wrong current password), `INVALID_INPUT` (400), `RATE_LIMITED` (429).
+
+---
+
+### `DELETE /auth/account`
+
+Permanently delete the account (GDPR). Requires the password in the body (`{ "password": "string" }`) and is rate limited per user (`accountDelete`). Removes: user row, refresh tokens, user data (incl. leaderboard rows and server-written keys), friendships/requests, DMs, notifications, social settings, blocks (of and against the user). The user leaves their lobby (host migration or dissolve; a bound game server gets `player:left` with reason `account_deleted`), friends receive `friend:removed { userId, reason: "account_deleted" }`, all sockets are disconnected.
+
+**Response `204`** — no body. Errors: `INVALID_CREDENTIALS` (401), `INVALID_INPUT` (400), `RATE_LIMITED` (429).
+
+---
+
+### `GET /account/export`
+
+Everything the hub stores about the caller as JSON (`AccountExport`): `profile`, `userData`, `friends` (usernames), `messages` (own sent/received DMs within retention), `notifications`, `settings`, `blocks`. Never contains other users' private data or password hashes. Rate limited (`accountExport`).
+
+---
+
 ## User Data
 
 All `/userdata` endpoints require authentication (`Authorization: Bearer <accessToken>`).

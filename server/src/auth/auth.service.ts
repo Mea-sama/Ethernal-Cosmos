@@ -3,8 +3,9 @@ import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
 import { v4 as uuidv4 } from 'uuid';
 import { z } from 'zod';
-import type { AuthPayload, AuthResult, PublicUser } from '@ethernal/shared';
+import type { AuthPayload, AuthResult, PublicUser, SessionReplacedReason } from '@ethernal/shared';
 import { db } from '../db/database';
+import { HubError } from '../errors';
 import { BCRYPT_ROUNDS, JWT_SECRET } from '../config/env';
 
 const JWT_EXPIRES_IN_SECONDS = Number(process.env.ACCESS_TOKEN_TTL_SECONDS) > 0 ? Number(process.env.ACCESS_TOKEN_TTL_SECONDS) : 3600;
@@ -52,7 +53,7 @@ export async function registerUser(
   }
 
   const user: PublicUser = { id, username };
-  const payload: AuthPayload = { userId: id, username };
+  const payload: AuthPayload = { userId: id, username, tv: 0 };
   const accessToken = jwt.sign(payload, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN_SECONDS });
   const refreshToken = await createRefreshToken(id);
 
@@ -64,7 +65,7 @@ export async function loginUser(
   password: string
 ): Promise<AuthResult> {
   const result = await db.execute({
-    sql: 'SELECT id, username, password_hash FROM users WHERE username_lower = ?',
+    sql: 'SELECT id, username, password_hash, token_version FROM users WHERE username_lower = ?',
     args: [username.toLowerCase()],
   });
 
@@ -82,7 +83,7 @@ export async function loginUser(
     id: row.id as string,
     username: row.username as string,
   };
-  const payload: AuthPayload = { userId: user.id, username: user.username };
+  const payload: AuthPayload = { userId: user.id, username: user.username, tv: Number(row.token_version ?? 0) };
   const accessToken = jwt.sign(payload, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN_SECONDS });
   const refreshToken = await createRefreshToken(user.id);
 
@@ -95,6 +96,42 @@ export function signToken(payload: AuthPayload): string {
 
 export function verifyToken(token: string): AuthPayload & { exp?: number } {
   return jwt.verify(token, JWT_SECRET) as AuthPayload & { exp?: number };
+}
+
+/**
+ * Wie verifyToken, prüft zusätzlich gegen die DB: der User muss existieren und die Token-Version
+ * muss passen (Passwortänderung/Account-Löschung machen ausgestellte Access-Tokens ungültig).
+ */
+export async function verifyTokenFresh(token: string): Promise<AuthPayload & { exp?: number }> {
+  const payload = verifyToken(token);
+  const res = await db.execute({ sql: 'SELECT token_version FROM users WHERE id = ?', args: [payload.userId] });
+  if (res.rows.length === 0 || Number(res.rows[0].token_version) !== (payload.tv ?? 0)) {
+    throw new Error('INVALID_TOKEN');
+  }
+  return payload;
+}
+
+/** Prüft das aktuelle Passwort; wirft INVALID_CREDENTIALS. */
+export async function verifyPassword(userId: string, password: string): Promise<void> {
+  const res = await db.execute({ sql: 'SELECT password_hash FROM users WHERE id = ?', args: [userId] });
+  if (res.rows.length === 0) throw new HubError('INVALID_TOKEN');
+  if (!(await bcrypt.compare(password, String(res.rows[0].password_hash)))) throw new HubError('INVALID_CREDENTIALS');
+}
+
+/**
+ * Ändert das Passwort: erhöht die Token-Version (alle Access-Tokens ungültig), widerruft alle
+ * Refresh-Tokens und stellt ein frisches Token-Paar für die aufrufende Sitzung aus.
+ */
+export async function changePassword(userId: string, currentPassword: string, newPassword: string): Promise<AuthResult> {
+  await verifyPassword(userId, currentPassword);
+  const hash = await bcrypt.hash(newPassword, BCRYPT_ROUNDS);
+  await db.execute({ sql: 'UPDATE users SET password_hash = ?, token_version = token_version + 1 WHERE id = ?', args: [hash, userId] });
+  await revokeAllRefreshTokens(userId);
+  const res = await db.execute({ sql: 'SELECT id, username, token_version FROM users WHERE id = ?', args: [userId] });
+  const row = res.rows[0];
+  const user: PublicUser = { id: String(row.id), username: String(row.username) };
+  const payload: AuthPayload = { userId, username: user.username, tv: Number(row.token_version) };
+  return { user, accessToken: jwt.sign(payload, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN_SECONDS }), refreshToken: await createRefreshToken(userId) };
 }
 
 // ─── Refresh-Token Verwaltung ────────────────────────────────────────────────
@@ -137,7 +174,7 @@ export async function rotateRefreshToken(rawToken: string): Promise<AuthResult> 
   });
 
   const userResult = await db.execute({
-    sql: 'SELECT id, username FROM users WHERE id = ?',
+    sql: 'SELECT id, username, token_version FROM users WHERE id = ?',
     args: [row.user_id],
   });
 
@@ -145,7 +182,7 @@ export async function rotateRefreshToken(rawToken: string): Promise<AuthResult> 
   const userRow = userResult.rows[0];
 
   const user: PublicUser = { id: userRow.id as string, username: userRow.username as string };
-  const payload: AuthPayload = { userId: user.id, username: user.username };
+  const payload: AuthPayload = { userId: user.id, username: user.username, tv: Number(userRow.token_version ?? 0) };
   const accessToken = jwt.sign(payload, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN_SECONDS });
   const refreshToken = await createRefreshToken(user.id);
 
@@ -173,12 +210,12 @@ export async function revokeAllRefreshTokens(userId: string): Promise<void> {
   await db.execute({ sql: 'UPDATE refresh_tokens SET revoked = 1 WHERE user_id = ?', args: [userId] });
 }
 
-type SessionTerminator = (userId: string) => void;
+type SessionTerminator = (userId: string, opts?: { reason?: SessionReplacedReason; exceptSocketId?: string }) => void;
 let terminator: SessionTerminator = () => undefined;
-/** Vom Socket-Layer gesetzt: trennt alle Sockets eines Users (Logout/Revoke). */
+/** Vom Socket-Layer gesetzt: trennt Sockets eines Users (Logout/Revoke), optional mit `session:replaced`-Grund. */
 export function setSessionTerminator(fn: SessionTerminator): void {
   terminator = fn;
 }
-export function terminateUserSessions(userId: string): void {
-  terminator(userId);
+export function terminateUserSessions(userId: string, opts?: { reason?: SessionReplacedReason; exceptSocketId?: string }): void {
+  terminator(userId, opts);
 }
