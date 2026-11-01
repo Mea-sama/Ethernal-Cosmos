@@ -1,6 +1,6 @@
 # Social API (friends, presence, notifications, DMs, invites)
 
-Code: `server/src/social/*`. All socket events use the ack protocol (`{ok:true,...}` / `{ok:false,error}`); REST routes live under `/social` (Bearer auth) and share the same per-user rate limits (`socketLimits` keys `friendRequestByName`, `friendRequest`, `friendAction`, `socialRead`, `socialSettings`, `notificationWrite`, `dmSend`, `dmTyping`, `lobbyInvite`, `lobbyInviteAction`).
+Code: `server/src/social/*`. All socket events use the ack protocol (`{ok:true,...}` / `{ok:false,error}`); REST routes live under `/social` (Bearer auth) and share the same per-user rate limits (`socketLimits` keys `friendRequestByName`, `friendRequest`, `friendAction`, `socialRead`, `socialSettings`, `notificationWrite`, `dmSend`, `dmTyping`, `lobbyInvite`, `lobbyInviteAction`, `blockAction`).
 
 **Breaking change:** `presence:list/joined/left` (global presence) were removed. Use `friend:presence` / `presence:friends` (friends only, never contains lobby ids; only `lobbyJoinable`).
 
@@ -22,6 +22,8 @@ Code: `server/src/social/*`. All socket events use the ack protocol (`{ok:true,.
 | `dm:open` | `POST /social/dm/:id/open {limit?}` |
 | `dm:markRead {upToSeq?}` | `POST /social/dm/:id/read {upToSeq?}` |
 | `lobby:invites` | `GET /social/lobby-invites` |
+| `block:add {userId}` / `block:remove {userId}` | `POST /social/blocks {userId}` / `DELETE /social/blocks/:id` |
+| `block:list` | `GET /social/blocks` |
 
 Invite actions (`lobby:invite`, `cancelInvite`, `acceptInvite`, `declineInvite`, `joinFriend`) are socket-only. `DELETE /social/data` purges the caller's social data (cascade hook for account deletion).
 
@@ -38,6 +40,17 @@ Every DM has a global ascending `seq`. A chat's **read cursor** (`lastReadSeq`) 
 - `dm:readState` (server event) → same `DmReadState`, sent to **all sessions of the reader** whenever the cursor moves, so other devices clear their badge. `dm:read { byUserId, upToSeq }` goes to the *sender* (only if the reader has `dmReadReceipts` on).
 - The `dm` notification of an offline message is marked read once the chat has no unread messages left.
 
+## Block list
+
+Harassment protection only (no bans or roles). `block:add { userId }` → `{ blocked: { userId, username, blockedAt } }` (idempotent; `CANNOT_TARGET_SELF`, `USER_NOT_FOUND`, `BLOCK_LIMIT_REACHED`). `block:remove { userId }` is idempotent. `block:list` → `{ blocks }`. The list is private and never visible to the blocked user.
+
+- Blocking removes the friendship (both sides get `friend:removed`, exactly like an unfriend; DM history is deleted with it), drops pending friend requests in both directions and cancels lobby invites between the two.
+- Presence, DMs, invites and requests are hidden both ways: since only friends see each other, the blocked user is treated like a stranger (`NOT_FRIENDS` for DMs/invites, nothing pushed).
+- No information leak: friend requests from the blocked user (by name or as lobby-mate) answer `REQUEST_SENT` and show up in *their* outgoing list, but are never stored for, shown to or notified to the blocker (shadow request). A request the blocker sends towards a blocked user is handled the same way. Cancelling a shadow request emits nothing to the other side.
+- Unblocking drops all shadow requests; nothing sent during the block is delivered retroactively and the friendship is not restored.
+- Blocking does not prevent being in the same lobby and does not affect game relay.
+- Account deletion removes all blocks of and against the user.
+
 ## Configuration (env)
 
-`FRIENDS_MAX` (100), `FRIEND_REQUESTS_MAX_OUTGOING` (50), `FRIEND_REQUESTS_MAX_INCOMING` (50), `FRIEND_REQUEST_EXPIRY_DAYS` (30), `FRIEND_SILENT_DECLINE` (true), `FRIEND_NAME_LOOKUP_MIN_MS` (40), `NOTIFICATION_READ_RETENTION_DAYS` (30), `NOTIFICATION_UNREAD_RETENTION_DAYS` (90), `NOTIFICATION_CAP_PER_USER` (500), `NOTIFICATION_BACKLOG_SIZE` (20), `DM_MAX_LENGTH` (1000), `DM_RETENTION_DAYS` (30), `DM_CONVERSATION_CAP` (500), `LOBBY_INVITE_TTL_MS` (300000), `LOBBY_INVITE_BYPASS_LOCK` (true), `SOCIAL_PURGE_INTERVAL_MS` (3600000).
+`FRIENDS_MAX` (100), `FRIEND_REQUESTS_MAX_OUTGOING` (50), `FRIEND_REQUESTS_MAX_INCOMING` (50), `FRIEND_REQUEST_EXPIRY_DAYS` (30), `FRIEND_SILENT_DECLINE` (true), `FRIEND_NAME_LOOKUP_MIN_MS` (40), `NOTIFICATION_READ_RETENTION_DAYS` (30), `NOTIFICATION_UNREAD_RETENTION_DAYS` (90), `NOTIFICATION_CAP_PER_USER` (500), `NOTIFICATION_BACKLOG_SIZE` (20), `DM_MAX_LENGTH` (1000), `DM_RETENTION_DAYS` (30), `DM_CONVERSATION_CAP` (500), `LOBBY_INVITE_TTL_MS` (300000), `LOBBY_INVITE_BYPASS_LOCK` (true), `SOCIAL_PURGE_INTERVAL_MS` (3600000), `BLOCKS_MAX` (500).

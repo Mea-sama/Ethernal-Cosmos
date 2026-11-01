@@ -9,6 +9,13 @@ export interface FriendInfo {
 }
 
 
+/** Entry of the caller's private block list (never visible to the blocked user) */
+export interface BlockedUserInfo {
+  userId: string;
+  username: string;
+  blockedAt: number;
+}
+
 export interface FriendRequestInfo {
   id: string;
   /** Bei eingehenden Anfragen der Absender, bei ausgehenden der Empfänger */

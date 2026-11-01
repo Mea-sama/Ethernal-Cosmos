@@ -12,6 +12,7 @@ import type { Lobby, GameInfo, RelayMessage, RelayBinaryMessage, UserDataEntry }
 import type { Ack, HubErrorPayload } from './errors';
 import type { ServerPreference } from './gameserver';
 import type {
+  BlockedUserInfo,
   FriendInfo,
   FriendRequestInfo,
   FriendRequestsResult,
@@ -181,6 +182,10 @@ export interface ClientToServerEvents {
   'friend:respond': (data: { requestId: string; accept: boolean }, ack?: Ack) => void;
   'friend:cancel': (data: { requestId: string }, ack?: Ack) => void;
   'friend:remove': (data: { friendId: string }, ack?: Ack) => void;
+  /** Block a user (idempotent): drops friendship, pending requests and invites; their later requests are silently ignored */
+  'block:add': (data: { userId: string }, ack?: Ack<{ blocked: BlockedUserInfo }>) => void;
+  'block:remove': (data: { userId: string }, ack?: Ack) => void;
+  'block:list': (ack?: Ack<{ blocks: BlockedUserInfo[] }>) => void;
   'friend:list': (ack?: Ack<{ friends: FriendInfo[] }>) => void;
   'friend:requests': (ack?: Ack<FriendRequestsResult>) => void;
   /** Aktuelle Presence aller Freunde (Pull-Variante zu `friend:presence`) */

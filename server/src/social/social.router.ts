@@ -46,6 +46,10 @@ route('delete', '/friends/requests/:id', 'friend:cancel', (req) => ({ requestId:
 route('get', '/friends/:id/lobby', 'social:friendLobby', (req) => ({ friendId: req.params.id }));
 route('delete', '/friends/:id', 'friend:remove', (req) => ({ friendId: req.params.id }));
 
+route('get', '/blocks', 'block:list', () => undefined);
+route('post', '/blocks', 'block:add', (req) => ({ userId: body(req).userId }));
+route('delete', '/blocks/:id', 'block:remove', (req) => ({ userId: req.params.id }));
+
 route('get', '/presence', 'presence:friends', () => undefined);
 route('get', '/settings', 'social:getSettings', () => undefined);
 route('put', '/settings', 'social:setSettings', (req) => body(req));

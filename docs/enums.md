@@ -329,3 +329,4 @@ Used in: `errorDetail`, ack errors, REST error `code`
 | `FRIEND_NOT_IN_LOBBY` | `ErrorCode.FriendNotInLobby` |  |
 | `INVITE_NOT_FOUND` | `ErrorCode.InviteNotFound` |  |
 | `MESSAGE_TOO_LONG` | `ErrorCode.MessageTooLong` |  |
+| `BLOCK_LIMIT_REACHED` | `ErrorCode.BlockLimitReached` |  |

@@ -55,7 +55,7 @@
 | QUIRK-PRES-01 | **Private-lobby ID leak:** presence exposes `lobbyId` of private lobbies to all users, and `joinLobby({lobbyId})` does not check `isPrivate`. Anyone can therefore bypass the invite code by joining via the leaked ID (unless the lobby is locked/full/closed). `{src}` |
 | QUIRK-PRES-02 | Presence update on `lobbyStatus` change is sent per player ⇒ N broadcasts to all clients when a lobby of N players changes (O(N × users) fan-out). `{src}` |
 | QUIRK-PRES-03 | A user with only a `panel` socket (no game socket) is not in presence and cannot receive per-user pushes (see FEAT-COMM-05). `{src}` |
-| GAP-PRES-01 | No friends list, follow, block list, party/group concept, or "recently played with". |
+| GAP-PRES-01 | No friends list, follow, party/group concept, or "recently played with". |
 | GAP-PRES-02 | No per-game presence filtering (the full online list of all games is delivered). |
 | GAP-PRES-03 | No "last seen" / offline presence. |
 
@@ -333,6 +333,10 @@ Hub-side only: SDK parity is covered by the SDK test suites.
 | TEST-INVITE-09 | unfriending cancels open invites (reason unfriended) |
 | TEST-INVITE-10 | joinFriend: open → direct join, locked → join request, private → only with invite, other game → GAME_MISMATCH |
 | TEST-INVITE-11 | social:friendLobby: friends only; a private lobby never reveals its ID |
+| TEST-BLOCK-01 | block drops friendship, pending requests and invites; list/unblock via socket and REST |
+| TEST-BLOCK-02 | no information leak: the blocked user sees the same results as towards a stranger |
+| TEST-BLOCK-03 | presence and DMs are hidden both ways; blocking does not touch the shared lobby; unblock restores nothing |
+| TEST-BLOCK-04 | requests towards a user you blocked are ignored; crossing requests cannot create a friendship through a block |
 | TEST-SYNC-01 | social:sync returns a consistent full state; GET /social/sync is identical |
 | TEST-SYNC-02 | etag: unchanged → notModified (socket + REST 304), changed → new etag |
 | TEST-SYNC-03 | every REST pull route returns the same data as its socket event |
@@ -396,6 +400,7 @@ This document describes the **as-is baseline before P0**. P0 changed the followi
 
 ## Changelog: P1 / game servers (issues #20–#31, #50–#54, #56)
 
+- **Block list (#41)**: `block:add/remove/list` (+ `/social/blocks`), error `BLOCK_LIMIT_REACHED`, env `BLOCKS_MAX`, migration 8 (`user_blocks`). See [social-api.md](social-api.md#block-list).
 - **friend_online notification**: when a user becomes visible (offline→online, or leaving `invisible`), each friend who is *currently online* receives a `friend_online` notification (`{userId, username}`, key `friend_online:<userId>`, replaces an older unread one). Offline friends get no backlog entry. Respects `mutedNotificationTypes`.
 - **Game servers** (`/gameserver` namespace, per-game keys via `/admin/game-servers`, needs `ADMIN_TOKEN`). Registry `serverSupport: none|optional|required`; `createLobby` accepts `serverPreference {mode: any|none, region}`.
 - **Server loss (#56)**: `Lobby.serverStatus` is `ok|lost|draining`; members get `lobbyUpdated` with reason `server_lost`, `server_resumed`, `server_draining`, `server_rebound`. Same `serverId` reconnecting within `SERVER_RESUME_GRACE_MS` resumes its lobbies. After the grace the hub tries to rebind the lobby to another server of the game (`lobby:assigned` with `rebind: true`); if none accepts, `required` lobbies close with `gameCrashed`, `optional` lobbies continue serverless (`server` cleared, reason `server_lost`). Draining servers receive no new lobbies; existing ones keep running until the server closes them.

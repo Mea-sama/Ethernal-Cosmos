@@ -241,5 +241,6 @@ export const ErrorCode = {
   FriendNotInLobby: 'FRIEND_NOT_IN_LOBBY',
   InviteNotFound: 'INVITE_NOT_FOUND',
   MessageTooLong: 'MESSAGE_TOO_LONG',
+  BlockLimitReached: 'BLOCK_LIMIT_REACHED',
 } as const;
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];

@@ -139,6 +139,19 @@ export const MIGRATIONS: Migration[] = [
       `CREATE INDEX IF NOT EXISTS idx_game_server_keys_game ON game_server_keys(game_id)`,
     ],
   },
+  {
+    version: 8,
+    name: 'user-blocks',
+    statements: [
+      `CREATE TABLE IF NOT EXISTS user_blocks (
+        blocker_id TEXT NOT NULL,
+        blocked_id TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (blocker_id, blocked_id)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_user_blocks_blocked ON user_blocks(blocked_id)`,
+    ],
+  },
 ];
 
 export async function runMigrations(db: Client, migrations: Migration[] = MIGRATIONS): Promise<number[]> {

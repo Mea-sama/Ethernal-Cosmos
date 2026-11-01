@@ -469,4 +469,6 @@ public enum ErrorCode
     [WireValue("INVITE_NOT_FOUND")] InviteNotFound,
     /// <summary>Wire value <c>MESSAGE_TOO_LONG</c>.</summary>
     [WireValue("MESSAGE_TOO_LONG")] MessageTooLong,
+    /// <summary>Wire value <c>BLOCK_LIMIT_REACHED</c>.</summary>
+    [WireValue("BLOCK_LIMIT_REACHED")] BlockLimitReached,
 }

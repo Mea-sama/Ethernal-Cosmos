@@ -83,6 +83,7 @@ const defaultLimits: ServerLimits = {
     dmTyping: { refillPerSecond: 1, burst: 3 },
     lobbyInvite: { refillPerSecond: 0.5, burst: 6 },
     lobbyInviteAction: { refillPerSecond: 1, burst: 10 },
+    blockAction: { refillPerSecond: 1, burst: 10 },
   },
   lobbyLimits: {
     sendToLobby: { refillPerSecond: 1200, burst: 2400 },
