@@ -152,6 +152,14 @@ export const MIGRATIONS: Migration[] = [
       `CREATE INDEX IF NOT EXISTS idx_user_blocks_blocked ON user_blocks(blocked_id)`,
     ],
   },
+  {
+    version: 9,
+    name: 'users-token-version',
+    statements: [
+      // Wird bei Passwortänderung erhöht; ältere Access-Tokens (JWT-Claim `tv`) werden dadurch ungültig
+      `ALTER TABLE users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 0`,
+    ],
+  },
 ];
 
 export async function runMigrations(db: Client, migrations: Migration[] = MIGRATIONS): Promise<number[]> {

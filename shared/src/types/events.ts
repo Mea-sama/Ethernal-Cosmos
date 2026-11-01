@@ -7,6 +7,7 @@ import type {
   LobbyInviteCancelReason,
   NotificationType,
   SessionReplacedReason,
+  FriendRemovedReason,
 } from './enums';
 import type { Lobby, GameInfo, RelayMessage, RelayBinaryMessage, UserDataEntry } from './index';
 import type { Ack, HubErrorPayload } from './errors';
@@ -287,7 +288,7 @@ export interface ServerToClientEvents {
   'friend:requestAccepted': (data: { friend: FriendInfo; requestId?: string }) => void;
   'friend:requestDeclined': (data: { requestId: string; user: FriendInfo }) => void;
   'friend:requestCancelled': (data: { requestId: string }) => void;
-  'friend:removed': (data: { userId: string }) => void;
+  'friend:removed': (data: { userId: string; reason?: FriendRemovedReason }) => void;
   notification: (notification: HubNotification) => void;
   'notification:backlog': (data: NotificationBacklog) => void;
   'dm:received': (message: DirectMessage) => void;

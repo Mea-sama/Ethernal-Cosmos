@@ -1,7 +1,7 @@
 import { Server, Socket } from 'socket.io';
 import { z } from 'zod';
 import { v4 as uuidv4 } from 'uuid';
-import { verifyToken, setSessionTerminator } from '../auth/auth.service';
+import { verifyTokenFresh, setSessionTerminator } from '../auth/auth.service';
 import { lobbyManager } from './lobby.manager';
 import { getGame } from '../games/game.registry';
 import { instanceManager } from '../games/instance.manager';
@@ -22,6 +22,7 @@ import {
   type Lobby,
   type GameInfo,
   type LobbyChangeReason,
+  type PlayerLeftReason,
   type JoinRequestRejectReason,
   type HelloPayload,
 } from '@ethernal/shared';
@@ -394,7 +395,7 @@ export function scheduleClosedRelease(io: AppServer, lobbyId: string): void {
 
 // ─── Lobby verlassen (gemeinsamer Pfad für Leave, Disconnect-Ablauf, Kick) ────
 
-export function leaveLobbyFlow(io: AppServer, userId: string, opts: { notifyInstance?: boolean; reason?: 'left' | 'kicked' | 'timeout' } = {}): void {
+export function leaveLobbyFlow(io: AppServer, userId: string, opts: { notifyInstance?: boolean; reason?: PlayerLeftReason } = {}): void {
   sessionManager.clearGrace(userId);
   const serverId = lobbyManager.getLobbyByUserId(userId)?.server?.serverId;
   const { lobby, dissolved, lobbyId, hostChanged, evicted } = lobbyManager.leaveLobby(userId);
@@ -515,13 +516,13 @@ function resumeIntoLobby(io: AppServer, socket: AppSocket, lobby: Lobby): void {
  * Client sendet: io({ auth: { token: "Bearer <jwt>" } })
  */
 export function registerSocketAuth(io: AppServer): void {
-  io.use((socket, next) => {
+  io.use(async (socket, next) => {
     const raw: unknown = socket.handshake.auth?.token;
     if (typeof raw !== 'string' || !raw.startsWith('Bearer ')) {
       return next(new Error('UNAUTHENTICATED'));
     }
     try {
-      const payload = verifyToken(raw.slice(7));
+      const payload = await verifyTokenFresh(raw.slice(7));
       const clientType: 'game' | 'panel' =
         socket.handshake.auth?.clientType === 'panel' ? 'panel' : 'game';
       socket.data.userId = payload.userId;
@@ -543,8 +544,11 @@ export function registerSocketAuth(io: AppServer): void {
  * Socket.io-Events an alle Spieler im jeweiligen Lobby-Room weiter.
  */
 export function registerIpcRouting(io: AppServer): void {
-  setSessionTerminator((uid) => {
-    io.in(userRoom(uid)).disconnectSockets(true);
+  setSessionTerminator((uid, opts) => {
+    let target = io.in(userRoom(uid));
+    if (opts?.exceptSocketId) target = target.except(opts.exceptSocketId);
+    if (opts?.reason) target.emit('session:replaced', { reason: opts.reason });
+    target.disconnectSockets(true);
   });
   instanceManager.setExitCallback((lobbyId, code, alreadyClosed) => {
     const lobby = lobbyManager.getLobby(lobbyId);
@@ -1012,11 +1016,11 @@ export function registerLobbyHandlers(io: AppServer): void {
     };
     armExpiry();
 
-    handle(socket, 'auth:refresh', { limit: 'authRefresh' }, (data) => {
+    handle(socket, 'auth:refresh', { limit: 'authRefresh' }, async (data) => {
       const { token } = parseInput(z.object({ token: z.string().min(1) }), data);
       let payload;
       try {
-        payload = verifyToken(token.startsWith('Bearer ') ? token.slice(7) : token);
+        payload = await verifyTokenFresh(token.startsWith('Bearer ') ? token.slice(7) : token);
       } catch {
         throw new HubError('INVALID_TOKEN');
       }

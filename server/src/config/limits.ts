@@ -84,6 +84,10 @@ const defaultLimits: ServerLimits = {
     lobbyInvite: { refillPerSecond: 0.5, burst: 6 },
     lobbyInviteAction: { refillPerSecond: 1, burst: 10 },
     blockAction: { refillPerSecond: 1, burst: 10 },
+    // Passwort-Bestätigung: Brute-Force-Schutz pro User
+    accountPassword: { refillPerSecond: 1 / 30, burst: 5 },
+    accountDelete: { refillPerSecond: 1 / 60, burst: 3 },
+    accountExport: { refillPerSecond: 1 / 30, burst: 3 },
   },
   lobbyLimits: {
     sendToLobby: { refillPerSecond: 1200, burst: 2400 },

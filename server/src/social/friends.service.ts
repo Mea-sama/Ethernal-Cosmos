@@ -1,6 +1,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import type {
   FriendInfo,
+  FriendRemovedReason,
   FriendRequestInfo,
   FriendRequestResult,
   FriendRequestSource,
@@ -290,10 +291,10 @@ export async function purgeExpiredRequests(): Promise<number> {
 }
 
 /** Löscht alle Freundschafts-Daten eines Users (Kaskade bei Account-Löschung). Gibt die bisherigen Freunde zurück. */
-export async function purgeUserFriends(userId: string): Promise<void> {
+export async function purgeUserFriends(userId: string, reason?: FriendRemovedReason): Promise<void> {
   const friends = await friendIds(userId);
   for (const f of friends) {
-    if (await dropFriendship(userId, f)) emitToUser(f, 'friend:removed', { userId });
+    if (await dropFriendship(userId, f)) emitToUser(f, 'friend:removed', reason ? { userId, reason } : { userId });
   }
   const reqs = await db.execute({
     sql: 'SELECT id, from_user, to_user FROM friend_requests WHERE from_user = ? OR to_user = ?',

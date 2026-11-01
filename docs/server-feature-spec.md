@@ -40,7 +40,7 @@
 | FEAT-AUTH-05 | Socket handshake: `auth: { token: "Bearer <jwt>", clientType: "game" | "panel" }`. Missing/invalid ⇒ connection error `UNAUTHENTICATED` / `INVALID_TOKEN`. Anything other than `"panel"` is treated as `"game"`. `{src}` |
 | QUIRK-AUTH-01 | JWT is verified **only at connect time**. An established socket keeps working after the token expires or the refresh token is revoked/logged out. `{src}` |
 | QUIRK-AUTH-02 | `logout` does not disconnect sockets, does not remove the user from lobbies or presence. `{src}` |
-| GAP-AUTH-01 | No guest/anonymous accounts, no OAuth/Steam/console identity linking, no email/password reset, no account deletion, no username change, no display-name vs. login-name split. |
+| GAP-AUTH-01 | No guest/anonymous accounts, no OAuth/Steam/console identity linking, no email/password reset, no username change, no display-name vs. login-name split. |
 | GAP-AUTH-02 | No roles (admin/moderator), no account ban/mute, no "revoke all sessions". |
 | GAP-AUTH-03 | `POST /auth/refresh` returns raw error codes as the message (`REFRESH_TOKEN_REVOKED`, …); `USER_NOT_FOUND` maps to HTTP 500. |
 
@@ -182,7 +182,7 @@ Store: key–value, PK `(user_id, game_id, key)`, value = any JSON (stored as te
 | QUIRK-DATA-02 | `gameId` in data APIs is **not checked against the registry** — any string can be created, consuming storage (no per-user quota). No value size limit besides HTTP body limit (Express default 100 kB) / Socket.io frame. |
 | QUIRK-DATA-03 | Leaderboard: non-numeric values sort as 0 (not excluded); ties have no deterministic secondary order; no rank-of-me, no around-me, no pagination, no periodic reset (daily/weekly), no per-lobby/friend leaderboards. `limit` out of range silently falls back to 10. |
 | QUIRK-DATA-04 | `getPlayerData` returns `[]` for non-existent players (no 404; allows no enumeration but also no existence check). Presence IDs are public, so IDs are discoverable. |
-| QUIRK-DATA-05 | No atomic increment/compare-and-set/transactions across keys from clients (read-modify-write races for counters; bulk is atomic only within one call). No TTL/expiry, no schema/versioning, no history, no export/delete-all (GDPR) endpoint. |
+| QUIRK-DATA-05 | No atomic increment/compare-and-set/transactions across keys from clients (read-modify-write races for counters; bulk is atomic only within one call). No TTL/expiry, no schema/versioning, no history. Export/delete-all: `GET /account/export`, `DELETE /auth/account`. |
 | QUIRK-DATA-06 | Socket `getUserData`/`getPlayerData` are read-only; writes are REST-only (and IPC). |
 | GAP-DATA-01 | No profile/avatar/bio/level/XP/currency/inventory/achievement concept at hub level; games must model these as keys. No global (cross-game) profile namespace (use a reserved gameId by convention). No data for friends-only visibility (`friends` level). No cloud-save blobs (>100 kB) or binary data. |
 
@@ -337,6 +337,12 @@ Hub-side only: SDK parity is covered by the SDK test suites.
 | TEST-BLOCK-02 | no information leak: the blocked user sees the same results as towards a stranger |
 | TEST-BLOCK-03 | presence and DMs are hidden both ways; blocking does not touch the shared lobby; unblock restores nothing |
 | TEST-BLOCK-04 | requests towards a user you blocked are ignored; crossing requests cannot create a friendship through a block |
+| TEST-ACCOUNT-01 | password change validates input, revokes other sessions/refresh tokens/access tokens and returns a fresh pair |
+| TEST-ACCOUNT-02 | account deletion requires the password; login, tokens and sockets are dead afterwards |
+| TEST-ACCOUNT-03 | complete purge: no row about the user remains; friends get `friend:removed` reason `account_deleted` |
+| TEST-ACCOUNT-04 | deleting the host migrates the lobby, deleting the last member closes it; game server gets `player:left` reason `account_deleted` |
+| TEST-ACCOUNT-05 | export contains the caller's own data only (profile, user data, friends, DMs, notifications, settings, blocks) |
+| TEST-ACCOUNT-06 | a deleted user cannot reconnect with a still-unexpired access token |
 | TEST-SYNC-01 | social:sync returns a consistent full state; GET /social/sync is identical |
 | TEST-SYNC-02 | etag: unchanged → notModified (socket + REST 304), changed → new etag |
 | TEST-SYNC-03 | every REST pull route returns the same data as its socket event |
@@ -400,6 +406,7 @@ This document describes the **as-is baseline before P0**. P0 changed the followi
 
 ## Changelog: P1 / game servers (issues #20–#31, #50–#54, #56)
 
+- **Account lifecycle (#40)**: `POST /auth/password`, `DELETE /auth/account`, `GET /account/export`, access-token version claim `tv` (migration 9 `users.token_version`), `friend:removed.reason`, `SessionReplacedReason.PasswordChanged`, `PlayerLeftReason.AccountDeleted`, rate-limit keys `accountPassword/accountDelete/accountExport`. See rest-api.md.
 - **Block list (#41)**: `block:add/remove/list` (+ `/social/blocks`), error `BLOCK_LIMIT_REACHED`, env `BLOCKS_MAX`, migration 8 (`user_blocks`). See [social-api.md](social-api.md#block-list).
 - **friend_online notification**: when a user becomes visible (offline→online, or leaving `invisible`), each friend who is *currently online* receives a `friend_online` notification (`{userId, username}`, key `friend_online:<userId>`, replaces an older unread one). Offline friends get no backlog entry. Respects `mutedNotificationTypes`.
 - **Game servers** (`/gameserver` namespace, per-game keys via `/admin/game-servers`, needs `ADMIN_TOKEN`). Registry `serverSupport: none|optional|required`; `createLobby` accepts `serverPreference {mode: any|none, region}`.

@@ -56,7 +56,7 @@ export async function startHub(opts: { limits?: Record<string, unknown>; env?: R
          'requestJoinLobbyByCode', 'cancelJoinRequest', 'respondJoinRequest', 'listLobbies', 'getLobbyInfo', 'presenceList', 'getUserData',
          'getPlayerData', 'gameAction', 'registerGame', 'sessionState', 'setUserData', 'bulkSetUserData', 'deleteUserData', 'leaveLobby',
          'friendRequestByName', 'friendRequest', 'friendAction', 'socialRead', 'socialSettings', 'notificationWrite', 'dmSend', 'dmTyping',
-         'lobbyInvite', 'lobbyInviteAction', 'blockAction', 'authRefresh', 'setLobbyState']
+         'lobbyInvite', 'lobbyInviteAction', 'blockAction', 'accountPassword', 'accountDelete', 'accountExport', 'authRefresh', 'setLobbyState']
           .map((k) => [k, big])
       ),
       ...opts.limits,

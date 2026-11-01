@@ -9,7 +9,12 @@ import {
   revokeRefreshTokenReturningUser,
   revokeAllRefreshTokens,
   terminateUserSessions,
+  changePassword,
 } from './auth.service';
+import { z } from 'zod';
+import { HubError, isHubError, sendHubError } from '../errors';
+import { assertUserLimit } from '../social/bus';
+import { deleteAccount } from '../account/account.service';
 import { isAuthUsernameWhitelisted, isRefreshTokenWhitelisted } from './rate-limit-whitelist';
 import { requireAuth } from './auth.middleware';
 import { serverLimits } from '../config/limits';
@@ -176,6 +181,45 @@ router.post('/logout-all', requireAuth, async (req: Request, res: Response): Pro
   } catch (err) {
     console.error('[Auth] logout-all fehlgeschlagen:', err);
     res.status(500).json({ error: 'Interner Fehler' });
+  }
+});
+
+const ChangePasswordSchema = z.object({
+  currentPassword: z.string().min(1),
+  newPassword: RegisterSchema.shape.password,
+  socketId: z.string().min(1).optional(),
+});
+
+// POST /auth/password — Passwort ändern; widerruft alle anderen Sessions und liefert ein frisches Token-Paar
+router.post('/password', requireAuth, async (req: Request, res: Response): Promise<void> => {
+  try {
+    const parse = ChangePasswordSchema.safeParse(req.body);
+    if (!parse.success) throw new HubError('INVALID_INPUT');
+    const userId = req.auth!.userId;
+    assertUserLimit(userId, 'accountPassword');
+    const { currentPassword, newPassword, socketId } = parse.data;
+    const result = await changePassword(userId, currentPassword, newPassword);
+    terminateUserSessions(userId, { reason: 'password_changed', ...(socketId ? { exceptSocketId: socketId } : {}) });
+    res.json(result);
+  } catch (err) {
+    if (isHubError(err)) return sendHubError(res, err);
+    console.error('[Auth] Passwortänderung fehlgeschlagen:', err);
+    sendHubError(res, new HubError('INTERNAL'));
+  }
+});
+
+// DELETE /auth/account — Account und alle Daten löschen (Passwort-Bestätigung erforderlich)
+router.delete('/account', requireAuth, async (req: Request, res: Response): Promise<void> => {
+  try {
+    const parse = z.object({ password: z.string().min(1) }).safeParse(req.body);
+    if (!parse.success) throw new HubError('INVALID_INPUT');
+    assertUserLimit(req.auth!.userId, 'accountDelete');
+    await deleteAccount(req.auth!.userId, parse.data.password);
+    res.status(204).send();
+  } catch (err) {
+    if (isHubError(err)) return sendHubError(res, err);
+    console.error('[Auth] Account-Löschung fehlgeschlagen:', err);
+    sendHubError(res, new HubError('INTERNAL'));
   }
 });
 

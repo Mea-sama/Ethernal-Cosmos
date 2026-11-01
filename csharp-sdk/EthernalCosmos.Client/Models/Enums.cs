@@ -147,6 +147,8 @@ public enum PlayerLeftReason
     [WireValue("kicked")] Kicked,
     /// <summary>reconnect grace expired</summary>
     [WireValue("timeout")] Timeout,
+    /// <summary>the account was deleted</summary>
+    [WireValue("account_deleted")] AccountDeleted,
 }
 
 /// <summary>Reason of <c>session:replaced</c>.</summary>
@@ -158,6 +160,19 @@ public enum SessionReplacedReason
     Unknown = 0,
     /// <summary>the same account connected from a new session</summary>
     [WireValue("new_session")] NewSession,
+    /// <summary>the password was changed from another session</summary>
+    [WireValue("password_changed")] PasswordChanged,
+}
+
+/// <summary>Reason of <c>friend:removed</c> (absent = plain unfriend/block).</summary>
+/// <remarks>Values not known to this SDK version deserialize to <c>Unknown</c>.</remarks>
+[JsonConverter(typeof(WireEnumConverter<FriendRemovedReason>))]
+public enum FriendRemovedReason
+{
+    /// <summary>Value not known to this SDK version.</summary>
+    Unknown = 0,
+    /// <summary>the friend deleted their account</summary>
+    [WireValue("account_deleted")] AccountDeleted,
 }
 
 /// <summary>Why a join request was rejected or ended.</summary>

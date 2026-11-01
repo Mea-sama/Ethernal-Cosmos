@@ -25,7 +25,7 @@ Code: `server/src/social/*`. All socket events use the ack protocol (`{ok:true,.
 | `block:add {userId}` / `block:remove {userId}` | `POST /social/blocks {userId}` / `DELETE /social/blocks/:id` |
 | `block:list` | `GET /social/blocks` |
 
-Invite actions (`lobby:invite`, `cancelInvite`, `acceptInvite`, `declineInvite`, `joinFriend`) are socket-only. `DELETE /social/data` purges the caller's social data (cascade hook for account deletion).
+Invite actions (`lobby:invite`, `cancelInvite`, `acceptInvite`, `declineInvite`, `joinFriend`) are socket-only. `DELETE /social/data` purges the caller's social data (the same cascade runs on `DELETE /auth/account`; friends then get `friend:removed` with `reason: account_deleted`, see rest-api.md).
 
 Server events: `friend:presence`, `friend:requestReceived/Accepted/Declined/Cancelled`, `friend:removed`, `notification`, `notification:backlog`, `dm:received/delivered/read/readState/typing`, `lobby:inviteReceived/Cancelled/Declined`.
 
