@@ -2,6 +2,7 @@ import { v4 as uuidv4 } from 'uuid';
 import type { Lobby, LobbyPlayer, LobbyStatus } from '@ethernal/shared';
 import { HubError } from '../errors';
 import { getGame } from '../games/game.registry';
+import { serverLimits } from '../config/limits';
 
 const RECENT_LOBBY_TTL_MS = 60_000;
 
@@ -12,6 +13,8 @@ export interface JoinOptions {
   viaCode?: boolean;
   /** Beitritt nach vom Host angenommener Anfrage (ignoriert Sperre) */
   bypassLock?: boolean;
+  /** Host hat den Beitritt ausdrücklich zugelassen (angenommene Anfrage): hebt den Kick auf statt abzulehnen */
+  clearKick?: boolean;
 }
 
 export class LobbyManager {
@@ -28,7 +31,13 @@ export class LobbyManager {
   private participants = new Map<string, Set<string>>();
 
   /** Aufgelöste Lobbys, deren Teilnehmer noch kurz Daten-IPC nutzen dürfen (z.B. finales SAVE_META) */
-  private recent = new Map<string, { gameId: string; participants: Set<string>; until: number }>();
+  private recent = new Map<string, { gameId: string; serverId?: string; participants: Set<string>; until: number; serverUntil: number }>();
+
+  /** lobbyId → Zeitpunkt, an dem die Lobby geschlossen wurde (Schreibfrist für Game-Server) */
+  private closedAt = new Map<string, number>();
+
+  /** lobbyId → gekickte User (weicher Kick, lebt und stirbt mit der Lobby) */
+  private kicked = new Map<string, Set<string>>();
 
   // ─── Erstellen ─────────────────────────────────────────────────────────────
 
@@ -45,6 +54,7 @@ export class LobbyManager {
     if (this.userLobbyIndex.has(userId)) {
       throw new HubError('ALREADY_IN_LOBBY');
     }
+    this.assertLobbyCapacity(gameId);
 
     const host: LobbyPlayer = { userId, username, isHost: true, connected: true };
     const inviteCode = isPrivate ? this.generateInviteCode() : undefined;
@@ -72,6 +82,18 @@ export class LobbyManager {
     return lobby;
   }
 
+  private assertLobbyCapacity(gameId: string): void {
+    const { maxLobbiesTotal, maxLobbiesPerGame, capRetryAfterMs } = serverLimits.caps;
+    if (this.lobbies.size >= maxLobbiesTotal) {
+      throw new HubError('RATE_LIMITED', 'Lobby-Limit des Servers erreicht', capRetryAfterMs);
+    }
+    let forGame = 0;
+    for (const l of this.lobbies.values()) if (l.gameId === gameId) forGame++;
+    if (forGame >= maxLobbiesPerGame) {
+      throw new HubError('RATE_LIMITED', 'Lobby-Limit für dieses Spiel erreicht', capRetryAfterMs);
+    }
+  }
+
   // ─── Beitreten ─────────────────────────────────────────────────────────────
 
   joinLobby(userId: string, username: string, lobbyId: string, opts: JoinOptions = {}): Lobby {
@@ -82,6 +104,8 @@ export class LobbyManager {
     const lobby = this.lobbies.get(lobbyId);
     if (!lobby) throw new HubError('LOBBY_NOT_FOUND');
     if (opts.gameId && lobby.gameId !== opts.gameId) throw new HubError('GAME_MISMATCH');
+    if (opts.clearKick) this.clearKick(lobbyId, userId);
+    else if (this.isKicked(lobbyId, userId)) throw new HubError('KICKED_FROM_LOBBY');
     if (lobby.isPrivate && !opts.viaCode) throw new HubError('LOBBY_PRIVATE');
     this.assertStatusJoinable(lobby);
     if (lobby.locked && !opts.bypassLock) throw new HubError('LOBBY_LOCKED');
@@ -101,9 +125,36 @@ export class LobbyManager {
   assertJoinable(userId: string, lobby: Lobby, opts: JoinOptions = {}): void {
     if (this.userLobbyIndex.has(userId)) throw new HubError('ALREADY_IN_LOBBY');
     if (opts.gameId && lobby.gameId !== opts.gameId) throw new HubError('GAME_MISMATCH');
+    if (this.isKicked(lobby.id, userId)) throw new HubError('KICKED_FROM_LOBBY');
     if (lobby.isPrivate && !opts.viaCode) throw new HubError('LOBBY_PRIVATE');
     this.assertStatusJoinable(lobby);
     if (lobby.players.length >= lobby.maxPlayers) throw new HubError('LOBBY_FULL');
+  }
+
+  isKicked(lobbyId: string, userId: string): boolean {
+    return !!this.kicked.get(lobbyId)?.has(userId);
+  }
+
+  markKicked(lobbyId: string, userId: string): void {
+    const set = this.kicked.get(lobbyId) ?? new Set<string>();
+    set.add(userId);
+    this.kicked.set(lobbyId, set);
+  }
+
+  clearKick(lobbyId: string, userId: string): boolean {
+    const set = this.kicked.get(lobbyId);
+    const had = !!set?.delete(userId);
+    if (set?.size === 0) this.kicked.delete(lobbyId);
+    return had;
+  }
+
+  /** Host hebt den Kick eines Users auf. */
+  unkickPlayer(requesterId: string, targetId: string): Lobby {
+    const lobby = this.getLobbyByUserId(requesterId);
+    if (!lobby) throw new HubError('NOT_IN_LOBBY');
+    if (lobby.hostId !== requesterId) throw new HubError('NOT_HOST', 'Nur der Host kann Kicks aufheben');
+    if (!this.clearKick(lobby.id, targetId)) throw new HubError('PLAYER_NOT_FOUND', 'Spieler ist nicht gekickt');
+    return lobby;
   }
 
   private assertStatusJoinable(lobby: Lobby): void {
@@ -164,11 +215,20 @@ export class LobbyManager {
       if (this.userLobbyIndex.get(p.userId) === lobbyId) this.userLobbyIndex.delete(p.userId);
     }
     this.lobbies.delete(lobbyId);
+    this.kicked.delete(lobbyId);
     if (lobby.inviteCode) this.inviteCodeIndex.delete(lobby.inviteCode);
     const members = this.participants.get(lobbyId);
     this.participants.delete(lobbyId);
+    const closedAt = this.closedAt.get(lobbyId);
+    this.closedAt.delete(lobbyId);
     if (members) {
-      this.recent.set(lobbyId, { gameId: lobby.gameId, participants: members, until: Date.now() + RECENT_LOBBY_TTL_MS });
+      this.recent.set(lobbyId, {
+        gameId: lobby.gameId,
+        serverId: lobby.server?.serverId,
+        participants: members,
+        until: Date.now() + RECENT_LOBBY_TTL_MS,
+        serverUntil: (closedAt ?? Date.now()) + RECENT_LOBBY_TTL_MS,
+      });
     }
     console.log(`[Lobby] Aufgelöst: "${lobby.name}" (${lobbyId})`);
   }
@@ -191,6 +251,7 @@ export class LobbyManager {
     const lobby = this.lobbies.get(lobbyId);
     if (!lobby || lobby.status === 'closed') return;
     lobby.status = status;
+    if (status === 'closed') this.closedAt.set(lobbyId, Date.now());
   }
 
   setServer(lobbyId: string, server: Lobby['server'] | undefined): void {
@@ -272,6 +333,22 @@ export class LobbyManager {
     return recent.gameId === gameId && recent.participants.has(userId);
   }
 
+  /**
+   * Darf dieser Game-Server Daten für den User schreiben? Nur für (frühere) Mitglieder einer an ihn
+   * gebundenen Lobby seines Spiels, bis RECENT_LOBBY_TTL_MS nach dem Schließen der Lobby.
+   */
+  serverMayWriteFor(serverId: string, gameId: string, lobbyId: string, userId: string): boolean {
+    const lobby = this.lobbies.get(lobbyId);
+    if (lobby) {
+      if (lobby.server?.serverId !== serverId || lobby.gameId !== gameId || !this.participants.get(lobbyId)?.has(userId)) return false;
+      const closedAt = this.closedAt.get(lobbyId);
+      return closedAt === undefined || Date.now() <= closedAt + RECENT_LOBBY_TTL_MS;
+    }
+    const recent = this.recent.get(lobbyId);
+    if (!recent || recent.serverUntil < Date.now()) return false;
+    return recent.serverId === serverId && recent.gameId === gameId && recent.participants.has(userId);
+  }
+
   // ─── Host-Aktionen ─────────────────────────────────────────────────────────
 
   /** Host entfernt einen anderen Spieler aus der Lobby. */
@@ -286,6 +363,7 @@ export class LobbyManager {
 
     lobby.players = lobby.players.filter((p) => p.userId !== targetId);
     this.userLobbyIndex.delete(targetId);
+    this.markKicked(lobby.id, targetId);
 
     if (lobby.status === 'full') lobby.status = 'open';
     console.log(`[Lobby] "${target.username}" wurde aus "${lobby.name}" gekickt`);

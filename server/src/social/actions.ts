@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { HubError } from '../errors';
 import { assertUserLimit } from './bus';
+import * as blocks from './blocks.service';
 import * as friends from './friends.service';
 import * as invites from './invites.service';
 import * as messages from './messages.service';
@@ -50,6 +51,17 @@ export const actions = {
     schema: z.object({ friendId: id }),
     run: async (userId, i) => friends.removeFriend(userId, i.friendId),
   }),
+  'block:add': action({
+    limit: 'blockAction',
+    schema: z.object({ userId: id }),
+    run: async (userId, i) => ({ blocked: await blocks.blockUser(userId, i.userId) }),
+  }),
+  'block:remove': action({
+    limit: 'blockAction',
+    schema: z.object({ userId: id }),
+    run: async (userId, i) => blocks.unblockUser(userId, i.userId),
+  }),
+  'block:list': action({ limit: 'socialRead', schema: empty, run: async (userId) => ({ blocks: await blocks.listBlocks(userId) }) }),
   'friend:list': action({ limit: 'socialRead', schema: empty, run: async (userId) => ({ friends: await friends.listFriends(userId) }) }),
   'friend:requests': action({ limit: 'socialRead', schema: empty, run: async (userId) => ({ ...(await friends.listRequests(userId)) }) }),
   'presence:friends': action({ limit: 'socialRead', schema: empty, run: async (userId) => ({ presence: await presenceOfFriends(userId) }) }),

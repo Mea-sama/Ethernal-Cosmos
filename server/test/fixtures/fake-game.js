@@ -5,8 +5,11 @@ process.on('message', (msg) => {
   if (msg.type === 'PLAYER_ACTION' && msg.payload.action === 'save') {
     process.send({
       type: 'SAVE_META',
-      payload: { userId: msg.payload.userId, gameId: msg.payload.data.gameId, entries: [{ key: 'rank.points', value: msg.payload.data.value, visibility: 'public' }] },
+      payload: { userId: msg.payload.userId, gameId: msg.payload.data.gameId, entries: [{ key: 'rank.points', value: msg.payload.data.value, visibility: msg.payload.data.visibility ?? 'private' }] },
     });
   }
+});
+process.on('message', (msg) => {
+  if (msg.type === 'PLAYER_ACTION' && msg.payload.action === 'dataop') process.send(msg.payload.data.ipc);
 });
 setInterval(() => {}, 1 << 30);

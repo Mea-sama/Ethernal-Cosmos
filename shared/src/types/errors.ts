@@ -12,6 +12,8 @@ export interface HubErrorPayload {
   requestId?: string;
   /** Bei RATE_LIMITED: frühestens nach dieser Zeit erneut versuchen */
   retryAfterMs?: number;
+  /** Zusatzdaten, z.B. bei VERSION_CONFLICT `{ current: { value, version } | null }` */
+  data?: Record<string, unknown>;
 }
 
 /** Antwort auf jedes Client→Server-Event, wenn der Client einen Ack-Callback übergibt */

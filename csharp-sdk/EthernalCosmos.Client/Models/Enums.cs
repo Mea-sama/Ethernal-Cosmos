@@ -147,6 +147,8 @@ public enum PlayerLeftReason
     [WireValue("kicked")] Kicked,
     /// <summary>reconnect grace expired</summary>
     [WireValue("timeout")] Timeout,
+    /// <summary>the account was deleted</summary>
+    [WireValue("account_deleted")] AccountDeleted,
 }
 
 /// <summary>Reason of <c>session:replaced</c>.</summary>
@@ -158,6 +160,19 @@ public enum SessionReplacedReason
     Unknown = 0,
     /// <summary>the same account connected from a new session</summary>
     [WireValue("new_session")] NewSession,
+    /// <summary>the password was changed from another session</summary>
+    [WireValue("password_changed")] PasswordChanged,
+}
+
+/// <summary>Reason of <c>friend:removed</c> (absent = plain unfriend/block).</summary>
+/// <remarks>Values not known to this SDK version deserialize to <c>Unknown</c>.</remarks>
+[JsonConverter(typeof(WireEnumConverter<FriendRemovedReason>))]
+public enum FriendRemovedReason
+{
+    /// <summary>Value not known to this SDK version.</summary>
+    Unknown = 0,
+    /// <summary>the friend deleted their account</summary>
+    [WireValue("account_deleted")] AccountDeleted,
 }
 
 /// <summary>Why a join request was rejected or ended.</summary>
@@ -209,7 +224,9 @@ public enum DataVisibility
     [WireValue("private")] Private,
     /// <summary>owner and lobby members</summary>
     [WireValue("lobby")] Lobby,
-    /// <summary>everyone (also on leaderboards)</summary>
+    /// <summary>owner and friends</summary>
+    [WireValue("friends")] Friends,
+    /// <summary>leaderboard key; only a game server can set it</summary>
     [WireValue("public")] Public,
 }
 
@@ -393,6 +410,8 @@ public enum ErrorCode
     [WireValue("INVALID_INVITE_CODE")] InvalidInviteCode,
     /// <summary>Wire value <c>INVITE_CODE_NOT_FOUND</c>.</summary>
     [WireValue("INVITE_CODE_NOT_FOUND")] InviteCodeNotFound,
+    /// <summary>Wire value <c>KICKED_FROM_LOBBY</c>.</summary>
+    [WireValue("KICKED_FROM_LOBBY")] KickedFromLobby,
     /// <summary>Wire value <c>NOT_HOST</c>.</summary>
     [WireValue("NOT_HOST")] NotHost,
     /// <summary>Wire value <c>ALREADY_HOST</c>.</summary>
@@ -469,4 +488,10 @@ public enum ErrorCode
     [WireValue("INVITE_NOT_FOUND")] InviteNotFound,
     /// <summary>Wire value <c>MESSAGE_TOO_LONG</c>.</summary>
     [WireValue("MESSAGE_TOO_LONG")] MessageTooLong,
+    /// <summary>Wire value <c>NOT_ALLOWED</c>.</summary>
+    [WireValue("NOT_ALLOWED")] NotAllowed,
+    /// <summary>Wire value <c>VERSION_CONFLICT</c>.</summary>
+    [WireValue("VERSION_CONFLICT")] VersionConflict,
+    /// <summary>Wire value <c>BLOCK_LIMIT_REACHED</c>.</summary>
+    [WireValue("BLOCK_LIMIT_REACHED")] BlockLimitReached,
 }

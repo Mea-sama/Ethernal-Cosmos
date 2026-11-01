@@ -12,6 +12,12 @@ interface AuthLimitRule {
   message: string;
 }
 
+/** Festes Zeitfenster pro Client (User oder IP) für REST-Routen */
+interface RestLimitRule {
+  windowMs: number;
+  max: number;
+}
+
 export interface ServerLimits {
   binary: {
     maxPayloadBytes: number;
@@ -32,6 +38,28 @@ export interface ServerLimits {
     register: AuthLimitRule;
     refresh: AuthLimitRule;
   };
+  /** REST-Rate-Limits pro User (Bearer-Token) bzw. IP; Überschreitung → 429 RATE_LIMITED + retryAfterMs */
+  restRateLimits: {
+    userdata: RestLimitRule;
+    players: RestLimitRule;
+    leaderboard: RestLimitRule;
+    social: RestLimitRule;
+  };
+  /** Obergrenzen (Überschreitung → RATE_LIMITED mit retryAfterMs = capRetryAfterMs) */
+  caps: {
+    /** Gleichzeitige Sockets (Spiel + Panel) pro User; ein neuer Spiel-Client ersetzt den alten und zählt nicht extra */
+    maxSessionsPerUser: number;
+    maxConnectionsPerIp: number;
+    maxLobbiesPerGame: number;
+    maxLobbiesTotal: number;
+    /** Offene Beitrittsanfragen pro Lobby (Host-Spam) */
+    maxPendingJoinRequestsPerLobby: number;
+    /** Verbundene Game-Server pro Spiel (Resume derselben serverId zählt nicht extra) */
+    maxGameServersPerGame: number;
+    maxGameServerConnectionsPerIp: number;
+    /** Wartehinweis für Cap-Fehler */
+    capRetryAfterMs: number;
+  };
 }
 
 const defaultLimits: ServerLimits = {
@@ -49,6 +77,7 @@ const defaultLimits: ServerLimits = {
     joinLobby: { refillPerSecond: 0.25, burst: 4 },
     joinLobbyByCode: { refillPerSecond: 0.25, burst: 4 },
     kickPlayer: { refillPerSecond: 0.5, burst: 3 },
+    unkickPlayer: { refillPerSecond: 0.5, burst: 3 },
     transferHost: { refillPerSecond: 0.5, burst: 3 },
     lockLobby: { refillPerSecond: 0.5, burst: 3 },
     unlockLobby: { refillPerSecond: 0.5, burst: 3 },
@@ -71,6 +100,9 @@ const defaultLimits: ServerLimits = {
     setUserData: { refillPerSecond: 8, burst: 30 },
     bulkSetUserData: { refillPerSecond: 2, burst: 6 },
     deleteUserData: { refillPerSecond: 8, burst: 30 },
+    incrementUserData: { refillPerSecond: 8, burst: 30 },
+    setUserDataIf: { refillPerSecond: 8, burst: 30 },
+    transactUserData: { refillPerSecond: 2, burst: 6 },
     leaveLobby: { refillPerSecond: 1, burst: 5 },
     // Social
     friendRequestByName: { refillPerSecond: 0.1, burst: 10 },
@@ -83,6 +115,11 @@ const defaultLimits: ServerLimits = {
     dmTyping: { refillPerSecond: 1, burst: 3 },
     lobbyInvite: { refillPerSecond: 0.5, burst: 6 },
     lobbyInviteAction: { refillPerSecond: 1, burst: 10 },
+    blockAction: { refillPerSecond: 1, burst: 10 },
+    // Passwort-Bestätigung: Brute-Force-Schutz pro User
+    accountPassword: { refillPerSecond: 1 / 30, burst: 5 },
+    accountDelete: { refillPerSecond: 1 / 60, burst: 3 },
+    accountExport: { refillPerSecond: 1 / 30, burst: 3 },
   },
   lobbyLimits: {
     sendToLobby: { refillPerSecond: 1200, burst: 2400 },
@@ -106,6 +143,22 @@ const defaultLimits: ServerLimits = {
       max: 30,
       message: 'Zu viele Token-Refresh-Anfragen',
     },
+  },
+  restRateLimits: {
+    userdata: { windowMs: 60_000, max: 120 },
+    players: { windowMs: 60_000, max: 120 },
+    leaderboard: { windowMs: 60_000, max: 60 },
+    social: { windowMs: 60_000, max: 120 },
+  },
+  caps: {
+    maxSessionsPerUser: 10,
+    maxConnectionsPerIp: 100,
+    maxLobbiesPerGame: 500,
+    maxLobbiesTotal: 2000,
+    maxPendingJoinRequestsPerLobby: 20,
+    maxGameServersPerGame: 50,
+    maxGameServerConnectionsPerIp: 20,
+    capRetryAfterMs: 5000,
   },
 };
 
@@ -156,6 +209,12 @@ function authRule(value: unknown, fallback: AuthLimitRule): AuthLimitRule {
   return { windowMs, max, message };
 }
 
+function restRule(value: unknown, fallback: RestLimitRule): RestLimitRule {
+  if (!value || typeof value !== 'object') return fallback;
+  const candidate = value as Partial<RestLimitRule>;
+  return { windowMs: posNum(candidate.windowMs, fallback.windowMs), max: posNum(candidate.max, fallback.max) };
+}
+
 function posNum(value: unknown, fallback: number): number {
   const n = Number(value);
   return Number.isFinite(n) && n > 0 ? n : fallback;
@@ -165,6 +224,8 @@ function mergeLimits(base: ServerLimits, override: Partial<ServerLimits>): Serve
   const socketOverrides = override.socketLimits ?? {};
   const lobbyOverrides = override.lobbyLimits ?? {};
   const authOverrides: Partial<ServerLimits['authRateLimits']> = override.authRateLimits ?? {};
+  const restOverrides: Partial<ServerLimits['restRateLimits']> = override.restRateLimits ?? {};
+  const capOverrides: Partial<ServerLimits['caps']> = override.caps ?? {};
 
   return {
     binary: {
@@ -187,6 +248,15 @@ function mergeLimits(base: ServerLimits, override: Partial<ServerLimits>): Serve
       register: authRule(authOverrides.register, base.authRateLimits.register),
       refresh: authRule(authOverrides.refresh, base.authRateLimits.refresh),
     },
+    restRateLimits: {
+      userdata: restRule(restOverrides.userdata, base.restRateLimits.userdata),
+      players: restRule(restOverrides.players, base.restRateLimits.players),
+      leaderboard: restRule(restOverrides.leaderboard, base.restRateLimits.leaderboard),
+      social: restRule(restOverrides.social, base.restRateLimits.social),
+    },
+    caps: Object.fromEntries(
+      Object.entries(base.caps).map(([k, v]) => [k, posNum((capOverrides as Record<string, unknown>)[k], v)]),
+    ) as ServerLimits['caps'],
   };
 }
 

@@ -114,6 +114,7 @@ Used in: `player:left` (game server)
 | `left` | `PlayerLeftReason.Left` | player left voluntarily |
 | `kicked` | `PlayerLeftReason.Kicked` | player was kicked |
 | `timeout` | `PlayerLeftReason.Timeout` | reconnect grace expired |
+| `account_deleted` | `PlayerLeftReason.AccountDeleted` | the account was deleted |
 
 ## SessionReplacedReason
 
@@ -124,6 +125,17 @@ Used in: `session:replaced`
 | Wire value | Node.js / C# member | Meaning |
 |---|---|---|
 | `new_session` | `SessionReplacedReason.NewSession` | the same account connected from a new session |
+| `password_changed` | `SessionReplacedReason.PasswordChanged` | the password was changed from another session |
+
+## FriendRemovedReason
+
+Reason of `friend:removed` (absent = plain unfriend/block).
+
+Used in: -
+
+| Wire value | Node.js / C# member | Meaning |
+|---|---|---|
+| `account_deleted` | `FriendRemovedReason.AccountDeleted` | the friend deleted their account |
 
 ## JoinRequestRejectReason
 
@@ -163,7 +175,8 @@ Used in: `UserDataEntry.visibility`, `setUserData`
 |---|---|---|
 | `private` | `DataVisibility.Private` | only the owner |
 | `lobby` | `DataVisibility.Lobby` | owner and lobby members |
-| `public` | `DataVisibility.Public` | everyone (also on leaderboards) |
+| `friends` | `DataVisibility.Friends` | owner and friends |
+| `public` | `DataVisibility.Public` | leaderboard key; only a game server can set it |
 
 ## DataWriteScope
 
@@ -291,6 +304,7 @@ Used in: `errorDetail`, ack errors, REST error `code`
 | `LOBBY_PRIVATE` | `ErrorCode.LobbyPrivate` |  |
 | `INVALID_INVITE_CODE` | `ErrorCode.InvalidInviteCode` |  |
 | `INVITE_CODE_NOT_FOUND` | `ErrorCode.InviteCodeNotFound` |  |
+| `KICKED_FROM_LOBBY` | `ErrorCode.KickedFromLobby` |  |
 | `NOT_HOST` | `ErrorCode.NotHost` |  |
 | `ALREADY_HOST` | `ErrorCode.AlreadyHost` |  |
 | `CANNOT_KICK_SELF` | `ErrorCode.CannotKickSelf` |  |
@@ -329,3 +343,6 @@ Used in: `errorDetail`, ack errors, REST error `code`
 | `FRIEND_NOT_IN_LOBBY` | `ErrorCode.FriendNotInLobby` |  |
 | `INVITE_NOT_FOUND` | `ErrorCode.InviteNotFound` |  |
 | `MESSAGE_TOO_LONG` | `ErrorCode.MessageTooLong` |  |
+| `NOT_ALLOWED` | `ErrorCode.NotAllowed` |  |
+| `VERSION_CONFLICT` | `ErrorCode.VersionConflict` |  |
+| `BLOCK_LIMIT_REACHED` | `ErrorCode.BlockLimitReached` |  |

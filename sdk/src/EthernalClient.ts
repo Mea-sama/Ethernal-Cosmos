@@ -33,6 +33,10 @@ import type {
   PublicUser,
   RelayMessage,
   RelayBinaryMessage,
+  BlockedUserInfo,
+  AccountExport,
+  UserDataOp,
+  UserDataOpResult,
 } from '@ethernal/shared';
 
 // ─── Types ───────────────────────────────────────────────────────
@@ -44,7 +48,7 @@ export type {
   NotificationCounts, NotificationListResult, DirectMessage, DmConversation, DmHistoryResult, DmReadState, DmUnreadResult, DmConversationUnread, JoinRequestInfo, JoinRequestsResult, LobbyInvite,
   FriendLobbyInfo,
 } from '@ethernal/shared';
-export type { RelayMessage, RelayBinaryMessage, HubErrorPayload, GameInfo, SessionState, HelloPayload, BulkDataEntry } from '@ethernal/shared';
+export type { RelayMessage, RelayBinaryMessage, HubErrorPayload, GameInfo, SessionState, HelloPayload, BulkDataEntry, BlockedUserInfo, AccountExport, UserDataOp, UserDataOpResult, UserDataConflict } from '@ethernal/shared';
 
 /**
  * Error thrown (as a rejected promise) by every SDK call.
@@ -53,6 +57,9 @@ export type { RelayMessage, RelayBinaryMessage, HubErrorPayload, GameInfo, Sessi
  * `e.code === ErrorCode.LobbyFull`. The SDK adds three client-side codes:
  * `'TIMEOUT'` (no answer within `requestTimeout`), `'NOT_CONNECTED'` (no live socket) and
  * `'HTTP_ERROR'` (REST error without a hub error code). `message` is for display only.
+ *
+ * `RATE_LIMITED` errors (REST, socket acks and a rate-limited socket handshake) carry `retryAfterMs`;
+ * `VERSION_CONFLICT` carries `data.current` (`{ value, version } | null`).
  */
 export class EthernalError extends Error {
   constructor(
@@ -60,10 +67,24 @@ export class EthernalError extends Error {
     message: string,
     /** Set for `RATE_LIMITED`: retry no earlier than this many milliseconds from now. */
     public readonly retryAfterMs?: number,
+    /** Extra error data, e.g. `{ current: { value, version } | null }` for `VERSION_CONFLICT`. */
+    public readonly data?: Record<string, unknown>,
   ) {
     super(message);
     this.name = 'EthernalError';
   }
+}
+
+/** @internal Builds the SDK error for a hub error payload (keeps `retryAfterMs` and `data`). */
+export function hubError(e: HubErrorPayload): EthernalError {
+  return new EthernalError(e.code, e.message, e.retryAfterMs, e.data);
+}
+
+/** @internal Maps a socket.io `connect_error` (hub errors carry `err.data = { code, message, retryAfterMs? }`) to an EthernalError. */
+export function connectError(err: Error & { data?: unknown }): EthernalError | undefined {
+  const d = err.data as Partial<HubErrorPayload> | undefined;
+  if (!d || typeof d !== 'object' || typeof d.code !== 'string') return undefined;
+  return hubError({ code: d.code, message: d.message ?? err.message, retryAfterMs: d.retryAfterMs, data: d.data });
 }
 
 export type BinaryPayload = Uint8Array | ArrayBuffer;
@@ -94,13 +115,50 @@ export interface AuthResult {
   refreshToken: string;
 }
 
-/** One row of {@link EthernalClient.getLeaderboard}, already sorted (rank = array index + 1). */
+/** One row of {@link EthernalClient.getLeaderboard}, already sorted. */
 export interface LeaderboardEntry {
+  /** 1-based absolute rank (respects `offset`, `scope` and ties). */
+  rank: number;
   userId: string;
   username: string;
   value: number;
   /** unix ms */
   updatedAt: number;
+}
+
+/** Query options of {@link EthernalClient.getLeaderboard}. */
+export interface LeaderboardOptions {
+  /** @default 'desc' */
+  order?: 'asc' | 'desc';
+  /** 1–100 @default 10 */
+  limit?: number;
+  /** Rows to skip (≥ 0) @default 0 */
+  offset?: number;
+  /** Also return the caller's own row and rank (`me`), even while hidden by `leaderboardVisible: false`. */
+  me?: boolean;
+  /** `'me'`: return a window around the caller's rank instead of the top (top if unranked). */
+  around?: 'me';
+  /** Entries above/below the caller for `around: 'me'` (1–50) @default 5 */
+  range?: number;
+  /** `'friends'`: only your friends and yourself. @default 'all' */
+  scope?: 'all' | 'friends';
+}
+
+/** Leaderboard page returned when `me` or `around` is requested. */
+export interface LeaderboardPage {
+  entries: LeaderboardEntry[];
+  /** The caller's own row; `null` if unranked. */
+  me: LeaderboardEntry | null;
+  /** Number of ranked players in the scope. */
+  total: number;
+}
+
+/** Result of {@link EthernalClient.incrementUserData} / {@link EthernalClient.setUserDataIf}. */
+export interface UserDataWriteResult {
+  key: string;
+  value: unknown;
+  /** New entry version. */
+  version: number;
 }
 
 /** Options of the relay send methods. */
@@ -134,6 +192,8 @@ export type EthernalClientEvents =
     disconnected: [reason: string];
     /** Authentication could not be renewed / the socket was rejected. */
     authError: [message: string];
+    /** The hub refused a (re)connect with a coded error, e.g. `RATE_LIMITED` (see `error.retryAfterMs`). */
+    connectError: [error: EthernalError];
     /** Legacy human-readable error text pushed by the hub. Prefer `errorDetail` / rejected promises. */
     serverError: [message: string];
   };
@@ -272,7 +332,7 @@ export class EthernalClient extends EventEmitter {
   /**
    * Join a public lobby of the registered game by ID.
    * @throws {EthernalError} `LOBBY_NOT_FOUND`, `LOBBY_FULL`, `LOBBY_LOCKED`, `LOBBY_CLOSED`, `LOBBY_IN_PROGRESS`,
-   *   `LOBBY_PRIVATE`, `GAME_MISMATCH`, `ALREADY_IN_LOBBY`
+   *   `LOBBY_PRIVATE`, `GAME_MISMATCH`, `ALREADY_IN_LOBBY`, `KICKED_FROM_LOBBY`
    */
   async joinLobby(lobbyId: string): Promise<Lobby> {
     return (await this.call<{ lobby: Lobby }>('joinLobby', { lobbyId })).lobby;
@@ -280,7 +340,7 @@ export class EthernalClient extends EventEmitter {
 
   /**
    * Join a lobby (also a private one) with its 6-character invite code.
-   * @throws {EthernalError} `INVALID_INVITE_CODE`, `INVITE_CODE_NOT_FOUND`, `LOBBY_FULL`, `LOBBY_LOCKED`, `ALREADY_IN_LOBBY`
+   * @throws {EthernalError} `INVALID_INVITE_CODE`, `INVITE_CODE_NOT_FOUND`, `LOBBY_FULL`, `LOBBY_LOCKED`, `ALREADY_IN_LOBBY`, `KICKED_FROM_LOBBY`
    */
   async joinLobbyByCode(code: string): Promise<Lobby> {
     return (await this.call<{ lobby: Lobby }>('joinLobbyByCode', { code })).lobby;
@@ -305,11 +365,21 @@ export class EthernalClient extends EventEmitter {
   }
 
   /**
-   * (Host only) Kick a player; they receive `playerKicked`.
-   * @throws {EthernalError} `NOT_HOST`, `CANNOT_KICK_SELF`, `PLAYER_NOT_FOUND`
+   * (Host only) Kick a player; they receive `playerKicked { lobbyId, reason? }`. The kick is soft and lives as long as
+   * the lobby: the player cannot rejoin it (`KICKED_FROM_LOBBY`) until {@link unkickPlayer}.
+   * @param reason optional text (max 200 chars) delivered to the kicked player
+   * @throws {EthernalError} `NOT_HOST`, `CANNOT_KICK_SELF`, `PLAYER_NOT_FOUND`, `INVALID_INPUT`
    */
-  async kickPlayer(playerId: string): Promise<void> {
-    await this.call('kickPlayer', { playerId });
+  async kickPlayer(playerId: string, reason?: string): Promise<void> {
+    await this.call('kickPlayer', { playerId, ...(reason !== undefined ? { reason } : {}) });
+  }
+
+  /**
+   * (Host only) Lift the kick of a player so they can join the lobby again.
+   * @throws {EthernalError} `NOT_HOST`, `NOT_IN_LOBBY`, `INVALID_INPUT`
+   */
+  async unkickPlayer(playerId: string): Promise<void> {
+    await this.call('unkickPlayer', { playerId });
   }
 
   /**
@@ -462,8 +532,9 @@ export class EthernalClient extends EventEmitter {
   }
 
   /**
-   * Visible KV data of another player: `public` entries, plus `lobby` entries if you share a lobby.
-   * @throws {EthernalError} `UNKNOWN_GAME`, `USER_NOT_FOUND`
+   * Visible KV data of another player: `friends` entries if you are friends, `lobby` entries if you share a lobby
+   * (for friends: only while in the same lobby). `public` leaderboard keys are never returned (use {@link getLeaderboard}).
+   * @throws {EthernalError} `NOT_ALLOWED` (no relationship with the player; identical for non-existent users), `UNKNOWN_GAME`
    */
   async getPlayerData(playerId: string, gameId: string): Promise<UserDataEntry[]> {
     return (await this.call<{ entries: UserDataEntry[] }>('getPlayerData', { playerId, gameId })).entries;
@@ -471,8 +542,9 @@ export class EthernalClient extends EventEmitter {
 
   /**
    * Write one own key (socket). Keys the game marks as server-written are read-only for clients.
-   * @param visibility @default 'private'
-   * @throws {EthernalError} `DATA_READ_ONLY`, `DATA_QUOTA_EXCEEDED`, `DATA_VALUE_TOO_LARGE`, `UNKNOWN_GAME`, `INVALID_INPUT`
+   * @param visibility `'private'` (default), `'lobby'` or `'friends'`. `'public'` marks a leaderboard key and is
+   *   reserved for game servers (clients get `NOT_ALLOWED`).
+   * @throws {EthernalError} `DATA_READ_ONLY`, `NOT_ALLOWED`, `DATA_QUOTA_EXCEEDED`, `DATA_VALUE_TOO_LARGE`, `UNKNOWN_GAME`, `INVALID_INPUT`
    */
   async setUserData(gameId: string, key: string, value: unknown, visibility?: DataVisibility): Promise<void> {
     await this.call('setUserData', { gameId, key, value, ...(visibility ? { visibility } : {}) });
@@ -486,6 +558,33 @@ export class EthernalClient extends EventEmitter {
   /** Delete one own key (socket). @throws {EthernalError} `DATA_READ_ONLY`, `DATA_KEY_NOT_FOUND` */
   async deleteUserData(gameId: string, key: string): Promise<void> {
     await this.call('deleteUserData', { gameId, key });
+  }
+
+  /**
+   * Atomically add `by` to an own numeric key (a missing key counts as 0).
+   * @returns the new value and version
+   * @throws {EthernalError} `INVALID_INPUT` (existing value not a number, result beyond ±2^53−1), `DATA_READ_ONLY`, `NOT_ALLOWED` (`public`), `DATA_QUOTA_EXCEEDED`
+   */
+  async incrementUserData(gameId: string, key: string, by: number, visibility?: DataVisibility): Promise<UserDataWriteResult> {
+    return this.call<UserDataWriteResult>('incrementUserData', { gameId, key, by, ...(visibility ? { visibility } : {}) });
+  }
+
+  /**
+   * Compare-and-set: write only if the key's current `version` equals `expectedVersion` (`0` = key must not exist).
+   * @returns the new value and version
+   * @throws {EthernalError} `VERSION_CONFLICT` with `error.data.current` (`{ value, version }` or `null`), plus the errors of {@link setUserData}
+   */
+  async setUserDataIf(gameId: string, key: string, value: unknown, expectedVersion: number, visibility?: DataVisibility): Promise<UserDataWriteResult> {
+    return this.call<UserDataWriteResult>('setUserDataIf', { gameId, key, value, expectedVersion, ...(visibility ? { visibility } : {}) });
+  }
+
+  /**
+   * Run 1–100 operations (`set`, `increment`, `setIf`, `delete`) on own keys all-or-nothing.
+   * @returns one `{ key, value?, version }` per op, in order (`delete` → version 0)
+   * @throws {EthernalError} `VERSION_CONFLICT` (nothing is written), `INVALID_INPUT`, plus the errors of {@link setUserData}
+   */
+  async transactUserData(gameId: string, ops: UserDataOp[]): Promise<UserDataOpResult[]> {
+    return (await this.call<{ results: UserDataOpResult[] }>('transactUserData', { gameId, ops })).results;
   }
 
   // ─── Social: Friends ──────────────────────────────────────────────────────
@@ -549,7 +648,7 @@ export class EthernalClient extends EventEmitter {
 
   /**
    * Patch own social settings: `status` (online/away/busy/invisible), `showLastSeen`,
-   * `dmReadReceipts`, `mutedNotificationTypes`. Returns the full settings after the change.
+   * `dmReadReceipts`, `leaderboardVisible` (appear in leaderboards; your own `me` rank stays visible), `mutedNotificationTypes`. Returns the full settings after the change.
    * @throws {EthernalError} `INVALID_INPUT`
    */
   async setSocialSettings(patch: Partial<SocialSettings>): Promise<SocialSettings> {
@@ -571,6 +670,27 @@ export class EthernalClient extends EventEmitter {
    */
   async getFriendLobby(friendId: string): Promise<FriendLobbyInfo | null> {
     return (await this.call<{ lobby: FriendLobbyInfo | null }>('social:friendLobby', { friendId })).lobby;
+  }
+
+  // ─── Social: Blocks ───────────────────────────────────────────────────────
+
+  /**
+   * Block a user (idempotent): removes the friendship, drops pending requests and invites between you, and
+   * silently ignores their later friend requests. The block list is private; the blocked user is never told.
+   * @throws {EthernalError} `CANNOT_TARGET_SELF`, `USER_NOT_FOUND`, `BLOCK_LIMIT_REACHED`, `RATE_LIMITED`
+   */
+  async blockUser(userId: string): Promise<BlockedUserInfo> {
+    return (await this.call<{ blocked: BlockedUserInfo }>('block:add', { userId })).blocked;
+  }
+
+  /** Remove a block (idempotent). Friendships and requests are not restored. */
+  async unblockUser(userId: string): Promise<void> {
+    await this.call('block:remove', { userId });
+  }
+
+  /** Your private block list. */
+  async getBlockedUsers(): Promise<BlockedUserInfo[]> {
+    return (await this.call<{ blocks: BlockedUserInfo[] }>('block:list')).blocks;
   }
 
   // ─── Social: Notifications ────────────────────────────────────────────────
@@ -702,8 +822,8 @@ export class EthernalClient extends EventEmitter {
 
   /**
    * Set or update a single KV entry of the current user (REST).
-   * @param visibility @default 'private'
-   * @throws {EthernalError} hub code (`INVALID_INPUT`, `DATA_READ_ONLY`, `DATA_QUOTA_EXCEEDED`, `DATA_VALUE_TOO_LARGE`, `UNKNOWN_GAME`) or `HTTP_ERROR`
+   * @param visibility `'private'` (default), `'lobby'` or `'friends'`; `'public'` is rejected with `NOT_ALLOWED` (game servers only)
+   * @throws {EthernalError} hub code (`INVALID_INPUT`, `NOT_ALLOWED`, `RATE_LIMITED`, `DATA_READ_ONLY`, `DATA_QUOTA_EXCEEDED`, `DATA_VALUE_TOO_LARGE`, `UNKNOWN_GAME`) or `HTTP_ERROR`
    */
   async setKey(
     gameId: string,
@@ -741,22 +861,65 @@ export class EthernalClient extends EventEmitter {
   }
 
   /**
-   * Fetch the public numeric leaderboard for a game key.
-   * @param options.order 'desc' (default) or 'asc'
-   * @param options.limit max rows (default 10, max 100)
+   * Fetch the leaderboard of a `public` (server-written) numeric key. Ranks are absolute, 1-based and deterministic
+   * (ties: earlier `updatedAt`). Players with `leaderboardVisible: false` are omitted.
+   * With `me: true` or `around: 'me'` the result is a {@link LeaderboardPage} (`{ entries, me, total }`), otherwise an array.
+   * @example
+   * const top = await client.getLeaderboard('chess', 'wins', { limit: 5 });
+   * const { entries, me } = await client.getLeaderboard('chess', 'wins', { around: 'me', range: 3 });
+   * const friends = await client.getLeaderboard('chess', 'wins', { scope: 'friends' });
+   * @throws {EthernalError} `INVALID_INPUT`, `RATE_LIMITED` (`retryAfterMs`), `HTTP_ERROR` (404: game has no server support)
    */
-  async getLeaderboard(
-    gameId: string,
-    key: string,
-    options?: { order?: 'asc' | 'desc'; limit?: number },
-  ): Promise<LeaderboardEntry[]> {
+  async getLeaderboard(gameId: string, key: string, options: LeaderboardOptions & ({ me: true } | { around: 'me' })): Promise<LeaderboardPage>;
+  async getLeaderboard(gameId: string, key: string, options?: LeaderboardOptions): Promise<LeaderboardEntry[]>;
+  async getLeaderboard(gameId: string, key: string, options?: LeaderboardOptions): Promise<LeaderboardEntry[] | LeaderboardPage> {
     const params = new URLSearchParams();
     if (options?.order) params.set('order', options.order);
     if (options?.limit != null) params.set('limit', String(options.limit));
+    if (options?.offset != null) params.set('offset', String(options.offset));
+    if (options?.me) params.set('me', 'true');
+    if (options?.around) params.set('around', options.around);
+    if (options?.range != null) params.set('range', String(options.range));
+    if (options?.scope) params.set('scope', options.scope);
     const qs = params.toString() ? `?${params.toString()}` : '';
-    return this.authedFetch<LeaderboardEntry[]>(
+    return this.authedFetch<LeaderboardEntry[] | LeaderboardPage>(
       `/leaderboard/${encodeURIComponent(gameId)}/${encodeURIComponent(key)}${qs}`,
     );
+  }
+
+  // ─── Account ──────────────────────────────────────────────────────────────
+
+  /**
+   * Change the password. All other sessions and refresh tokens of the account are revoked (other sockets receive
+   * `session:replaced` with reason `password_changed`); this session stays connected and continues with the
+   * fresh tokens, which the SDK stores.
+   * @throws {EthernalError} `INVALID_CREDENTIALS` (wrong current password), `INVALID_INPUT` (new password 8–128 chars), `RATE_LIMITED`
+   */
+  async changePassword(currentPassword: string, newPassword: string): Promise<AuthResult> {
+    const result = await this.authedFetch<AuthResult>('/auth/password', {
+      method: 'POST',
+      body: JSON.stringify({ currentPassword, newPassword, ...(this.socket?.id ? { socketId: this.socket.id } : {}) }),
+    });
+    this.storeTokens(result.accessToken, result.refreshToken);
+    return result;
+  }
+
+  /**
+   * Permanently delete the account and all its data (GDPR), then drop the local session. Friends receive
+   * `friend:removed` (reason `account_deleted`), your lobby is left, all sockets are disconnected.
+   * @throws {EthernalError} `INVALID_CREDENTIALS` (wrong password), `INVALID_INPUT`, `RATE_LIMITED`
+   */
+  async deleteAccount(password: string): Promise<void> {
+    await this.authedFetch('/auth/account', { method: 'DELETE', body: JSON.stringify({ password }) });
+    this.reset();
+  }
+
+  /**
+   * Export everything the hub stores about you (profile, user data, friends, DMs, notifications, settings, blocks).
+   * @throws {EthernalError} `RATE_LIMITED`
+   */
+  async exportAccountData(): Promise<AccountExport> {
+    return this.authedFetch<AccountExport>('/account/export');
   }
 
   // ─── Internal: Socket ─────────────────────────────────────────────────────
@@ -787,11 +950,21 @@ export class EthernalClient extends EventEmitter {
       reconnectionAttempts: Infinity,
     });
 
-    const ready = new Promise<void>((resolve) => {
+    const ready = new Promise<void>((resolve, reject) => {
       const timer = setTimeout(resolve, this.requestTimeout);
       socket.once('connect', () => {
         clearTimeout(timer);
         resolve();
+      });
+      // A rate-limited handshake fails the pending login()/register() with `retryAfterMs` instead of retrying silently
+      socket.once('connect_error', (err) => {
+        const e = connectError(err);
+        if (e?.code !== 'RATE_LIMITED') return;
+        clearTimeout(timer);
+        socket.removeAllListeners();
+        socket.disconnect();
+        if (this.socket === socket) this.socket = null;
+        reject(e);
       });
     });
 
@@ -814,6 +987,8 @@ export class EthernalClient extends EventEmitter {
 
     // If the token expired mid-session, refresh and reconnect
     socket.on('connect_error', async (err) => {
+      const coded = connectError(err);
+      if (coded) this.emit('connectError', coded);
       if (err.message === 'INVALID_TOKEN' && this.refreshToken) {
         socket.disconnect();
         try {
@@ -911,7 +1086,7 @@ export class EthernalClient extends EventEmitter {
           const { ok: _ok, ...rest } = res;
           resolve(rest as unknown as T);
         }
-        else reject(new EthernalError(res.error!.code, res.error!.message, res.error!.retryAfterMs));
+        else reject(hubError(res.error!));
       };
       (sock as unknown as { emit: (e: string, ...a: unknown[]) => void }).emit(event, ...args, ack);
     });
@@ -967,7 +1142,7 @@ export class EthernalClient extends EventEmitter {
       sock.emit(event, data, (res: { ok: boolean; error?: HubErrorPayload; lobby?: Lobby }) => {
         if (!res.ok) {
           cleanup();
-          reject(new EthernalError(res.error!.code, res.error!.message, res.error!.retryAfterMs));
+          reject(hubError(res.error!));
         } else if (res.lobby) {
           cleanup();
           resolve(res.lobby);
@@ -1008,7 +1183,8 @@ export class EthernalClient extends EventEmitter {
     let res = await doFetch(this.accessToken);
 
     // Attempt a single token refresh on 401
-    if (res.status === 401 && this.refreshToken) {
+    // (a wrong password on /auth/password or /auth/account is a 401 too, but not an expired token)
+    if (res.status === 401 && this.refreshToken && (await res.clone().json().catch(() => ({})) as { code?: string }).code !== 'INVALID_CREDENTIALS') {
       await this.doRefresh();
       res = await doFetch(this.accessToken);
     }
@@ -1016,13 +1192,13 @@ export class EthernalClient extends EventEmitter {
     if (res.status === 204) return undefined as T;
     if (!res.ok) {
       const body = await res.text().catch(() => '');
-      let code: string | undefined;
+      let parsed: { code?: string; retryAfterMs?: number; data?: Record<string, unknown> } = {};
       try {
-        code = (JSON.parse(body) as { code?: string }).code;
+        parsed = JSON.parse(body);
       } catch {
         /* not JSON */
       }
-      throw new EthernalError((code as ErrorCode | undefined) ?? 'HTTP_ERROR', `HTTP ${res.status}: ${body}`);
+      throw new EthernalError((parsed.code as ErrorCode | undefined) ?? 'HTTP_ERROR', `HTTP ${res.status}: ${body}`, parsed.retryAfterMs, parsed.data);
     }
     return res.json() as Promise<T>;
   }
@@ -1035,8 +1211,8 @@ export class EthernalClient extends EventEmitter {
       body: JSON.stringify(body),
     });
     if (!res.ok) {
-      const payload = await res.json().catch(() => ({ error: res.statusText })) as { error?: string; code?: ErrorCode };
-      throw new EthernalError(payload.code ?? 'HTTP_ERROR', payload.error ?? `HTTP ${res.status}`);
+      const payload = await res.json().catch(() => ({ error: res.statusText })) as { error?: string; code?: ErrorCode; retryAfterMs?: number };
+      throw new EthernalError(payload.code ?? 'HTTP_ERROR', payload.error ?? `HTTP ${res.status}`, payload.retryAfterMs);
     }
     if (res.status === 204) return undefined as T;
     return res.json() as Promise<T>;

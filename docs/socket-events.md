@@ -35,6 +35,7 @@ The server emits a `connect_error` with a descriptive `message` string:
 |---------------|-------|--------|
 | `'UNAUTHENTICATED'` | No `auth.token` provided | Call `login()` first |
 | `'INVALID_TOKEN'` | Token expired or malformed | Refresh the token and reconnect |
+| `'RATE_LIMITED'` | Too many connections from this IP, too many sessions for this account, or too many game servers | Back off for `err.data.retryAfterMs` (`err.data = { code, message, retryAfterMs }`) |
 
 The Node.js SDK handles `'INVALID_TOKEN'` automatically by refreshing and reconnecting.
 
@@ -117,8 +118,20 @@ Request current lobby snapshot. Server responds with `lobbyInfo`.
 #### `kickPlayer` _(host only)_
 
 ```ts
-socket.emit('kickPlayer', { playerId: string });
+socket.emit('kickPlayer', { playerId: string; reason?: string /* ≤200 chars */ });
 ```
+
+Soft kick: the target is removed and cannot rejoin **this lobby** (join by ID, code, request, friend-join, invite accept → `KICKED_FROM_LOBBY`; requests are refused without notifying the host). The kicked set lives and dies with the lobby (nothing persisted). It is cleared by `unkickPlayer`, by the host accepting that user's join request, or by the host inviting them. Works on members in reconnect grace.
+
+---
+
+#### `unkickPlayer` _(host only)_
+
+```ts
+socket.emit('unkickPlayer', { playerId: string }, ack); // ack { ok, lobby }
+```
+
+Errors: `NOT_HOST`, `PLAYER_NOT_FOUND` (user is not kicked).
 
 ---
 
@@ -285,6 +298,18 @@ Request own KV data. Server responds with `userData`.
 
 ---
 
+#### `incrementUserData` / `setUserDataIf` / `transactUserData`
+
+```ts
+socket.emit('incrementUserData', { gameId, key, by: number, visibility? }, ack); // → { key, value, version }
+socket.emit('setUserDataIf',     { gameId, key, value, expectedVersion: number, visibility? }, ack); // → { key, value, version }
+socket.emit('transactUserData',  { gameId, ops: UserDataOp[] }, ack);            // → { results: UserDataOpResult[] }
+```
+
+Atomic counterparts of the REST routes (see `rest-api.md`). On a version mismatch the ack error is `VERSION_CONFLICT` with `error.data.current = { value, version } | null`.
+
+---
+
 #### `getPlayerData`
 
 ```ts
@@ -294,7 +319,7 @@ socket.emit('getPlayerData', {
 });
 ```
 
-Request another player's visible KV data. Server responds with `playerData`.
+Request a player's KV data you may see (self: private/lobby/friends; friend: friends (+ lobby in a shared lobby); lobby-mate: lobby). Everyone else, including unknown players, gets `NOT_ALLOWED`. Server responds with `playerData`.
 
 ---
 
@@ -384,7 +409,7 @@ Response to `getLobbyInfo`.
 #### `playerKicked`
 
 ```ts
-socket.on('playerKicked', (data: { lobbyId: string }) => { ... });
+socket.on('playerKicked', (data: { lobbyId: string; reason?: string }) => { ... });
 ```
 
 Emitted to a player who has been kicked by the host.

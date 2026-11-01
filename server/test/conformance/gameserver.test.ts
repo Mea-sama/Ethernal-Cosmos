@@ -1,11 +1,12 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   closeAll, connectGameServer, gameServer, issueServerKey, live, serverId, sleep, startHub, updatedWith, type TestHub,
 } from './util';
 
 let hub: TestHub;
-beforeAll(async () => { hub = await startHub(); });
-afterAll(async () => { await hub.stop(); });
+// One hub per test: lobbies of servers closed by an earlier test get rebound onto the next test's servers and fill their capacity
+beforeEach(async () => { hub = await startHub(); });
+afterEach(async () => { await hub.stop(); });
 
 const rejects = (p: Promise<unknown>): Promise<string> => p.then(() => 'connected', (e: Error) => e.message);
 const ADMIN = { Authorization: 'Bearer admin-test' };

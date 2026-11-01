@@ -3,7 +3,7 @@
 A **game server** is a service that runs the authoritative game logic for lobbies of one game. It is not a lobby participant:
 one server serves N lobbies, a lobby has 0..1 server. Whether a game uses servers is the registry attribute
 [`serverSupport`](enums.md#serversupport) (`none` | `optional` | `required`). Enum values used below are listed in [enums.md](enums.md).
-Game-server SDKs are planned (issue #58); until then connect with plain `socket.io-client`.
+Both SDKs ship `GameServerClient` (Node.js: [Using `GameServerClient`](#using-gameserverclient); C#: [Using GameServerClient (C#)](#using-gameserverclient-c)); the protocol below is what it speaks, for other languages use plain `socket.io-client`.
 
 ## Connecting
 
@@ -53,8 +53,31 @@ Candidate order: connected, not draining, below capacity; the requested region f
 Each event is authorised per lobby: a server may only act on lobbies assigned to it (otherwise `NOT_LOBBY_SERVER`).
 
 `lobby:relay { lobbyId, toUserId?, type, payload? }` (sender `server`, gets `seq`), `lobby:state { lobbyId, toUserId?, state }` (members get `gameState`),
-`lobby:kick { lobbyId, userId }`, `lobby:setState { lobbyId, state: 'in_progress' | 'closed' }`, `lobby:setSettings { lobbyId, settings }`,
+`lobby:kick { lobbyId, userId, reason? }` (`reason` ≤ 200 chars, delivered in `playerKicked`), `lobby:setState { lobbyId, state: 'in_progress' | 'closed' }`, `lobby:setSettings { lobbyId, settings }`,
 `lobby:gameOver { lobbyId, result? }`, `lobby:close { lobbyId }`, `server:status { draining?, capacity? }`.
+
+## Player data (server-authoritative)
+
+Game servers write per-player data over the socket; clients can only write their own `private`/`lobby`/`friends` data.
+Every event is acked; `userId` must be a (current or former) member of a lobby bound to this server, up to 60 s after that
+lobby closed (match results after leaving or closing). Anything else fails with `NOT_ALLOWED`. Writes are audited (`user_data.written_by` = `serverId`).
+
+| Event | Payload | Ack |
+|---|---|---|
+| `data:set` | `{ lobbyId, userId, key, value, visibility?, writeScope? }` | `{ ok }` |
+| `data:bulk` | `{ lobbyId, userId, entries: [{ key, value, visibility?, writeScope? }] }` (1–100, all-or-nothing) | `{ ok }` |
+| `data:get` | `{ lobbyId, userId }` | `{ ok, entries: UserDataEntry[] }` |
+| `data:increment` | `{ lobbyId, userId, key, by, visibility?, writeScope? }` | `{ ok, key, value, version }` |
+| `data:setIf` | `{ lobbyId, userId, key, value, expectedVersion, visibility?, writeScope? }` | `{ ok, key, value, version }` or error `VERSION_CONFLICT` with `error.data.current` |
+| `data:transact` | `{ lobbyId, userId, ops: [set\|increment\|setIf\|delete] }` (1–100, all-or-nothing) | `{ ok, results: [{ key, value?, version }] }` |
+
+
+Subprocess games use the same operations over IPC: `INCREMENT_USER_DATA {requestId,userId,gameId,key,by}`, `SET_USER_DATA_IF {…,key,value,expectedVersion}`, `TRANSACT_USER_DATA {…,ops}` (participants only); the hub answers with `USER_DATA_OP_RESPONSE {requestId, ok, results | error:{code,message,data?}}`.
+
+`visibility: 'public'` marks a **leaderboard/result key**: only a game server can set it (clients get `NOT_ALLOWED`), it always implies
+`writeScope: 'server'` (clients cannot overwrite or delete it) and games with `serverSupport: none` cannot use it (`NOT_ALLOWED`).
+Without `visibility` the existing visibility is kept (new keys: `private`). Limits are the same as for clients
+(16 KiB per value, 200 keys / 512 KiB per user and game: `DATA_VALUE_TOO_LARGE`, `DATA_QUOTA_EXCEEDED`).
 
 ## Failure behaviour
 
@@ -64,3 +87,36 @@ Each event is authorised per lobby: a server may only act on lobbies assigned to
 | Server returns within the grace | `resumed: true`, `server_resumed`, `serverStatus` `ok`. |
 | Grace expires | The hub tries to rebind each lobby (`lobby:assigned` with `reason: server_rebound`). No taker: `required` closes the lobby with `gameCrashed` (`code: null`); `optional` continues serverless (`server` cleared, `server_lost`). |
 | Server sets `draining` | No new lobbies; existing lobbies keep running (`serverStatus` `draining`, reason `server_draining`). |
+
+## Using `GameServerClient`
+
+The Node.js SDK wraps this protocol (full reference: [sdk-nodejs.md](sdk-nodejs.md#gameserverclient-game-server-sdk)):
+
+```ts
+const gs = new GameServerClient({ serverUrl, serverKey, gameId: 'chess', serverId: 'eu-1', capacity: 20, region: 'eu',
+  onAssign: ({ lobby, reason, previousServerId, lostAt }) => true });   // reason: new_lobby | server_rebound
+gs.on('player:action', ({ lobbyId, userId, type, payload }) => gs.sendState(lobbyId, step(lobbyId, userId, type, payload)));
+await gs.connect();                                                      // hello { resumed, lobbies }
+await gs.incrementUserData(lobbyId, userId, 'wins', 1, { visibility: 'public' });
+await gs.kickPlayer(lobbyId, userId, 'cheating');
+await gs.drain();
+```
+
+It maps `lobby:assigned` acks to `onAssign`, `lobby:relay/state/kick/setState/setSettings/gameOver/close` to `sendToLobby`/`sendToPlayer`/`sendState`/`kickPlayer`/`setLobbyState`/`setLobbySettings`/`gameOver`/`closeLobby`, `server:status` to `updateStatus`/`drain`/`heartbeat`, and the `data:*` events to `setUserData`/`bulkSetUserData`/`getUserData`/`incrementUserData`/`setUserDataIf`/`transactUserData`. Reconnecting with the same `serverId` resumes automatically.
+
+## Using GameServerClient (C#)
+
+The C# SDK wraps this protocol in `GameServerClient` (details: [sdk-csharp.md](sdk-csharp.md#gameserverclient)).
+
+```csharp
+await using var server = new GameServerClient(new GameServerClientOptions
+{
+    ServerUrl = "http://localhost:12346", ServerKey = "esk_...", GameId = "chess", ServerId = "chess-eu-1", Capacity = 20,
+});
+server.LobbyAssigned += a => Console.WriteLine($"{a.Lobby.Id}: {a.Reason}"); // NewLobby or ServerRebound (PreviousServerId, LostAt)
+await server.ConnectAsync();                                                 // resumes within the grace period
+
+await server.SetDataAsync(lobbyId, userId, "rank.points", 1200);           // members only, else NOT_ALLOWED
+await server.RelayToLobbyAsync(lobbyId, "round", new { n = 1 });
+await server.DrainAsync();                                                   // no new lobbies; existing ones keep running
+```

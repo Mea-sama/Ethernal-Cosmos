@@ -1,4 +1,4 @@
-import type { Lobby, LobbyChangeReason } from '@ethernal/shared';
+import type { Lobby, LobbyChangeReason, PlayerLeftReason } from '@ethernal/shared';
 
 /**
  * Entkoppelt den Lobby-Code vom Game-Server-Namespace (vermeidet zirkuläre Imports).
@@ -6,7 +6,7 @@ import type { Lobby, LobbyChangeReason } from '@ethernal/shared';
  */
 export interface GameServerHooks {
   playerJoined(lobby: Lobby, userId: string, username: string): void;
-  playerLeft(lobbyId: string, serverId: string | undefined, userId: string, reason: 'left' | 'kicked' | 'timeout'): void;
+  playerLeft(lobbyId: string, serverId: string | undefined, userId: string, reason: PlayerLeftReason): void;
   playerDisconnected(lobby: Lobby, userId: string): void;
   playerReconnected(lobby: Lobby, userId: string): void;
   lobbyUpdated(lobby: Lobby, reason?: LobbyChangeReason): void;

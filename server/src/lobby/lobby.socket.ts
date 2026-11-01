@@ -1,16 +1,17 @@
 import { Server, Socket } from 'socket.io';
 import { z } from 'zod';
 import { v4 as uuidv4 } from 'uuid';
-import { verifyToken, setSessionTerminator } from '../auth/auth.service';
+import { verifyTokenFresh, setSessionTerminator } from '../auth/auth.service';
 import { lobbyManager } from './lobby.manager';
 import { getGame } from '../games/game.registry';
 import { instanceManager } from '../games/instance.manager';
-import { bulkSet, deleteKey, getAllOwn, getVisibleData, writeEntries } from '../user-data/userdata.service';
-import { GameIdSchema, KeySchema, VisibilitySchema, BulkEntriesSchema } from '../user-data/userdata.schemas';
+import { applyOps, bulkSet, deleteKey, getAllOwn, getPlayerData, writeEntries } from '../user-data/userdata.service';
+import { GameIdSchema, KeySchema, VisibilitySchema, BulkEntriesSchema, OpsSchema } from '../user-data/userdata.schemas';
 import { serverLimits } from '../config/limits';
 import { HubError, isHubError } from '../errors';
 import { sessionManager, userRoom, gameRoom } from '../session/session.manager';
 import { presenceChanged } from '../social/presence.service';
+import { clientIp } from '../limits/client-ip';
 import { gsHooks } from '../gameserver/hooks';
 import { bindGameServer, releaseServerSlot } from '../gameserver/gameserver.socket';
 import {
@@ -22,6 +23,7 @@ import {
   type Lobby,
   type GameInfo,
   type LobbyChangeReason,
+  type PlayerLeftReason,
   type JoinRequestRejectReason,
   type HelloPayload,
 } from '@ethernal/shared';
@@ -268,6 +270,11 @@ const CreateLobbySchema = z.object({
     .optional(),
 });
 
+const KickSchema = z.object({
+  playerId: z.string().min(1).max(64),
+  reason: z.string().trim().max(200).optional(),
+});
+
 const InviteCodeSchema = z.string().trim().length(6).transform((c) => c.toUpperCase());
 
 function parseInput<T>(schema: z.ZodType<T, z.ZodTypeDef, unknown>, data: unknown, err: HubError = new HubError('INVALID_INPUT')): T {
@@ -394,7 +401,7 @@ export function scheduleClosedRelease(io: AppServer, lobbyId: string): void {
 
 // ─── Lobby verlassen (gemeinsamer Pfad für Leave, Disconnect-Ablauf, Kick) ────
 
-export function leaveLobbyFlow(io: AppServer, userId: string, opts: { notifyInstance?: boolean; reason?: 'left' | 'kicked' | 'timeout' } = {}): void {
+export function leaveLobbyFlow(io: AppServer, userId: string, opts: { notifyInstance?: boolean; reason?: PlayerLeftReason } = {}): void {
   sessionManager.clearGrace(userId);
   const serverId = lobbyManager.getLobbyByUserId(userId)?.server?.serverId;
   const { lobby, dissolved, lobbyId, hostChanged, evicted } = lobbyManager.leaveLobby(userId);
@@ -510,18 +517,26 @@ function resumeIntoLobby(io: AppServer, socket: AppSocket, lobby: Lobby): void {
 
 // ─── Socket.io Auth-Middleware ────────────────────────────────────────────────
 
+const connectionsPerIp = new Map<string, number>();
+
+function capError(message: string): Error {
+  const err = new Error('RATE_LIMITED') as Error & { data: unknown };
+  err.data = { code: 'RATE_LIMITED', message, retryAfterMs: serverLimits.caps.capRetryAfterMs };
+  return err;
+}
+
 /**
  * Prüft den JWT aus socket.handshake.auth.token bei jeder neuen Verbindung.
  * Client sendet: io({ auth: { token: "Bearer <jwt>" } })
  */
 export function registerSocketAuth(io: AppServer): void {
-  io.use((socket, next) => {
+  io.use(async (socket, next) => {
     const raw: unknown = socket.handshake.auth?.token;
     if (typeof raw !== 'string' || !raw.startsWith('Bearer ')) {
       return next(new Error('UNAUTHENTICATED'));
     }
     try {
-      const payload = verifyToken(raw.slice(7));
+      const payload = await verifyTokenFresh(raw.slice(7));
       const clientType: 'game' | 'panel' =
         socket.handshake.auth?.clientType === 'panel' ? 'panel' : 'game';
       socket.data.userId = payload.userId;
@@ -529,10 +544,22 @@ export function registerSocketAuth(io: AppServer): void {
       socket.data.clientType = clientType;
       socket.data.sessionId = uuidv4();
       socket.data.tokenExpiresAt = payload.exp ? payload.exp * 1000 : undefined;
-      next();
     } catch {
-      next(new Error('INVALID_TOKEN'));
+      return next(new Error('INVALID_TOKEN'));
     }
+    const { caps } = serverLimits;
+    const ip = clientIp(socket.handshake.headers, socket.handshake.address);
+    socket.data.ip = ip;
+    if ((connectionsPerIp.get(ip) ?? 0) >= caps.maxConnectionsPerIp) {
+      return next(capError('Zu viele Verbindungen von dieser IP'));
+    }
+    // Ein neuer Spiel-Client ersetzt die alten Spiel-Sockets (Takeover) und zählt daher nicht zusätzlich
+    const existing = sessionManager.get(socket.data.userId)?.sessions.size ?? 0;
+    const replaced = socket.data.clientType === 'game' ? sessionManager.gameSessions(socket.data.userId).length : 0;
+    if (existing - replaced >= caps.maxSessionsPerUser) {
+      return next(capError('Zu viele gleichzeitige Sitzungen für diesen Account'));
+    }
+    next();
   });
 }
 
@@ -543,8 +570,11 @@ export function registerSocketAuth(io: AppServer): void {
  * Socket.io-Events an alle Spieler im jeweiligen Lobby-Room weiter.
  */
 export function registerIpcRouting(io: AppServer): void {
-  setSessionTerminator((uid) => {
-    io.in(userRoom(uid)).disconnectSockets(true);
+  setSessionTerminator((uid, opts) => {
+    let target = io.in(userRoom(uid));
+    if (opts?.exceptSocketId) target = target.except(opts.exceptSocketId);
+    if (opts?.reason) target.emit('session:replaced', { reason: opts.reason });
+    target.disconnectSockets(true);
   });
   instanceManager.setExitCallback((lobbyId, code, alreadyClosed) => {
     const lobby = lobbyManager.getLobby(lobbyId);
@@ -620,6 +650,13 @@ export function registerLobbyHandlers(io: AppServer): void {
   io.on('connection', (socket: AppSocket) => {
     const { userId, username, clientType, sessionId } = socket.data;
     console.log(`[Socket] "${username}" verbunden als ${clientType} (${socket.id})`);
+    const ip = socket.data.ip;
+    connectionsPerIp.set(ip, (connectionsPerIp.get(ip) ?? 0) + 1);
+    socket.on('disconnect', () => {
+      const n = (connectionsPerIp.get(ip) ?? 1) - 1;
+      if (n <= 0) connectionsPerIp.delete(ip);
+      else connectionsPerIp.set(ip, n);
+    });
 
     // Session-Takeover: ein neuer Spiel-Client ersetzt den alten (F5, Gerätewechsel).
     // Die Lobby-Mitgliedschaft bleibt dabei bestehen (hängt am User).
@@ -755,10 +792,10 @@ export function registerLobbyHandlers(io: AppServer): void {
 
     // ── kickPlayer ───────────────────────────────────────────────────────────
     handle(socket, 'kickPlayer', { limit: 'kickPlayer' }, (data) => {
-      const { playerId } = parseInput(z.object({ playerId: z.string().min(1).max(64) }), data);
+      const { playerId, reason } = parseInput(KickSchema, data);
       const lobby = lobbyManager.kickPlayer(userId, playerId);
       gsHooks.playerLeft(lobby.id, lobby.server?.serverId, playerId, 'kicked');
-      io.to(userRoom(playerId)).emit('playerKicked', { lobbyId: lobby.id });
+      io.to(userRoom(playerId)).emit('playerKicked', { lobbyId: lobby.id, ...(reason ? { reason } : {}) });
       io.in(userRoom(playerId)).socketsLeave(lobby.id);
       sessionManager.clearGrace(playerId);
       if (instanceManager.isRunning(lobby.id)) {
@@ -768,6 +805,12 @@ export function registerLobbyHandlers(io: AppServer): void {
       broadcastPresence(io, playerId);
       if (!sessionManager.isConnected(playerId)) sessionManager.dropIfIdle(playerId);
       return { lobby };
+    });
+
+    // ── unkickPlayer ─────────────────────────────────────────────────────────
+    handle(socket, 'unkickPlayer', { limit: 'unkickPlayer' }, (data) => {
+      const { playerId } = parseInput(z.object({ playerId: z.string().min(1).max(64) }), data);
+      return { lobby: lobbyManager.unkickPlayer(userId, playerId) };
     });
 
     // ── transferHost ─────────────────────────────────────────────────────────
@@ -868,6 +911,7 @@ export function registerLobbyHandlers(io: AppServer): void {
           gameId: requesterGame,
           viaCode: entry.viaCode,
           bypassLock: true,
+          clearKick: true,
         });
         afterJoin(io, requesterId, entry.username, updated);
         io.to(userRoom(requesterId)).emit('joinRequestAccepted', { lobby: updated });
@@ -956,6 +1000,29 @@ export function registerLobbyHandlers(io: AppServer): void {
       await writeEntries(userId, gameId, entries, 'client');
     });
 
+    handle(socket, 'incrementUserData', { limit: 'incrementUserData' }, async (data) => {
+      const { gameId, key, by, visibility } = parseInput(
+        z.object({ gameId: GameIdSchema, key: KeySchema, by: z.number().finite(), visibility: VisibilitySchema.optional() }),
+        data,
+      );
+      const [result] = await applyOps(userId, gameId, [{ op: 'increment', key, by, visibility }], 'client');
+      return { ...result };
+    });
+
+    handle(socket, 'setUserDataIf', { limit: 'setUserDataIf' }, async (data) => {
+      const { gameId, key, value, expectedVersion, visibility } = parseInput(
+        z.object({ gameId: GameIdSchema, key: KeySchema, value: z.unknown(), expectedVersion: z.number().int().min(0), visibility: VisibilitySchema.optional() }),
+        data,
+      );
+      const [result] = await applyOps(userId, gameId, [{ op: 'setIf', key, value, expectedVersion, visibility }], 'client');
+      return { ...result };
+    });
+
+    handle(socket, 'transactUserData', { limit: 'transactUserData' }, async (data) => {
+      const { gameId, ops } = parseInput(z.object({ gameId: GameIdSchema, ops: OpsSchema }), data);
+      return { results: await applyOps(userId, gameId, ops, 'client') };
+    });
+
     handle(socket, 'deleteUserData', { limit: 'deleteUserData' }, async (data) => {
       const { gameId, key } = parseInput(z.object({ gameId: GameIdSchema, key: KeySchema }), data);
       await deleteKey(userId, gameId, key, 'client');
@@ -968,10 +1035,7 @@ export function registerLobbyHandlers(io: AppServer): void {
         new HubError('INVALID_INPUT', 'Ungültige Spiel-ID'),
       );
       if (!getGame(gameId)) throw new HubError('UNKNOWN_GAME');
-      const requesterLobby = lobbyManager.getLobbyByUserId(userId);
-      const targetLobby = lobbyManager.getLobbyByUserId(playerId);
-      const inSameLobby = !!(requesterLobby && targetLobby && requesterLobby.id === targetLobby.id);
-      const entries = await getVisibleData(playerId, gameId, inSameLobby);
+      const entries = await getPlayerData(userId, playerId, gameId);
       socket.emit('playerData', { playerId, gameId, entries });
       return { playerId, gameId, entries };
     });
@@ -1012,11 +1076,11 @@ export function registerLobbyHandlers(io: AppServer): void {
     };
     armExpiry();
 
-    handle(socket, 'auth:refresh', { limit: 'authRefresh' }, (data) => {
+    handle(socket, 'auth:refresh', { limit: 'authRefresh' }, async (data) => {
       const { token } = parseInput(z.object({ token: z.string().min(1) }), data);
       let payload;
       try {
-        payload = verifyToken(token.startsWith('Bearer ') ? token.slice(7) : token);
+        payload = await verifyTokenFresh(token.startsWith('Bearer ') ? token.slice(7) : token);
       } catch {
         throw new HubError('INVALID_TOKEN');
       }
@@ -1072,6 +1136,9 @@ export function startJoinRequest(
     return { pending: true };
   }
   assertLobbyLimit(lobby.id, 'requestJoinLobby');
+  if ((joinRequests.get(lobby.id)?.size ?? 0) >= serverLimits.caps.maxPendingJoinRequestsPerLobby) {
+    throw new HubError('RATE_LIMITED', 'Zu viele offene Beitrittsanfragen für diese Lobby', serverLimits.caps.capRetryAfterMs);
+  }
   // Pro User nur eine offene Anfrage: neue Anfrage ersetzt alte
   withdrawAllRequestsFor(io, userId, 'cancelled', { exceptLobbyId: lobby.id, notifyRequester: true });
 

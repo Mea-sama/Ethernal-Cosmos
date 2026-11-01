@@ -74,14 +74,22 @@ export const PlayerLeftReason = {
   Left: 'left', // player left voluntarily
   Kicked: 'kicked', // player was kicked
   Timeout: 'timeout', // reconnect grace expired
+  AccountDeleted: 'account_deleted', // the account was deleted
 } as const;
 export type PlayerLeftReason = (typeof PlayerLeftReason)[keyof typeof PlayerLeftReason];
 
 /** Reason of `session:replaced`. */
 export const SessionReplacedReason = {
   NewSession: 'new_session', // the same account connected from a new session
+  PasswordChanged: 'password_changed', // the password was changed from another session
 } as const;
 export type SessionReplacedReason = (typeof SessionReplacedReason)[keyof typeof SessionReplacedReason];
+
+/** Reason of `friend:removed` (absent = plain unfriend/block). */
+export const FriendRemovedReason = {
+  AccountDeleted: 'account_deleted', // the friend deleted their account
+} as const;
+export type FriendRemovedReason = (typeof FriendRemovedReason)[keyof typeof FriendRemovedReason];
 
 /** Why a join request was rejected or ended. */
 export const JoinRequestRejectReason = {
@@ -107,7 +115,8 @@ export type JoinRequestWithdrawReason = (typeof JoinRequestWithdrawReason)[keyof
 export const DataVisibility = {
   Private: 'private', // only the owner
   Lobby: 'lobby', // owner and lobby members
-  Public: 'public', // everyone (also on leaderboards)
+  Friends: 'friends', // owner and friends
+  Public: 'public', // leaderboard key; only a game server can set it
 } as const;
 export type DataVisibility = (typeof DataVisibility)[keyof typeof DataVisibility];
 
@@ -203,6 +212,7 @@ export const ErrorCode = {
   LobbyPrivate: 'LOBBY_PRIVATE',
   InvalidInviteCode: 'INVALID_INVITE_CODE',
   InviteCodeNotFound: 'INVITE_CODE_NOT_FOUND',
+  KickedFromLobby: 'KICKED_FROM_LOBBY',
   NotHost: 'NOT_HOST',
   AlreadyHost: 'ALREADY_HOST',
   CannotKickSelf: 'CANNOT_KICK_SELF',
@@ -241,5 +251,8 @@ export const ErrorCode = {
   FriendNotInLobby: 'FRIEND_NOT_IN_LOBBY',
   InviteNotFound: 'INVITE_NOT_FOUND',
   MessageTooLong: 'MESSAGE_TOO_LONG',
+  NotAllowed: 'NOT_ALLOWED',
+  VersionConflict: 'VERSION_CONFLICT',
+  BlockLimitReached: 'BLOCK_LIMIT_REACHED',
 } as const;
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];

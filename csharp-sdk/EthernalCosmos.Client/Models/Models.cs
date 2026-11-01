@@ -106,14 +106,27 @@ public sealed class AuthResult
 /// <summary>One leaderboard row.</summary>
 public sealed class LeaderboardEntry
 {
-    /// <summary>Data key.</summary>
-    [JsonPropertyName("key")]        public string  Key        { get; init; } = "";
-    /// <summary>Stored value (JSON).</summary>
+    /// <summary>Absolute 1-based rank (ties are ordered by earlier update, then user id).</summary>
+    [JsonPropertyName("rank")]       public int     Rank       { get; init; }
+    /// <summary>Id of the ranked user.</summary>
+    [JsonPropertyName("userId")]     public string  UserId     { get; init; } = "";
+    /// <summary>Display name of the ranked user.</summary>
+    [JsonPropertyName("username")]   public string  Username   { get; init; } = "";
+    /// <summary>Stored numeric value (JSON).</summary>
     [JsonPropertyName("value")]      public object? Value      { get; init; }
-    /// <summary>Who may read the entry.</summary>
-    [JsonPropertyName("visibility")] public DataVisibility Visibility { get; init; } = DataVisibility.Public;
     /// <summary>Last update time (Unix ms).</summary>
     [JsonPropertyName("updatedAt")]  public long    UpdatedAt  { get; init; }
+}
+
+/// <summary>Leaderboard page including the caller's own row (<see cref="EthernalClient.GetLeaderboardWithMeAsync"/>).</summary>
+public sealed class LeaderboardResult
+{
+    /// <summary>Rows of the requested page or window.</summary>
+    [JsonPropertyName("entries")] public LeaderboardEntry[] Entries { get; init; } = [];
+    /// <summary>The caller's own row and rank (also while hidden via <c>LeaderboardVisible</c>); null when unranked.</summary>
+    [JsonPropertyName("me")]      public LeaderboardEntry?  Me      { get; init; }
+    /// <summary>Number of visible ranked players in the selected scope.</summary>
+    [JsonPropertyName("total")]   public int                Total   { get; init; }
 }
 
 /// <summary>Payload of <c>GameStarting</c>.</summary>
@@ -212,7 +225,9 @@ public sealed class PlayerDataPayload
 public sealed class PlayerKickedData
 {
     /// <summary>Id of the lobby.</summary>
-    [JsonPropertyName("lobbyId")] public string LobbyId { get; init; } = "";
+    [JsonPropertyName("lobbyId")] public string  LobbyId { get; init; } = "";
+    /// <summary>Optional reason given by the host or game server.</summary>
+    [JsonPropertyName("reason")]  public string? Reason  { get; init; }
 }
 
 /// <summary>A player asked the host to join.</summary>
@@ -301,23 +316,63 @@ public sealed class HubErrorPayload
     [JsonPropertyName("requestId")]    public string? RequestId    { get; init; }
     /// <summary>Suggested wait before retrying, in milliseconds.</summary>
     [JsonPropertyName("retryAfterMs")] public int?    RetryAfterMs { get; init; }
+    /// <summary>Additional error data, e.g. <c>{ "current": ... }</c> for <c>VERSION_CONFLICT</c>.</summary>
+    [JsonPropertyName("data")]         public JsonElement? Data    { get; init; }
+
+    internal EthernalException ToException() => new(Code, Message, RetryAfterMs, Data);
 }
 
 /// <summary>Thrown by every SDK call that fails; <see cref="Code"/> is a stable server error code (e.g. GAME_MISMATCH).</summary>
 public sealed class EthernalException : Exception
 {
+    /// <summary>Maps the first socket error / exception of a failed handshake to the hub's error code (<c>connect_error.message</c>, <c>data.retryAfterMs</c>).</summary>
+    internal static EthernalException FromConnectError(string? raw, Exception inner)
+    {
+        if (raw is not null)
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(raw);
+                var root = doc.RootElement;
+                var data = root.TryGetProperty("data", out var d) && d.ValueKind == JsonValueKind.Object ? d.Clone() : (JsonElement?)null;
+                var message = root.TryGetProperty("message", out var m) ? m.GetString() : null;
+                var code = data is { } dd && dd.TryGetProperty("code", out var c) && c.GetString() is { } cs ? cs : message ?? raw;
+                var retry = data is { } rd && rd.TryGetProperty("retryAfterMs", out var r) && r.TryGetInt32(out var ms) ? ms : (int?)null;
+                return new EthernalException(code, data is { } md && md.TryGetProperty("message", out var dm) ? dm.GetString() ?? code : code, retry, data);
+            }
+            catch (JsonException)
+            {
+                return new EthernalException(raw.Trim('"'), raw);
+            }
+        }
+        return new EthernalException("CONNECT_FAILED", inner.Message);
+    }
+
     /// <summary>Raw wire code (stable even for codes this SDK version does not know).</summary>
     public string Code { get; }
     /// <summary>Typed error code; <c>Unknown</c> for codes this SDK version does not know.</summary>
     public ErrorCode Error { get; }
-    /// <summary>Suggested wait before retrying, in milliseconds.</summary>
+    /// <summary>For <see cref="ErrorCode.RateLimited"/>: the earliest time to retry, in milliseconds (REST, socket acks and connect errors).</summary>
     public int? RetryAfterMs { get; }
+    /// <summary>Raw additional error data of the hub (<c>error.data</c>), if any.</summary>
+    public JsonElement? ErrorData { get; }
+    /// <summary>
+    /// For <see cref="ErrorCode.VersionConflict"/>: the current stored state of the key (<see cref="VersionConflict.Current"/> is null when the key does not exist).
+    /// Null for every other error.
+    /// </summary>
+    public VersionConflict? Conflict { get; }
     /// <summary>Creates an exception; <see cref="Error"/> is derived from <paramref name="code"/>.</summary>
-    public EthernalException(string code, string message, int? retryAfterMs = null) : base(message)
+    public EthernalException(string code, string message, int? retryAfterMs = null, JsonElement? data = null) : base(message)
     {
         Code = code;
         Error = WireEnumConverter<ErrorCode>.Parse(code);
         RetryAfterMs = retryAfterMs;
+        ErrorData = data is { ValueKind: not (JsonValueKind.Null or JsonValueKind.Undefined) } ? data : null;
+        if (Error == ErrorCode.VersionConflict && ErrorData is { ValueKind: JsonValueKind.Object } d)
+        {
+            try { Conflict = d.Deserialize<VersionConflict>(new JsonSerializerOptions { PropertyNameCaseInsensitive = true }); }
+            catch (JsonException) { /* malformed data: Conflict stays null */ }
+        }
     }
 }
 

@@ -40,7 +40,7 @@
 | FEAT-AUTH-05 | Socket handshake: `auth: { token: "Bearer <jwt>", clientType: "game" | "panel" }`. Missing/invalid ⇒ connection error `UNAUTHENTICATED` / `INVALID_TOKEN`. Anything other than `"panel"` is treated as `"game"`. `{src}` |
 | QUIRK-AUTH-01 | JWT is verified **only at connect time**. An established socket keeps working after the token expires or the refresh token is revoked/logged out. `{src}` |
 | QUIRK-AUTH-02 | `logout` does not disconnect sockets, does not remove the user from lobbies or presence. `{src}` |
-| GAP-AUTH-01 | No guest/anonymous accounts, no OAuth/Steam/console identity linking, no email/password reset, no account deletion, no username change, no display-name vs. login-name split. |
+| GAP-AUTH-01 | No guest/anonymous accounts, no OAuth/Steam/console identity linking, no email/password reset, no username change, no display-name vs. login-name split. |
 | GAP-AUTH-02 | No roles (admin/moderator), no account ban/mute, no "revoke all sessions". |
 | GAP-AUTH-03 | `POST /auth/refresh` returns raw error codes as the message (`REFRESH_TOKEN_REVOKED`, …); `USER_NOT_FOUND` maps to HTTP 500. |
 
@@ -55,7 +55,7 @@
 | QUIRK-PRES-01 | **Private-lobby ID leak:** presence exposes `lobbyId` of private lobbies to all users, and `joinLobby({lobbyId})` does not check `isPrivate`. Anyone can therefore bypass the invite code by joining via the leaked ID (unless the lobby is locked/full/closed). `{src}` |
 | QUIRK-PRES-02 | Presence update on `lobbyStatus` change is sent per player ⇒ N broadcasts to all clients when a lobby of N players changes (O(N × users) fan-out). `{src}` |
 | QUIRK-PRES-03 | A user with only a `panel` socket (no game socket) is not in presence and cannot receive per-user pushes (see FEAT-COMM-05). `{src}` |
-| GAP-PRES-01 | No friends list, follow, block list, party/group concept, or "recently played with". |
+| GAP-PRES-01 | No friends list, follow, party/group concept, or "recently played with". |
 | GAP-PRES-02 | No per-game presence filtering (the full online list of all games is delivered). |
 | GAP-PRES-03 | No "last seen" / offline presence. |
 
@@ -76,7 +76,7 @@ Index maps: `userId→lobbyId` (**a user can be in at most one lobby at a time**
 | FEAT-LOBBY-05 | `joinLobbyByCode {code}` | non-member | Same as above via invite code (6 chars, trimmed, upper-cased). Works for any lobby that *has* a code (only private ones). | `Ungültiger Einladungscode`, `Einladungscode nicht gefunden` + join errors. |
 | FEAT-LOBBY-06 | `leaveLobby` | member | Removes player; PLAYER_LEAVE sent to subprocess; if last player ⇒ lobby dissolved (removed, code freed, pending requests rejected `lobby_closed`); if host left ⇒ **host auto-transferred to the next player in join order** (`players[0]`), pending requests rejected `host_changed`; `full`→`open`. | Silent no-op if not in a lobby. Not rate-limited. |
 | FEAT-LOBBY-07 | `getLobbyInfo` | member | Snapshot `lobbyInfo`. Side effect: **re-binds this socket to the lobby room** and re-sends IPC `PLAYER_JOIN` (used to sync a second socket, e.g. panel→game). | `Du bist in keiner Lobby`. |
-| FEAT-LOBBY-08 | `kickPlayer {playerId}` | host | Removes target, emits `playerKicked` to target socket(s) in room, IPC `PLAYER_LEAVE`, `lobbyUpdated` to room. `full`→`open`. | `NOT_HOST`, `CANNOT_KICK_SELF`, `PLAYER_NOT_FOUND`. |
+| FEAT-LOBBY-08 | `kickPlayer {playerId, reason?}` | host | Removes target, adds it to the lobby's in-memory kicked set (`KICKED_FROM_LOBBY` on rejoin), emits `playerKicked {lobbyId, reason?}` to target socket(s) in room, IPC `PLAYER_LEAVE`, `lobbyUpdated` to room. `full`→`open`. | `NOT_HOST`, `CANNOT_KICK_SELF`, `PLAYER_NOT_FOUND`. |
 | FEAT-LOBBY-09 | `transferHost {playerId}` | host | Swap host role; emits `lobbyUpdated`. | `NOT_HOST`, `ALREADY_HOST`, `PLAYER_NOT_FOUND`. Open join requests are **not** cleared (they stay addressed at the old host’s socket — see QUIRK-JOIN-04). |
 | FEAT-LOBBY-10 | `lockLobby` / `unlockLobby` | host | Toggles `locked`; emits `lobbyUpdated`. See §5. | `NOT_HOST`. |
 | FEAT-LOBBY-11 | Closing | server only | `status='closed'` set when the subprocess sends `GAME_OVER` or the subprocess exits/errors. Closed lobby: not listed, not joinable, members **remain members** until they leave. | No client call can close a lobby. |
@@ -104,7 +104,7 @@ Index maps: `userId→lobbyId` (**a user can be in at most one lobby at a time**
 | QUIRK-LOBBY-06 | `name` is trimmed after validation ⇒ a whitespace-only name passes validation and results in an empty name. Names are not unique, not profanity-filtered. `{src}` | Cosmetic/moderation. |
 | QUIRK-LOBBY-07 | No "game started" gate. Lobby stays `open` and joinable while a match is running (relay games never change status at all; subprocess games only on `GAME_OVER`). Only `lock` or the game’s own logic prevents late joiners. `{src}` | Mid-match joins in competitive games unless host locks or game rejects. |
 | QUIRK-LOBBY-08 | Closed lobbies cannot be reopened/restarted (no rematch). Members stay stuck as "in lobby" until they `leaveLobby`; the subprocess may be dead and `gameAction` is silently ignored. `{src}` | Rematch flows need leave + create + re-invite. |
-| QUIRK-LOBBY-09 | No kick-ban: a kicked player can rejoin immediately (unless locked/private). Kick cannot target offline users. `{src}` | Griefing. |
+| QUIRK-LOBBY-09 | **Superseded (P2):** kicks are soft per-lobby — a kicked player gets `KICKED_FROM_LOBBY` on rejoin (ID, code, request, friend-join, invite accept) until the host un-kicks, invites or accepts them, or the lobby dissolves. Not a ban; nothing is persisted. |
 | QUIRK-LOBBY-10 | Host auto-transfer picks `players[0]` (oldest member) with no consent, no "host migration" notification beyond `lobbyUpdated`, and no option to dissolve instead. For games where the host is authoritative (client-hosted external apps) this silently changes authority. `{src}` | |
 | QUIRK-LOBBY-11 | `hosted`/`entryScript` is per game, not per lobby. `listLobbies` and presence give no "match in progress" indicator. `{src}` | |
 | QUIRK-LOBBY-12 | `leaveLobby`, `gameAction` (no lobby), and `cancelJoinRequest` (unknown request) fail silently without `error` events. `{src}` | Hard-to-debug clients. |
@@ -174,26 +174,37 @@ Store: key–value, PK `(user_id, game_id, key)`, value = any JSON (stored as te
 | FEAT-DATA-03 | `PUT /userdata/:gameId/:key {value, visibility?}` | Upsert. **Omitting `visibility` resets it to `private`** (does not preserve the previous visibility). |
 | FEAT-DATA-04 | `PATCH /userdata/:gameId` `[ {key,value,visibility?}, … ]` | Bulk upsert, 1–100 entries, single batch transaction. |
 | FEAT-DATA-05 | `DELETE /userdata/:gameId/:key` | Delete own key (204 even if missing). |
-| FEAT-DATA-06 | `GET /players/:playerId/data/:gameId` / socket `getPlayerData` | Another user’s entries: `public` always; `lobby` only if requester and target are **currently in the same lobby**; `private` never. Works for offline users (`public` only). Own ID works via same rule. |
-| FEAT-DATA-07 | `GET /leaderboard/:gameId/:key?order=asc\|desc&limit=1..100` | Top-N of `public` entries ordered by numeric cast of value; returns `{userId,username,value,updatedAt}`. Default `desc`, 10. |
+| FEAT-DATA-06 | `GET /players/:playerId/data/:gameId` / socket `getPlayerData` | Visibility `friends` (client-writable). Self: `private`+`lobby`+`friends`. Friend: `friends`, plus `lobby` while both are in the same lobby of that game. Lobby-mate (non-friend): `lobby`. Everyone else, including non-existent users: identical `NOT_ALLOWED` (403). `public` is leaderboard-only and never returned here. |
+| FEAT-DATA-07 | `GET /leaderboard/:gameId/:key?order=asc\|desc&limit=1..100&offset=0&scope=all\|friends&me=true&around=me&range=1..50` | Leaderboard over `public` (server-written) numeric keys (`num_value`, indexed); only `serverSupport != none` games (else 404). Order: value, earlier `updatedAt`, `userId`; rows `{rank,userId,username,value,updatedAt}`. Default `desc`, 10. Plain response is an array; with `me=true`/`around=me` it is `{entries, me, total}` (`me` = own row+rank or `null`, also if hidden). Invalid params → 400 `INVALID_INPUT`. Users with `leaderboardVisible=false` (social setting, default true) are omitted from entries/ranks. |
 | FEAT-DATA-08 | Hosted subprocess may read/write via IPC (FEAT-GAME-03). |
 | FEAT-DATA-09 | Validation: `gameId` `^[a-z0-9-]{1,32}$`; `key` `^[a-zA-Z0-9_.-]{1,64}$`. |
-| QUIRK-DATA-01 | **Clients can write their own data directly** (PUT/PATCH), including `public` leaderboard keys ⇒ **leaderboards are client-forgeable** unless the game only ever trusts subprocess-written data. No server-authoritative/"read-only for client" flag exists. |
+| QUIRK-DATA-01 | **[FIXED #55]** Clients write only their own `private`/`lobby`/`friends` data; `public` (leaderboard key) is server-write-only (`NOT_ALLOWED` for clients, no silent downgrade) and implies `writeScope: server`. Game servers write over `/gameserver` (`data:set`/`data:bulk`/`data:get`, lobby-member check, 60 s after close, audited in `written_by`); `serverSupport: none` games cannot create `public` keys. Migration v6 downgrades existing client-written `public` rows to `private`. |
 | QUIRK-DATA-02 | `gameId` in data APIs is **not checked against the registry** — any string can be created, consuming storage (no per-user quota). No value size limit besides HTTP body limit (Express default 100 kB) / Socket.io frame. |
-| QUIRK-DATA-03 | Leaderboard: non-numeric values sort as 0 (not excluded); ties have no deterministic secondary order; no rank-of-me, no around-me, no pagination, no periodic reset (daily/weekly), no per-lobby/friend leaderboards. `limit` out of range silently falls back to 10. |
-| QUIRK-DATA-04 | `getPlayerData` returns `[]` for non-existent players (no 404; allows no enumeration but also no existence check). Presence IDs are public, so IDs are discoverable. |
-| QUIRK-DATA-05 | No atomic increment/compare-and-set/transactions across keys from clients (read-modify-write races for counters; bulk is atomic only within one call). No TTL/expiry, no schema/versioning, no history, no export/delete-all (GDPR) endpoint. |
+| QUIRK-DATA-03 | **[FIXED #39]** Leaderboards are deterministic, ranked, paginated, with own-rank/around-me. Still open: **periodic resets (daily/weekly) are not implemented** (follow-up); no per-lobby leaderboards. |
+| QUIRK-DATA-04 | **[FIXED #42]** `getPlayerData` no longer returns `[]` for strangers/unknown users: `NOT_ALLOWED` is identical for both (no enumeration via this endpoint). Presence IDs are still discoverable. |
+| QUIRK-DATA-05 | **[FIXED #38]** Atomic `increment`, `setIf` (compare version; `VERSION_CONFLICT` 409 with `data.current`) and all-or-nothing `transact` over REST (`POST /userdata/:gameId/:key/increment`, `/:key/setIf`, `/:gameId/transact`), sockets (`incrementUserData`, `setUserDataIf`, `transactUserData`), `/gameserver` (`data:increment`/`data:setIf`/`data:transact`) and subprocess IPC. Still: no TTL/expiry, no schema/versioning, no history, no export/delete-all (GDPR) endpoint. |
 | QUIRK-DATA-06 | Socket `getUserData`/`getPlayerData` are read-only; writes are REST-only (and IPC). |
-| GAP-DATA-01 | No profile/avatar/bio/level/XP/currency/inventory/achievement concept at hub level; games must model these as keys. No global (cross-game) profile namespace (use a reserved gameId by convention). No data for friends-only visibility (`friends` level). No cloud-save blobs (>100 kB) or binary data. |
+| GAP-DATA-01 | No profile/avatar/bio/level/XP/currency/inventory/achievement concept at hub level; games must model these as keys. No global (cross-game) profile namespace (use a reserved gameId by convention). (`friends` visibility added in #42.) No cloud-save blobs (>100 kB) or binary data. |
 
 ## 9. Rate limiting & abuse controls (`LIMIT`)
 
-- Per-socket token buckets keyed by event (see `server/config/limits.json`): e.g. `createLobby` 0.1/s burst 2; `joinLobby` 0.25/s burst 4; `kickPlayer`/`transferHost`/`lock`/`unlock` 0.5/s burst 3; `listLobbies`/`getLobbyInfo` 5/s burst 15; `presence:list` 3/s; `getUserData`/`getPlayerData` 8/s; relay `250/s`, direct `200/s`; `gameAction` 300/s.
-- Per-lobby buckets: `sendToLobby(Binary)` 1200/s, `gameAction` 1600/s. Buckets are freed on socket disconnect / lobby dissolve.
-- Violation ⇒ `error "Rate limit erreicht (<event>)"`, throttled to one notice per 2 s per socket+event; the event is dropped.
-- Limits are overridable via `limits.json`; HTTP auth limits per IP.
-- `[GAP]` No limit on `leaveLobby`, relay `from` quotas per user (only per socket; a user with two sockets doubles), REST user-data endpoints (no rate limit), no connection-count limit per user/IP, no global lobby cap, no per-user lobby-creation cap beyond the bucket.
-- `[BUG]` BUG-JOIN-01 (missing `lobbyLimits.requestJoinLobby`).
+All limits live in `server/config/limits.json` (override path with `LIMITS_CONFIG_PATH`); every key has a typed default in `server/src/config/limits.ts` and invalid values fall back to it. Every limit error is `RATE_LIMITED` with `retryAfterMs` (socket acks / `errorDetail` / `connect_error.data`, REST body + `Retry-After` header, HTTP 429).
+
+| Limit | Key in `limits.json` | Default | Scope / behaviour |
+|---|---|---|---|
+| Socket events | `socketLimits.<event>` `{refillPerSecond, burst}` | see file, e.g. `createLobby` 0.1/s burst 2, `leaveLobby` 1/s burst 5, `unkickPlayer` 0.5/s burst 3, `friendRequestByName` 0.1/s burst 10 | token bucket per socket (relay/data events per user) |
+| Lobby relay | `lobbyLimits.<event>` | `sendToLobby` 1200/s, `gameAction` 1600/s, `requestJoinLobby` 2/s burst 10 | token bucket per lobby |
+| Auth REST | `authRateLimits.login/register/refresh` `{windowMs, max}` | 10/15 min, 5/h, 30/15 min | per IP |
+| User-data REST | `restRateLimits.userdata/players/leaderboard/social` `{windowMs, max}` | 120/min, 120/min, 60/min, 120/min | fixed window per user (valid bearer token) else per IP; `/social/*` covers all social REST routes |
+| Sessions per user | `caps.maxSessionsPerUser` | 10 | concurrent sockets (game + panel); a new game socket replaces the old one and does not count extra → `connect_error` `RATE_LIMITED` |
+| Connections per IP | `caps.maxConnectionsPerIp` | 100 | `connect_error` `RATE_LIMITED`; behind a proxy set `TRUST_PROXY=true` to use `X-Forwarded-For` |
+| Lobbies | `caps.maxLobbiesPerGame` / `caps.maxLobbiesTotal` | 500 / 2000 | `createLobby` → `RATE_LIMITED` |
+| Pending join requests | `caps.maxPendingJoinRequestsPerLobby` | 20 | per lobby (host spam) → `RATE_LIMITED` |
+| Game servers | `caps.maxGameServersPerGame` / `caps.maxGameServerConnectionsPerIp` | 50 / 20 | `/gameserver` handshake → `connect_error` `RATE_LIMITED`; resuming a known `serverId` is allowed |
+| Retry hint for caps | `caps.capRetryAfterMs` | 5000 | `retryAfterMs` of cap errors |
+
+Also in place: one open lobby per user (`ALREADY_IN_LOBBY`), friend request caps (`REQUEST_LIMIT_REACHED`, `FRIEND_LIMIT_REACHED`) and the `friendRequestByName`/`friendRequest` buckets. Violations of socket buckets without ack are announced as `error`/`errorDetail`, throttled to one notice per 2 s per socket+event.
+Test hubs (`server/test/helpers/hub.ts`) override all of these generously; individual tests tighten them via `startHub({ limits })`.
 
 ## 10. Social Panel (`PANEL`)
 
@@ -245,7 +256,7 @@ Hub-side only: SDK parity is covered by the SDK test suites.
 | TEST-LOBBY-05 | private lobby is hidden from listLobbies; join by code works case-insensitively |
 | TEST-LOBBY-06 | private lobby cannot be joined or requested by ID (LOBBY_PRIVATE); no ID leaks to strangers |
 | TEST-LOBBY-07 | non-host kick/transfer/lock/unlock/setLobbyState are rejected with NOT_HOST |
-| TEST-LOBBY-08 | host kick notifies the victim; there is no ban, an immediate rejoin succeeds |
+| TEST-LOBBY-08 | host kick notifies the victim; an immediate rejoin is refused (KICKED_FROM_LOBBY, see TEST-KICK-*) |
 | TEST-LOBBY-09 | killed socket keeps the seat during grace (connected:false), then the player is removed and host transferred |
 | TEST-LOBBY-10 | oversized settings → SETTINGS_TOO_LARGE; failed subprocess start leaves no ghost lobby |
 | TEST-LOBBY-11 | names are trimmed; empty/whitespace names are INVALID_INPUT |
@@ -254,6 +265,11 @@ Hub-side only: SDK parity is covered by the SDK test suites.
 | TEST-LOBBY-14 | listings only expose publicSettingKeys and never invite codes |
 | TEST-LOBBY-15 | setLobbyState: host only, in_progress locks joining, repeat is INVALID_STATE, closed is final |
 | TEST-LOBBY-16 | lobbyUpdated carries a reason (player_joined, host_transferred) |
+| TEST-KICK-01 | kicked player gets playerKicked with the optional reason and KICKED_FROM_LOBBY on joinLobby; others are unaffected |
+| TEST-KICK-02 | KICKED_FROM_LOBBY also applies to join by code, requestJoinLobby and joinFriend; the host is not notified of such requests |
+| TEST-KICK-03 | host unkickPlayer lets the player rejoin; non-host → NOT_HOST; not kicked → PLAYER_NOT_FOUND |
+| TEST-KICK-04 | a host invite clears the kick (the invitee can join); a non-host invite of a kicked user is refused KICKED_FROM_LOBBY |
+| TEST-KICK-05 | kicking a member in reconnect grace works; the kick set dies with the lobby |
 | TEST-JOIN-01 | locked lobby rejects joinLobby (LOBBY_LOCKED); requestJoinLobby → pending, host accepts |
 | TEST-JOIN-02 | decline → requester gets joinRequestRejected(declined); unknown request → JOIN_REQUEST_NOT_FOUND |
 | TEST-JOIN-03 | unanswered request times out: requester gets rejected(timeout), host gets withdrawn(timeout) |
@@ -275,11 +291,29 @@ Hub-side only: SDK parity is covered by the SDK test suites.
 | TEST-RECON-06 | explicit leaveLobby sends PLAYER_LEAVE immediately (no grace) |
 | TEST-DATA-01 | PUT without visibility keeps the existing visibility and bumps the version |
 | TEST-DATA-02 | serverKeys are read-only for clients (REST single+PATCH transactional, socket); subprocess writes via SAVE_META |
-| TEST-DATA-03 | visibility matrix: private never, lobby for lobby-mates, public for everyone |
+| TEST-DATA-03 | `getPlayerData` matrix: private never; lobby for lobby-mates (same game); friends for friends; self sees all except `public`; strangers and unknown users get identical `NOT_ALLOWED` |
 | TEST-DATA-04 | validation: unknown game, bad key chars, value size, per-game quota |
 | TEST-DATA-05 | socket parity: setUserData / bulkSetUserData / deleteUserData / getUserData and codes |
 | TEST-DATA-06 | SAVE_META for a game other than the lobby game is discarded |
-| TEST-DATA-07 | leaderboard lists public numeric client keys sorted desc; private keys never appear |
+| TEST-DATA-07 | leaderboard lists public numeric keys written by the game server, sorted desc; private keys never appear |
+| TEST-DATA-08 | clients cannot set visibility `public` (`NOT_ALLOWED` over REST, socket, bulk), no silent downgrade |
+| TEST-DATA-09 | subprocess (serverSupport none) cannot create `public` keys; private `SAVE_META` still works |
+| TEST-GSDATA-01 | game server writes for lobby members (`data:set`/`data:bulk`/`data:get`); `public` implies server scope; the client cannot overwrite/delete |
+| TEST-GSDATA-02 | non-members, foreign lobbies, other servers: `NOT_ALLOWED`; invalid input; bulk is all-or-nothing |
+| TEST-GSDATA-03 | server may write for members who left or after the lobby closed (60 s window) |
+| TEST-GSDATA-04 | games without server support accept no `public` data from clients |
+| TEST-DATA-10 | parallel `incrementUserData` sums exactly (missing key = 0, negative/fractional deltas) |
+| TEST-DATA-11 | increment/setIf type and range errors `INVALID_INPUT`; `public` → `NOT_ALLOWED`; server keys → `DATA_READ_ONLY` |
+| TEST-DATA-12 | `setIf` version compare (0 = must not exist); `VERSION_CONFLICT` (409) carries current value/version |
+| TEST-DATA-13 | `transactUserData` all-or-nothing with per-op results |
+| TEST-DATA-14 | clients may write `friends` data; REST `GET /players/:id/data/:gameId` follows the same rules as the socket |
+| TEST-GSDATA-05 | game server `data:increment`/`data:setIf`/`data:transact` for members |
+| TEST-GSDATA-06 | subprocess IPC `INCREMENT_USER_DATA`/`SET_USER_DATA_IF`/`TRANSACT_USER_DATA` → `USER_DATA_OP_RESPONSE` |
+| TEST-LB-01 | leaderboard rows carry `rank`; deterministic ties (value, earlier `updatedAt`, `userId`); asc/desc; non-numeric excluded |
+| TEST-LB-02 | `offset`/`limit` pagination with absolute ranks; invalid params → 400 `INVALID_INPUT`; `serverSupport: none` games → 404 |
+| TEST-LB-03 | `me=true` / `around=me&range=N` (own rank, total, window); `leaderboardVisible=false` hides the player but keeps own `me` |
+| TEST-LB-04 | social setting `leaderboardVisible` (default true, type-validated, kept across other updates) |
+| TEST-LB-05 | `scope=friends` leaderboard (friends + self, own rank among them); `public` never readable via `getPlayerData` |
 | TEST-AUTH-01 | socket without refresh gets AUTH_EXPIRED after expiry and is disconnected |
 | TEST-AUTH-02 | auth:refresh keeps the socket alive beyond the original expiry |
 | TEST-AUTH-03 | auth:refresh with another user's token is INVALID_TOKEN |
@@ -290,6 +324,13 @@ Hub-side only: SDK parity is covered by the SDK test suites.
 | TEST-AUTH-08 | socket connect without / with invalid token fails with UNAUTHENTICATED / INVALID_TOKEN |
 | TEST-LIMIT-01 | socket rate limit answers RATE_LIMITED with retryAfterMs in the ack |
 | TEST-LIMIT-02 | HTTP auth rate limit returns 429 RATE_LIMITED |
+| TEST-LIMIT-03 | REST /userdata, /players, /leaderboard and /social are rate limited per user: 429 RATE_LIMITED with retryAfterMs |
+| TEST-LIMIT-04 | max sessions per user: extra sockets get connect_error RATE_LIMITED with retryAfterMs; a game takeover does not count |
+| TEST-LIMIT-05 | max connections per IP rejects further sockets with RATE_LIMITED and frees slots on disconnect |
+| TEST-LIMIT-06 | max lobbies per game and globally: createLobby → RATE_LIMITED with retryAfterMs; freed when a lobby dissolves |
+| TEST-LIMIT-07 | leaveLobby is rate limited (RATE_LIMITED + retryAfterMs) |
+| TEST-LIMIT-08 | pending join requests per lobby are capped; friend requests per user are rate limited |
+| TEST-LIMIT-09 | game-server connections are capped per game and per IP (connect_error RATE_LIMITED); resuming a serverId is allowed |
 | TEST-INFRA-01 | /health and /api/games are reachable; test games are registered |
 | TEST-FRIEND-01 | friend request by name only answers REQUEST_SENT / NO_SUCH_PLAYER (no user enumeration) |
 | TEST-FRIEND-02 | accept: events on both sides, lists, only {userId, username} exposed |
@@ -333,6 +374,16 @@ Hub-side only: SDK parity is covered by the SDK test suites.
 | TEST-INVITE-09 | unfriending cancels open invites (reason unfriended) |
 | TEST-INVITE-10 | joinFriend: open → direct join, locked → join request, private → only with invite, other game → GAME_MISMATCH |
 | TEST-INVITE-11 | social:friendLobby: friends only; a private lobby never reveals its ID |
+| TEST-BLOCK-01 | block drops friendship, pending requests and invites; list/unblock via socket and REST |
+| TEST-BLOCK-02 | no information leak: the blocked user sees the same results as towards a stranger |
+| TEST-BLOCK-03 | presence and DMs are hidden both ways; blocking does not touch the shared lobby; unblock restores nothing |
+| TEST-BLOCK-04 | requests towards a user you blocked are ignored; crossing requests cannot create a friendship through a block |
+| TEST-ACCOUNT-01 | password change validates input, revokes other sessions/refresh tokens/access tokens and returns a fresh pair |
+| TEST-ACCOUNT-02 | account deletion requires the password; login, tokens and sockets are dead afterwards |
+| TEST-ACCOUNT-03 | complete purge: no row about the user remains; friends get `friend:removed` reason `account_deleted` |
+| TEST-ACCOUNT-04 | deleting the host migrates the lobby, deleting the last member closes it; game server gets `player:left` reason `account_deleted` |
+| TEST-ACCOUNT-05 | export contains the caller's own data only (profile, user data, friends, DMs, notifications, settings, blocks) |
+| TEST-ACCOUNT-06 | a deleted user cannot reconnect with a still-unexpired access token |
 | TEST-SYNC-01 | social:sync returns a consistent full state; GET /social/sync is identical |
 | TEST-SYNC-02 | etag: unchanged → notModified (socket + REST 304), changed → new etag |
 | TEST-SYNC-03 | every REST pull route returns the same data as its socket event |
@@ -355,6 +406,28 @@ Hub-side only: SDK parity is covered by the SDK test suites.
 | TEST-GS-17 | after grace the lobby is rebound to another server: lobby:assigned reason=server_rebound (+previousServerId, lostAt), members get server_rebound |
 | TEST-GS-18 | optional lobby without a replacement server continues serverless (server cleared, reason server_lost) |
 | TEST-GS-19 | draining marks lobbies (server_draining), refuses new lobbies, and can return to ok |
+| TEST-GSE2E-01 | none game is serverless; serverPreference is ignored and no server is ever assigned |
+| TEST-GSE2E-02 | required game: create with and without serverPreference needs a server; the lobby appears only once bound |
+| TEST-GSE2E-03 | optional game: serverless first, a server joining later binds only new lobbies; the old one stays serverless |
+| TEST-GSE2E-04 | serverless optional lobby ignores game-server actions (NOT_LOBBY_SERVER / NOT_ALLOWED) |
+| TEST-GSE2E-05 | region preference picks the matching server; unavailable region falls back to any server |
+| TEST-GSE2E-06 | two servers of one game share load within capacity; a full fleet answers NO_GAME_SERVER_AVAILABLE |
+| TEST-GSE2E-07 | one server hosts several lobbies; actions and commands stay isolated per lobby |
+| TEST-GSE2E-08 | loss then resume inside the grace keeps lobby and status (server_lost → server_resumed), no gameCrashed |
+| TEST-GSE2E-09 | loss beyond the grace rebinds to another server (previousServerId/lostAt, status kept); members get server_rebound, not gameCrashed |
+| TEST-GSE2E-10 | a rejecting replacement does not take over; the required lobby closes with gameCrashed (code null) |
+| TEST-GSE2E-11 | required lobby with no replacement closes with gameCrashed after the grace |
+| TEST-GSE2E-12 | optional lobby: no replacement → serverless continuation; with a replacement → rebound |
+| TEST-GSE2E-13 | draining server keeps its lobbies running but gets no new ones; new lobbies go to another server |
+| TEST-GSE2E-14 | a draining server can finish its lobby; one that drops is rebound to a non-draining server |
+| TEST-GSE2E-15 | wrong, malformed, foreign-game and missing keys never connect and do not disturb a healthy server |
+| TEST-GSE2E-16 | server A cannot act on or write data for server B's lobby (NOT_LOBBY_SERVER / NOT_ALLOWED) |
+| TEST-GSE2E-17 | data writes for non-members and members of other lobbies fail; the owner writes for members only |
+| TEST-GSE2E-18 | clients cannot write public/server-scope data in server games; the server-written value survives |
+| TEST-GSE2E-19 | server writes stay authorised inside the 60 s window after leaving, kick and lobby close |
+| TEST-GSE2E-20 | server kick with reason: playerKicked{reason}, player:left kicked, KICKED_FROM_LOBBY on every rejoin path |
+| TEST-GSE2E-21 | a kick survives a server rebind: kicked player cannot rejoin, others can |
+| TEST-GSE2E-22 | a blocked user still joins a server-bound lobby and the server is told about every member |
 | TEST-PROC-01 | subprocess games get a process; READY → gameStarting; gameAction is forwarded as PLAYER_ACTION |
 | TEST-PROC-02 | subprocess crash → gameCrashed with exit code |
 | TEST-PROC-03 | MAX_INSTANCES is enforced (INSTANCE_LIMIT) and a freed slot is reusable once the lobby dissolves |
@@ -396,6 +469,8 @@ This document describes the **as-is baseline before P0**. P0 changed the followi
 
 ## Changelog: P1 / game servers (issues #20–#31, #50–#54, #56)
 
+- **Account lifecycle (#40)**: `POST /auth/password`, `DELETE /auth/account`, `GET /account/export`, access-token version claim `tv` (migration 9 `users.token_version`), `friend:removed.reason`, `SessionReplacedReason.PasswordChanged`, `PlayerLeftReason.AccountDeleted`, rate-limit keys `accountPassword/accountDelete/accountExport`. See rest-api.md.
+- **Block list (#41)**: `block:add/remove/list` (+ `/social/blocks`), error `BLOCK_LIMIT_REACHED`, env `BLOCKS_MAX`, migration 8 (`user_blocks`). See [social-api.md](social-api.md#block-list).
 - **friend_online notification**: when a user becomes visible (offline→online, or leaving `invisible`), each friend who is *currently online* receives a `friend_online` notification (`{userId, username}`, key `friend_online:<userId>`, replaces an older unread one). Offline friends get no backlog entry. Respects `mutedNotificationTypes`.
 - **Game servers** (`/gameserver` namespace, per-game keys via `/admin/game-servers`, needs `ADMIN_TOKEN`). Registry `serverSupport: none|optional|required`; `createLobby` accepts `serverPreference {mode: any|none, region}`.
 - **Server loss (#56)**: `Lobby.serverStatus` is `ok|lost|draining`; members get `lobbyUpdated` with reason `server_lost`, `server_resumed`, `server_draining`, `server_rebound`. Same `serverId` reconnecting within `SERVER_RESUME_GRACE_MS` resumes its lobbies. After the grace the hub tries to rebind the lobby to another server of the game (`lobby:assigned` with `rebind: true`); if none accepts, `required` lobbies close with `gameCrashed`, `optional` lobbies continue serverless (`server` cleared, reason `server_lost`). Draining servers receive no new lobbies; existing ones keep running until the server closes them.

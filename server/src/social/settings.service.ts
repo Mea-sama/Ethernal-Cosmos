@@ -33,12 +33,13 @@ function toRow(r: Record<string, unknown>): SettingsRow {
     status,
     showLastSeen: r.show_last_seen === null || r.show_last_seen === undefined ? true : Number(r.show_last_seen) === 1,
     dmReadReceipts: r.dm_read_receipts === null || r.dm_read_receipts === undefined ? true : Number(r.dm_read_receipts) === 1,
+    leaderboardVisible: r.leaderboard_visible === null || r.leaderboard_visible === undefined ? true : Number(r.leaderboard_visible) === 1,
     mutedNotificationTypes: parseMuted(r.muted_types),
     lastSeen: r.last_seen === null || r.last_seen === undefined ? undefined : Number(r.last_seen),
   };
 }
 
-const SELECT = `SELECT u.id, u.username, s.status, s.show_last_seen, s.dm_read_receipts, s.muted_types, s.last_seen
+const SELECT = `SELECT u.id, u.username, s.status, s.show_last_seen, s.dm_read_receipts, s.leaderboard_visible, s.muted_types, s.last_seen
   FROM users u LEFT JOIN social_settings s ON s.user_id = u.id`;
 
 export async function loadSettings(userId: string, force = false): Promise<SettingsRow | undefined> {
@@ -78,6 +79,7 @@ export function publicSettings(row: SettingsRow): SocialSettings {
     status: row.status,
     showLastSeen: row.showLastSeen,
     dmReadReceipts: row.dmReadReceipts,
+    leaderboardVisible: row.leaderboardVisible,
     mutedNotificationTypes: row.mutedNotificationTypes,
   };
 }
@@ -99,6 +101,10 @@ export async function updateSettings(userId: string, patch: unknown): Promise<Se
     if (typeof p.dmReadReceipts !== 'boolean') throw new HubError('INVALID_INPUT');
     next.dmReadReceipts = p.dmReadReceipts;
   }
+  if (p.leaderboardVisible !== undefined) {
+    if (typeof p.leaderboardVisible !== 'boolean') throw new HubError('INVALID_INPUT');
+    next.leaderboardVisible = p.leaderboardVisible;
+  }
   if (p.mutedNotificationTypes !== undefined) {
     const m = p.mutedNotificationTypes;
     if (!Array.isArray(m) || m.some((t) => !NOTIFICATION_TYPES.includes(t as NotificationType))) {
@@ -107,11 +113,11 @@ export async function updateSettings(userId: string, patch: unknown): Promise<Se
     next.mutedNotificationTypes = [...new Set(m as NotificationType[])];
   }
   await db.execute({
-    sql: `INSERT INTO social_settings (user_id, status, show_last_seen, dm_read_receipts, muted_types, last_seen)
-          VALUES (?, ?, ?, ?, ?, ?)
+    sql: `INSERT INTO social_settings (user_id, status, show_last_seen, dm_read_receipts, leaderboard_visible, muted_types, last_seen)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(user_id) DO UPDATE SET status = excluded.status, show_last_seen = excluded.show_last_seen,
-            dm_read_receipts = excluded.dm_read_receipts, muted_types = excluded.muted_types`,
-    args: [userId, next.status, next.showLastSeen ? 1 : 0, next.dmReadReceipts ? 1 : 0, JSON.stringify(next.mutedNotificationTypes), next.lastSeen ?? null],
+            dm_read_receipts = excluded.dm_read_receipts, leaderboard_visible = excluded.leaderboard_visible, muted_types = excluded.muted_types`,
+    args: [userId, next.status, next.showLastSeen ? 1 : 0, next.dmReadReceipts ? 1 : 0, next.leaderboardVisible ? 1 : 0, JSON.stringify(next.mutedNotificationTypes), next.lastSeen ?? null],
   });
   cache.set(userId, next);
   return next;
@@ -119,9 +125,10 @@ export async function updateSettings(userId: string, patch: unknown): Promise<Se
 
 export async function setLastSeen(userId: string, at: number): Promise<void> {
   await db.execute({
-    sql: `INSERT INTO social_settings (user_id, last_seen) VALUES (?, ?)
+    // Nur für existierende Accounts (ein Disconnect nach Account-Löschung darf keine Zeile neu anlegen)
+    sql: `INSERT INTO social_settings (user_id, last_seen) SELECT ?, ? WHERE EXISTS (SELECT 1 FROM users WHERE id = ?)
           ON CONFLICT(user_id) DO UPDATE SET last_seen = excluded.last_seen`,
-    args: [userId, at],
+    args: [userId, at, userId],
   });
   const hit = cache.get(userId);
   if (hit) hit.lastSeen = at;

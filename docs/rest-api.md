@@ -148,6 +148,34 @@ Revoke a refresh token. After this call the refresh token cannot be used again. 
 
 ---
 
+### `POST /auth/password`
+
+Change the password (requires `Authorization: Bearer`). Revokes **all** refresh tokens and invalidates all previously issued access tokens (JWT claim `tv` is checked against the user's token version). Other sockets of the user receive `session:replaced { reason: "password_changed" }` and are disconnected. Rate limited per user (`accountPassword`).
+
+**Request body**
+
+```json
+{ "currentPassword": "string", "newPassword": "string (8–128)", "socketId": "optional socket.io id of the calling session, which is not kicked" }
+```
+
+**Response `200`** — fresh `AuthResult` (`user`, `accessToken`, `refreshToken`) for the calling session. Errors: `INVALID_CREDENTIALS` (401, wrong current password), `INVALID_INPUT` (400), `RATE_LIMITED` (429).
+
+---
+
+### `DELETE /auth/account`
+
+Permanently delete the account (GDPR). Requires the password in the body (`{ "password": "string" }`) and is rate limited per user (`accountDelete`). Removes: user row, refresh tokens, user data (incl. leaderboard rows and server-written keys), friendships/requests, DMs, notifications, social settings, blocks (of and against the user). The user leaves their lobby (host migration or dissolve; a bound game server gets `player:left` with reason `account_deleted`), friends receive `friend:removed { userId, reason: "account_deleted" }`, all sockets are disconnected.
+
+**Response `204`** — no body. Errors: `INVALID_CREDENTIALS` (401), `INVALID_INPUT` (400), `RATE_LIMITED` (429).
+
+---
+
+### `GET /account/export`
+
+Everything the hub stores about the caller as JSON (`AccountExport`): `profile`, `userData`, `friends` (usernames), `messages` (own sent/received DMs within retention), `notifications`, `settings`, `blocks`. Never contains other users' private data or password hashes. Rate limited (`accountExport`).
+
+---
+
 ## User Data
 
 All `/userdata` endpoints require authentication (`Authorization: Bearer <accessToken>`).
@@ -155,7 +183,7 @@ All `/userdata` endpoints require authentication (`Authorization: Bearer <access
 **Constraints**
 - `gameId`: 1–32 chars, `[a-z0-9-]`
 - `key`: 1–64 chars, `[a-zA-Z0-9_.-]`
-- `visibility`: one of `"private"`, `"lobby"`, `"public"` (default: `"private"`)
+- `visibility`: one of `"private"`, `"lobby"`, `"friends"`, `"public"` (default: `"private"`; omitting it on an existing key keeps the current one). `"public"` marks a leaderboard key and can only be set by a game server: client writes with it fail with `403 NOT_ALLOWED` (never silently downgraded).
 
 ### `GET /userdata/:gameId`
 
@@ -169,7 +197,7 @@ Return all own KV entries for a game.
     "gameId":    "chess",
     "key":       "wins",
     "value":     42,
-    "visibility": "public",
+    "visibility": "lobby",
     "updatedAt": "2026-05-12T10:00:00.000Z"
   }
 ]
@@ -196,7 +224,7 @@ Create or update a single KV entry.
 ```json
 {
   "value":       "<any JSON value>",
-  "visibility":  "public"           // optional, default "private"
+  "visibility":  "lobby"            // optional, default "private" ("public" is server-only)
 }
 ```
 
@@ -222,8 +250,8 @@ A raw JSON array (not wrapped in an object):
 
 ```json
 [
-  { "key": "wins",   "value": 10, "visibility": "public" },
-  { "key": "losses", "value": 3,  "visibility": "public" },
+  { "key": "wins",   "value": 10, "visibility": "lobby" },
+  { "key": "losses", "value": 3,  "visibility": "lobby" },
   { "key": "draws",  "value": 1                          }
 ]
 ```
@@ -232,15 +260,31 @@ A raw JSON array (not wrapped in an object):
 
 ---
 
+### Atomic operations
+
+All run in a single write transaction on the caller's own client-writable keys (`public` → `403 NOT_ALLOWED`, server-scoped keys → `DATA_READ_ONLY`).
+
+| Route | Body | Response `200` |
+|---|---|---|
+| `POST /userdata/:gameId/:key/increment` | `{ by: number, visibility? }` — missing key counts as 0; existing value must be a number (`INVALID_INPUT`), result must stay within ±2^53−1 | `{ key, value, version }` |
+| `POST /userdata/:gameId/:key/setIf` | `{ value, expectedVersion: int ≥ 0, visibility? }` — `0` = key must not exist | `{ key, value, version }` |
+| `POST /userdata/:gameId/transact` | `{ ops: [{op:'set'\|'increment'\|'setIf'\|'delete', key, ...}] }` (1–100, all-or-nothing) | `{ results: [{ key, value?, version }] }` (`delete` → `version: 0`) |
+
+Version mismatch: **`409 VERSION_CONFLICT`** with `{ code, error, data: { current: { value, version } | null } }`.
+
+---
+
 ## Player Data
 
 ### `GET /players/:playerId/data/:gameId`
 
-Return visible KV entries for another user.
+Return the KV entries of a user that the caller may see:
+- **Self:** `private`, `lobby` and `friends` entries
+- **Friend:** `friends` entries, plus `lobby` entries while both are in the same lobby of this game
+- **Lobby-mate (not a friend):** `lobby` entries
+- **Anyone else, including non-existent users:** `403 NOT_ALLOWED` (identical response, no existence leak)
 
-Returns:
-- All `public` entries
-- `lobby` entries only if the requesting user and target user are in the same lobby
+`public` entries are leaderboard keys and are never returned here (see Leaderboard).
 
 **Response `200`** — array of `UserDataEntry`
 
@@ -250,14 +294,23 @@ Returns:
 
 ### `GET /leaderboard/:gameId/:key`
 
-Return the leaderboard for a `public` numeric key, sorted by `order`. Rows carry no `rank` field: the position in the array is the rank (rank-of-me/around-me/ties are tracked in #39).
+Return the leaderboard for a `public` (server-written) numeric key. Only games with `serverSupport` ≠ `none` have leaderboards (otherwise `404`). Non-numeric values are excluded. Ties are ordered by earlier `updatedAt`, then `userId`, so ranks are deterministic. Players with the social setting `leaderboardVisible: false` are omitted. Invalid parameters return `400 INVALID_INPUT`.
+
+By default the response is an array of rows with a `rank` (1-based, absolute). With `me=true` or `around=me` it is `{ entries, me, total }` instead.
+
+> Periodic resets (daily/weekly boards) are **not implemented**; use a per-period key (e.g. `score.2025-w01`) written by the game server.
 
 **Query parameters**
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `order` | `"asc" \| "desc"` | `"desc"` | Sort direction (desc = highest first) |
-| `limit` | `number` | `10` | Max rows returned (max: 100) |
+| `limit` | `number` | `10` | Max rows returned (1–100) |
+| `offset` | `number` | `0` | Rows to skip (≥ 0) |
+| `me` | `"true"` | — | Also return own row/rank as `me` (`null` if unranked; works while hidden) |
+| `around` | `"me"` | — | Return a window around the caller's rank instead of the top (falls back to the top if unranked) |
+| `range` | `number` | `5` | Entries above/below for `around=me` (1–50) |
+| `scope` | `"all" \| "friends"` | `"all"` | `friends`: only your friends and yourself (ranks among them) |
 
 **Example**
 
@@ -269,10 +322,12 @@ GET /leaderboard/chess/wins?order=desc&limit=5
 
 ```json
 [
-  { "userId": "uuid1", "username": "alice", "value": 42 },
-  { "userId": "uuid2", "username": "bob",   "value": 38 }
+  { "rank": 1, "userId": "uuid1", "username": "alice", "value": 42, "updatedAt": 1700000000000 },
+  { "rank": 2, "userId": "uuid2", "username": "bob",   "value": 38, "updatedAt": 1700000001000 }
 ]
 ```
+
+With `me=true`/`around=me`: `{ "entries": [...], "me": { "rank": 7, ... } | null, "total": 120 }`.
 
 ---
 
@@ -335,5 +390,5 @@ Status codes follow HTTP conventions:
 - `403` — forbidden
 - `404` — not found
 - `409` — conflict (e.g. duplicate username)
-- `429` — rate limited
+- `429` — rate limited (`code: "RATE_LIMITED"`, `retryAfterMs`, `Retry-After` header). `/userdata`, `/players`, `/leaderboard` and `/social` are limited per user (defaults 120/120/60/120 per minute, `limits.json` → `restRateLimits`)
 - `500` — internal server error

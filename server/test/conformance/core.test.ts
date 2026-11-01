@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
-  api, closeAll, connectClient, connectRegistered, ipcEvent, live, registerUser, sleep, startHub, type TestHub,
+  api, befriend, closeAll, connectClient, connectRegistered, gameServer, ipcEvent, live, registerUser, sleep, startHub, type TestClient, type TestHub,
 } from './util';
 
 let hub: TestHub;
@@ -148,14 +148,14 @@ describe('Lobby lifecycle', () => {
     closeAll(host, guest);
   });
 
-  it('TEST-LOBBY-08: host kick notifies the victim; there is no ban, an immediate rejoin succeeds', async () => {
+  it('TEST-LOBBY-08: host kick notifies the victim (see TEST-KICK-* for the soft-kick rejoin rules)', async () => {
     const [host, guest] = [await live(hub), await live(hub)];
     const lobby = (await host.emitAck('createLobby', { name: 'kick' })).lobby;
     await guest.emitAck('joinLobby', { lobbyId: lobby.id });
     expect((await host.emitAck('kickPlayer', { playerId: host.user.userId })).error.code).toBe('CANNOT_KICK_SELF');
     expect((await host.emitAck('kickPlayer', { playerId: guest.user.userId })).ok).toBe(true);
     expect((await guest.waitFor('playerKicked')).lobbyId).toBe(lobby.id);
-    expect((await guest.emitAck('joinLobby', { lobbyId: lobby.id })).ok).toBe(true);
+    expect((await guest.emitAck('joinLobby', { lobbyId: lobby.id })).error.code).toBe('KICKED_FROM_LOBBY');
     closeAll(host, guest);
   });
 
@@ -480,10 +480,10 @@ describe('Reconnect grace', () => {
 describe('User data integrity', () => {
   it('TEST-DATA-01: PUT without visibility keeps the existing visibility and bumps the version', async () => {
     const u = await registerUser(hub);
-    await api(hub, u, 'PUT', '/userdata/relay/score', { value: 1, visibility: 'public' });
+    await api(hub, u, 'PUT', '/userdata/relay/score', { value: 1, visibility: 'lobby' });
     await api(hub, u, 'PUT', '/userdata/relay/score', { value: 2 });
     const { body } = await api(hub, u, 'GET', '/userdata/relay/score');
-    expect(body).toMatchObject({ value: 2, visibility: 'public', version: 2, writeScope: 'client' });
+    expect(body).toMatchObject({ value: 2, visibility: 'lobby', version: 2, writeScope: 'client' });
   });
 
   it('TEST-DATA-02: serverKeys are read-only for clients (REST single+PATCH transactional, socket); subprocess writes via SAVE_META', async () => {
@@ -501,21 +501,33 @@ describe('User data integrity', () => {
       if (r.status === 200) got = r.body;
       else await sleep(100);
     }
-    expect(got).toMatchObject({ value: 42, writeScope: 'server', visibility: 'public' });
+    expect(got).toMatchObject({ value: 42, writeScope: 'server', visibility: 'private' });
     expect((await api(hub, u, 'DELETE', '/userdata/fake/rank.points')).body.code).toBe('DATA_READ_ONLY');
     host.close();
   });
 
-  it('TEST-DATA-03: visibility matrix: private never, lobby for lobby-mates, public for everyone', async () => {
-    const [a, b, stranger] = [await live(hub), await live(hub), await live(hub)];
-    await a.emitAck('bulkSetUserData', { gameId: 'relay', entries: [
-      { key: 'priv', value: 1, visibility: 'private' }, { key: 'lob', value: 2, visibility: 'lobby' }, { key: 'pub', value: 3, visibility: 'public' }] });
+  it('TEST-DATA-03: getPlayerData matrix: private never; lobby for lobby-mates; friends for friends; self sees all but public; strangers/unknown users NOT_ALLOWED', async () => {
+    const [a, mate, friend, stranger] = [await live(hub, 'other'), await live(hub, 'other'), await live(hub, 'other'), await live(hub, 'other')];
+    await befriend(a, friend);
+    await a.emitAck('bulkSetUserData', { gameId: 'other', entries: [
+      { key: 'priv', value: 1, visibility: 'private' }, { key: 'lob', value: 2, visibility: 'lobby' }, { key: 'fri', value: 3, visibility: 'friends' }] });
+    const keysOf = async (c: TestClient, id = a.user.userId) => (await c.emitAck('getPlayerData', { playerId: id, gameId: 'other' }));
+    expect((await keysOf(friend)).entries.map((e: any) => e.key)).toEqual(['fri']);
+    for (const c of [stranger, mate]) expect((await keysOf(c)).error.code).toBe('NOT_ALLOWED');
     const lobby = (await a.emitAck('createLobby', { name: 'v' })).lobby;
-    await b.emitAck('joinLobby', { lobbyId: lobby.id });
-    expect((await b.emitAck('getPlayerData', { playerId: a.user.userId, gameId: 'relay' })).entries.map((e: any) => e.key).sort()).toEqual(['lob', 'pub']);
-    expect((await stranger.emitAck('getPlayerData', { playerId: a.user.userId, gameId: 'relay' })).entries.map((e: any) => e.key)).toEqual(['pub']);
-    expect((await a.emitAck('getUserData', 'relay')).entries.map((e: any) => e.key).sort()).toEqual(['lob', 'priv', 'pub']);
-    closeAll(a, b, stranger);
+    await mate.emitAck('joinLobby', { lobbyId: lobby.id });
+    await friend.emitAck('joinLobby', { lobbyId: lobby.id });
+    expect((await keysOf(mate)).entries.map((e: any) => e.key)).toEqual(['lob']);
+    expect((await keysOf(friend)).entries.map((e: any) => e.key).sort()).toEqual(['fri', 'lob']);
+    expect((await keysOf(stranger)).error.code).toBe('NOT_ALLOWED');
+    expect((await keysOf(a)).entries.map((e: any) => e.key).sort()).toEqual(['fri', 'lob', 'priv']);
+    const missing = await keysOf(stranger, 'no-such-user');
+    expect(missing.error).toEqual((await keysOf(stranger)).error);
+    const rest = await api(hub, stranger.user, 'GET', `/players/${a.user.userId}/data/relay`);
+    const restMissing = await api(hub, stranger.user, 'GET', '/players/no-such-user/data/relay');
+    expect([rest.status, restMissing.status]).toEqual([403, 403]);
+    expect(rest.body).toEqual(restMissing.body);
+    closeAll(a, mate, friend, stranger);
   });
 
   it('TEST-DATA-04: validation: unknown game, bad key chars, value size, per-game quota', async () => {
@@ -554,17 +566,19 @@ describe('User data integrity', () => {
     host.close();
   });
 
-  it('TEST-DATA-07: leaderboard lists public numeric client keys sorted desc; private keys never appear', async () => {
-    const [a, b] = [await registerUser(hub), await registerUser(hub)];
-    await api(hub, a, 'PUT', '/userdata/relay/lb', { value: 10, visibility: 'public' });
-    await api(hub, b, 'PUT', '/userdata/relay/lb', { value: 30, visibility: 'public' });
-    const lb = await fetch(`${hub.url}/leaderboard/relay/lb?limit=5`, { headers: { Authorization: `Bearer ${a.accessToken}` } });
-    const rows = (await lb.json()) as Array<{ userId: string; value: number }>;
-    const ours = rows.filter((r) => [a.userId, b.userId].includes(r.userId));
-    expect(ours.map((r) => r.userId)).toEqual([b.userId, a.userId]);
-    await api(hub, a, 'PUT', '/userdata/relay/lbp', { value: 99, visibility: 'private' });
-    const priv = await fetch(`${hub.url}/leaderboard/relay/lbp`, { headers: { Authorization: `Bearer ${a.accessToken}` } });
-    expect(JSON.stringify(await priv.json())).not.toContain(a.userId);
+  it('TEST-DATA-07: leaderboard lists public numeric keys written by the game server, sorted desc; private keys never appear', async () => {
+    const gs = await gameServer(hub, 'gs-opt');
+    const [a, b] = [await live(hub, 'gs-opt'), await live(hub, 'gs-opt')];
+    const lobby = (await a.emitAck('createLobby', { name: 'lb' })).lobby;
+    await b.emitAck('joinLobby', { lobbyId: lobby.id });
+    for (const [c, v] of [[a, 10], [b, 30]] as const) {
+      expect((await gs.emitAck('data:set', { lobbyId: lobby.id, userId: c.user.userId, key: 'lb', value: v, visibility: 'public' })).ok).toBe(true);
+    }
+    await gs.emitAck('data:set', { lobbyId: lobby.id, userId: a.user.userId, key: 'lbp', value: 99 });
+    const rows = (await api(hub, a.user, 'GET', '/leaderboard/gs-opt/lb?limit=5')).body as Array<{ userId: string }>;
+    expect(rows.map((r) => r.userId)).toEqual([b.user.userId, a.user.userId]);
+    expect(JSON.stringify((await api(hub, a.user, 'GET', '/leaderboard/gs-opt/lbp')).body)).not.toContain(a.user.userId);
+    closeAll(a, b, gs);
   });
 });
 

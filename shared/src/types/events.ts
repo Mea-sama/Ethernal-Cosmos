@@ -7,11 +7,13 @@ import type {
   LobbyInviteCancelReason,
   NotificationType,
   SessionReplacedReason,
+  FriendRemovedReason,
 } from './enums';
-import type { Lobby, GameInfo, RelayMessage, RelayBinaryMessage, UserDataEntry } from './index';
+import type { Lobby, GameInfo, RelayMessage, RelayBinaryMessage, UserDataEntry, UserDataOp, UserDataOpResult } from './index';
 import type { Ack, HubErrorPayload } from './errors';
 import type { ServerPreference } from './gameserver';
 import type {
+  BlockedUserInfo,
   FriendInfo,
   FriendRequestInfo,
   FriendRequestsResult,
@@ -114,7 +116,9 @@ export interface ClientToServerEvents {
   getLobbyInfo: (ack?: Ack<{ lobby: Lobby }>) => void;
 
   /** Host: Spieler aus der Lobby entfernen */
-  kickPlayer: (data: { playerId: string; requestId?: string }, ack?: Ack) => void;
+  kickPlayer: (data: { playerId: string; reason?: string; requestId?: string }, ack?: Ack) => void;
+  /** Host hebt den Kick eines Spielers auf (Kicks leben nur so lange wie die Lobby) */
+  unkickPlayer: (data: { playerId: string; requestId?: string }, ack?: Ack) => void;
 
   /** Host: Host-Rolle an anderen Spieler übertragen */
   transferHost: (data: { playerId: string; requestId?: string }, ack?: Ack) => void;
@@ -166,6 +170,24 @@ export interface ClientToServerEvents {
   /** Mehrere eigene Keys atomar schreiben (Alternative zu REST PATCH) */
   bulkSetUserData: (data: { gameId: string; entries: BulkDataEntry[]; requestId?: string }, ack?: Ack) => void;
 
+  /** Eigenen numerischen Key atomar um `by` erhöhen (fehlender Key = 0). Nur client-beschreibbare Keys, nie `public`. */
+  incrementUserData: (
+    data: { gameId: string; key: string; by: number; visibility?: DataVisibility; requestId?: string },
+    ack?: Ack<{ key: string; value: number; version: number }>
+  ) => void;
+
+  /** Compare-and-set: schreibt nur, wenn die Version stimmt (0 = Key existiert nicht), sonst VERSION_CONFLICT (`error.data.current`) */
+  setUserDataIf: (
+    data: { gameId: string; key: string; value: unknown; expectedVersion: number; visibility?: DataVisibility; requestId?: string },
+    ack?: Ack<{ key: string; value: unknown; version: number }>
+  ) => void;
+
+  /** Mehrere Operationen (set/increment/setIf/delete) alles-oder-nichts, max. 100 */
+  transactUserData: (
+    data: { gameId: string; ops: UserDataOp[]; requestId?: string },
+    ack?: Ack<{ results: UserDataOpResult[] }>
+  ) => void;
+
   /** Einen eigenen Key löschen (Alternative zu REST DELETE) */
   deleteUserData: (data: { gameId: string; key: string; requestId?: string }, ack?: Ack) => void;
 
@@ -181,6 +203,10 @@ export interface ClientToServerEvents {
   'friend:respond': (data: { requestId: string; accept: boolean }, ack?: Ack) => void;
   'friend:cancel': (data: { requestId: string }, ack?: Ack) => void;
   'friend:remove': (data: { friendId: string }, ack?: Ack) => void;
+  /** Block a user (idempotent): drops friendship, pending requests and invites; their later requests are silently ignored */
+  'block:add': (data: { userId: string }, ack?: Ack<{ blocked: BlockedUserInfo }>) => void;
+  'block:remove': (data: { userId: string }, ack?: Ack) => void;
+  'block:list': (ack?: Ack<{ blocks: BlockedUserInfo[] }>) => void;
   'friend:list': (ack?: Ack<{ friends: FriendInfo[] }>) => void;
   'friend:requests': (ack?: Ack<FriendRequestsResult>) => void;
   /** Aktuelle Presence aller Freunde (Pull-Variante zu `friend:presence`) */
@@ -262,7 +288,7 @@ export interface ServerToClientEvents {
   lobbyInfo: (lobby: Lobby) => void;
 
   /** Du wurdest von einem Host aus der Lobby entfernt */
-  playerKicked: (data: { lobbyId: string }) => void;
+  playerKicked: (data: { lobbyId: string; reason?: string }) => void;
 
   /** Eingehende Relay-Nachricht von einem anderen Spieler */
   message: (data: RelayMessage) => void;
@@ -282,7 +308,7 @@ export interface ServerToClientEvents {
   'friend:requestAccepted': (data: { friend: FriendInfo; requestId?: string }) => void;
   'friend:requestDeclined': (data: { requestId: string; user: FriendInfo }) => void;
   'friend:requestCancelled': (data: { requestId: string }) => void;
-  'friend:removed': (data: { userId: string }) => void;
+  'friend:removed': (data: { userId: string; reason?: FriendRemovedReason }) => void;
   notification: (notification: HubNotification) => void;
   'notification:backlog': (data: NotificationBacklog) => void;
   'dm:received': (message: DirectMessage) => void;
@@ -320,4 +346,6 @@ export interface SocketData {
   clientType: 'game' | 'panel';
   /** Ablaufzeit des Access-Tokens (ms seit Epoch) */
   tokenExpiresAt?: number;
+  /** Client-IP (für Verbindungslimits) */
+  ip: string;
 }

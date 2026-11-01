@@ -52,13 +52,18 @@ export async function startHub(opts: { limits?: Record<string, unknown>; env?: R
         refresh: { windowMs: 60000, max: 10000, message: 'x' },
       },
       socketLimits: Object.fromEntries(
-        ['createLobby', 'joinLobby', 'joinLobbyByCode', 'kickPlayer', 'transferHost', 'lockLobby', 'unlockLobby', 'requestJoinLobby',
+        ['createLobby', 'joinLobby', 'joinLobbyByCode', 'kickPlayer', 'unkickPlayer', 'transferHost', 'lockLobby', 'unlockLobby', 'requestJoinLobby',
          'requestJoinLobbyByCode', 'cancelJoinRequest', 'respondJoinRequest', 'listLobbies', 'getLobbyInfo', 'presenceList', 'getUserData',
-         'getPlayerData', 'gameAction', 'registerGame', 'sessionState', 'setUserData', 'bulkSetUserData', 'deleteUserData', 'leaveLobby',
+         'getPlayerData', 'gameAction', 'registerGame', 'sessionState', 'setUserData', 'bulkSetUserData', 'deleteUserData', 'incrementUserData', 'setUserDataIf', 'transactUserData', 'leaveLobby',
          'friendRequestByName', 'friendRequest', 'friendAction', 'socialRead', 'socialSettings', 'notificationWrite', 'dmSend', 'dmTyping',
-         'lobbyInvite', 'lobbyInviteAction', 'authRefresh', 'setLobbyState']
+         'lobbyInvite', 'lobbyInviteAction', 'blockAction', 'accountPassword', 'accountDelete', 'accountExport', 'authRefresh', 'setLobbyState']
           .map((k) => [k, big])
       ),
+      restRateLimits: Object.fromEntries(['userdata', 'players', 'leaderboard', 'social'].map((k) => [k, { windowMs: 60000, max: 1000000 }])),
+      caps: {
+        maxSessionsPerUser: 1000, maxConnectionsPerIp: 100000, maxLobbiesPerGame: 100000, maxLobbiesTotal: 100000,
+        maxPendingJoinRequestsPerLobby: 1000, maxGameServersPerGame: 1000, maxGameServerConnectionsPerIp: 1000, capRetryAfterMs: 5000,
+      },
       ...opts.limits,
     })
   );

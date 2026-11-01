@@ -1,6 +1,7 @@
 import { createHash } from 'crypto';
-import type { SocialSnapshot } from '@ethernal/shared';
+import type { FriendRemovedReason, SocialSnapshot } from '@ethernal/shared';
 import { HubError } from '../errors';
+import { deleteUserBlocks } from './blocks.service';
 import { listFriends, listRequests, purgeUserFriends } from './friends.service';
 import { incomingInvites, purgeUserInvites } from './invites.service';
 import { unreadByConversation, purgeUserMessages } from './messages.service';
@@ -34,10 +35,11 @@ export async function buildSnapshot(userId: string): Promise<SocialSnapshot> {
 }
 
 /** Kaskade bei Account-Löschung: entfernt alle Social-Daten des Users. */
-export async function purgeUserSocialData(userId: string): Promise<void> {
+export async function purgeUserSocialData(userId: string, opts: { friendRemovedReason?: FriendRemovedReason } = {}): Promise<void> {
   await purgeUserInvites(userId);
-  await purgeUserFriends(userId);
+  await purgeUserFriends(userId, opts.friendRemovedReason);
   await purgeUserMessages(userId);
   await deleteUserNotifications(userId);
+  await deleteUserBlocks(userId);
   await deleteSettings(userId);
 }

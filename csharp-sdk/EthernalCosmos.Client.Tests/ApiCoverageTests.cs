@@ -13,9 +13,10 @@ public class ApiCoverageTests
         return dir?.FullName ?? throw new InvalidOperationException("tests dir not found");
     }
 
-    private static IEnumerable<string> Members()
+    private static IEnumerable<string> Members() => Members(typeof(EthernalClient)).Concat(Members(typeof(GameServerClient)));
+
+    private static IEnumerable<string> Members(Type t)
     {
-        var t = typeof(EthernalClient);
         foreach (var m in t.GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly).Where(m => !m.IsSpecialName))
             yield return m.Name;
         foreach (var e in t.GetEvents(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly)) yield return e.Name;
