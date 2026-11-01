@@ -79,6 +79,11 @@ export class Fleet {
     return client;
   }
 
+  /** Leaves every player's lobby (best effort) so lobbies close and do not leak into later tests. */
+  async leaveAll(): Promise<void> {
+    await Promise.all(this.players.map((p) => p.client.leaveLobby().catch(() => undefined)));
+  }
+
   async closeAll(): Promise<void> {
     await Promise.all(this.players.splice(0).map((p) => p.client.logout().catch(() => undefined)));
   }

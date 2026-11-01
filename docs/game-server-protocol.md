@@ -3,7 +3,7 @@
 A **game server** is a service that runs the authoritative game logic for lobbies of one game. It is not a lobby participant:
 one server serves N lobbies, a lobby has 0..1 server. Whether a game uses servers is the registry attribute
 [`serverSupport`](enums.md#serversupport) (`none` | `optional` | `required`). Enum values used below are listed in [enums.md](enums.md).
-Game-server SDKs are planned (issue #58); until then connect with plain `socket.io-client`.
+The Node.js SDK ships `GameServerClient` (see [Using `GameServerClient`](#using-gameserverclient)); the protocol below is what it speaks, for other languages use plain `socket.io-client`.
 
 ## Connecting
 
@@ -53,7 +53,7 @@ Candidate order: connected, not draining, below capacity; the requested region f
 Each event is authorised per lobby: a server may only act on lobbies assigned to it (otherwise `NOT_LOBBY_SERVER`).
 
 `lobby:relay { lobbyId, toUserId?, type, payload? }` (sender `server`, gets `seq`), `lobby:state { lobbyId, toUserId?, state }` (members get `gameState`),
-`lobby:kick { lobbyId, userId }`, `lobby:setState { lobbyId, state: 'in_progress' | 'closed' }`, `lobby:setSettings { lobbyId, settings }`,
+`lobby:kick { lobbyId, userId, reason? }` (`reason` ≤ 200 chars, delivered in `playerKicked`), `lobby:setState { lobbyId, state: 'in_progress' | 'closed' }`, `lobby:setSettings { lobbyId, settings }`,
 `lobby:gameOver { lobbyId, result? }`, `lobby:close { lobbyId }`, `server:status { draining?, capacity? }`.
 
 ## Player data (server-authoritative)
@@ -87,3 +87,19 @@ Without `visibility` the existing visibility is kept (new keys: `private`). Limi
 | Server returns within the grace | `resumed: true`, `server_resumed`, `serverStatus` `ok`. |
 | Grace expires | The hub tries to rebind each lobby (`lobby:assigned` with `reason: server_rebound`). No taker: `required` closes the lobby with `gameCrashed` (`code: null`); `optional` continues serverless (`server` cleared, `server_lost`). |
 | Server sets `draining` | No new lobbies; existing lobbies keep running (`serverStatus` `draining`, reason `server_draining`). |
+
+## Using `GameServerClient`
+
+The Node.js SDK wraps this protocol (full reference: [sdk-nodejs.md](sdk-nodejs.md#gameserverclient-game-server-sdk)):
+
+```ts
+const gs = new GameServerClient({ serverUrl, serverKey, gameId: 'chess', serverId: 'eu-1', capacity: 20, region: 'eu',
+  onAssign: ({ lobby, reason, previousServerId, lostAt }) => true });   // reason: new_lobby | server_rebound
+gs.on('player:action', ({ lobbyId, userId, type, payload }) => gs.sendState(lobbyId, step(lobbyId, userId, type, payload)));
+await gs.connect();                                                      // hello { resumed, lobbies }
+await gs.incrementUserData(lobbyId, userId, 'wins', 1, { visibility: 'public' });
+await gs.kickPlayer(lobbyId, userId, 'cheating');
+await gs.drain();
+```
+
+It maps `lobby:assigned` acks to `onAssign`, `lobby:relay/state/kick/setState/setSettings/gameOver/close` to `sendToLobby`/`sendToPlayer`/`sendState`/`kickPlayer`/`setLobbyState`/`setLobbySettings`/`gameOver`/`closeLobby`, `server:status` to `updateStatus`/`drain`/`heartbeat`, and the `data:*` events to `setUserData`/`bulkSetUserData`/`getUserData`/`incrementUserData`/`setUserDataIf`/`transactUserData`. Reconnecting with the same `serverId` resumes automatically.

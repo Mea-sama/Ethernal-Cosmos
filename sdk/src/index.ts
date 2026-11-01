@@ -1,4 +1,5 @@
 export { EthernalClient, EthernalError } from './EthernalClient';
+export { GameServerClient } from './GameServerClient';
 /** Wire enums (const objects + types): `LobbyChangeReason.ServerRebound === 'server_rebound'`. */
 export {
   LobbyStatus,
@@ -26,6 +27,10 @@ export type {
   EthernalClientOptions,
   EthernalClientEvents,
   CreateLobbyOptions,
+  LeaderboardOptions,
+  LeaderboardPage,
+  UserDataWriteResult,
+  BlockedUserInfo, AccountExport, UserDataOp, UserDataOpResult, UserDataConflict,
   RelaySendOptions,
   AuthResult,
   LeaderboardEntry,
@@ -42,3 +47,16 @@ export type {
   FriendInfo, FriendRequestInfo, FriendRequestsResult, FriendPresence, SocialSettings, SocialSnapshot, HubNotification, NotificationBacklog,
   NotificationCounts, NotificationListResult, DirectMessage, DmConversation, DmHistoryResult, LobbyInvite, FriendLobbyInfo,
 } from './EthernalClient';
+export type {
+  GameServerClientOptions,
+  GameServerClientEvents,
+  GameServerHello,
+  GameServerWriteOptions,
+  GameServerWriteResult,
+  GameServerInfo,
+  GameServerPlayer,
+  GameServerDataEntry,
+  AssignInfo,
+  AssignDecision,
+  LobbyAssignment,
+} from './GameServerClient';
