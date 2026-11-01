@@ -298,9 +298,16 @@ public sealed class EthernalClient : IAsyncDisposable
     public async Task<Lobby> GetLobbyInfoAsync(CancellationToken ct = default) =>
         (await CallAsync<LobbyResult>("getLobbyInfo", null, ct)).Lobby;
 
-    /// <summary>(Host only) Kick a player from the lobby.</summary>
-    public Task KickPlayerAsync(string playerId, CancellationToken ct = default) =>
-        CallAsync<object?>("kickPlayer", new { playerId }, ct);
+    /// <summary>
+    /// (Host only) Kick a player from the lobby with an optional <paramref name="reason"/> (max. 200 chars, delivered in <see cref="PlayerKicked"/>).
+    /// The kick is soft and lives as long as the lobby: the player cannot rejoin (<c>KICKED_FROM_LOBBY</c>) until <see cref="UnkickPlayerAsync"/>.
+    /// </summary>
+    public Task KickPlayerAsync(string playerId, string? reason = null, CancellationToken ct = default) =>
+        CallAsync<object?>("kickPlayer", new { playerId, reason }, ct);
+
+    /// <summary>(Host only) Lift the kick of a player so they may join the lobby again.</summary>
+    public Task UnkickPlayerAsync(string playerId, CancellationToken ct = default) =>
+        CallAsync<object?>("unkickPlayer", new { playerId }, ct);
 
     /// <summary>(Host only) Transfer the host role to another player.</summary>
     public Task TransferHostAsync(string playerId, CancellationToken ct = default) =>
@@ -388,11 +395,17 @@ public sealed class EthernalClient : IAsyncDisposable
     public async Task<UserDataEntry[]> GetUserDataAsync(string gameId, CancellationToken ct = default) =>
         (await CallAsync<UserDataPayload>("getUserData", gameId, ct)).Entries;
 
-    /// <summary>Fetch visible KV-data for another player (public, or lobby-scoped if you share a lobby).</summary>
+    /// <summary>
+    /// Fetch the KV-data of another player that you may see: <c>friends</c> entries of a friend, <c>lobby</c> entries while you share a lobby of the game.
+    /// Anyone else (including non-existent users) gets <c>NOT_ALLOWED</c>. <c>public</c> (leaderboard) entries are never returned; see <see cref="GetLeaderboardAsync"/>.
+    /// </summary>
     public async Task<UserDataEntry[]> GetPlayerDataAsync(string playerId, string gameId, CancellationToken ct = default) =>
         (await CallAsync<PlayerDataPayload>("getPlayerData", new { playerId, gameId }, ct)).Entries;
 
-    /// <summary>Write one own key via socket. Server-scoped keys are read-only for clients (DATA_READ_ONLY).</summary>
+    /// <summary>
+    /// Write one own key via socket. Server-scoped keys are read-only for clients (<c>DATA_READ_ONLY</c>);
+    /// <see cref="DataVisibility.Public"/> (leaderboard keys) can only be written by a game server (<c>NOT_ALLOWED</c>).
+    /// </summary>
     public Task SetUserDataAsync(string gameId, string key, object? value, DataVisibility? visibility = null, CancellationToken ct = default) =>
         CallAsync<object?>("setUserData", new { gameId, key, value, visibility = visibility?.Wire() }, ct);
 
@@ -409,6 +422,27 @@ public sealed class EthernalClient : IAsyncDisposable
     /// <summary>Delete one own key via socket.</summary>
     public Task DeleteUserDataAsync(string gameId, string key, CancellationToken ct = default) =>
         CallAsync<object?>("deleteUserData", new { gameId, key }, ct);
+
+    /// <summary>
+    /// Atomically add <paramref name="by"/> to an own numeric key (a missing key counts as 0) and return the new value and version.
+    /// Only client-writable keys; never <see cref="DataVisibility.Public"/> (<c>NOT_ALLOWED</c>).
+    /// </summary>
+    public Task<UserDataWriteResult> IncrementUserDataAsync(string gameId, string key, double by, DataVisibility? visibility = null, CancellationToken ct = default) =>
+        CallAsync<UserDataWriteResult>("incrementUserData", new { gameId, key, by, visibility = visibility?.Wire() }, ct);
+
+    /// <summary>
+    /// Compare-and-set: write an own key only if its version equals <paramref name="expectedVersion"/> (0 = the key must not exist).
+    /// Otherwise throws <c>VERSION_CONFLICT</c> with the current state in <see cref="EthernalException.Conflict"/>.
+    /// </summary>
+    public Task<UserDataWriteResult> SetUserDataIfAsync(string gameId, string key, object? value, int expectedVersion, DataVisibility? visibility = null, CancellationToken ct = default) =>
+        CallAsync<UserDataWriteResult>("setUserDataIf", new { gameId, key, value, expectedVersion, visibility = visibility?.Wire() }, ct);
+
+    /// <summary>
+    /// Run 1–100 operations (<see cref="UserDataOp"/>: set, increment, setIf, delete) on own keys all-or-nothing and return one result per operation.
+    /// A failing operation (e.g. <c>VERSION_CONFLICT</c>) rolls everything back.
+    /// </summary>
+    public async Task<UserDataOpResult[]> TransactUserDataAsync(string gameId, IEnumerable<UserDataOp> ops, CancellationToken ct = default) =>
+        (await CallAsync<TransactAck>("transactUserData", new { gameId, ops = ops.ToArray() }, ct)).Results;
 
     // ─── Social ───────────────────────────────────────────────────────────────
 
@@ -448,11 +482,26 @@ public sealed class EthernalClient : IAsyncDisposable
     public async Task<SocialSettings> GetSocialSettingsAsync(CancellationToken ct = default) =>
         (await CallAsync<SettingsAck>("social:getSettings", null, ct)).Settings;
 
-    /// <summary>Update own settings; only non-null arguments are changed.</summary>
+    /// <summary>Update own settings; only non-null arguments are changed. <paramref name="leaderboardVisible"/> controls whether you appear in leaderboards.</summary>
     public async Task<SocialSettings> SetSocialSettingsAsync(OwnPresenceStatus? status = null, bool? showLastSeen = null,
-        bool? dmReadReceipts = null, NotificationType[]? mutedNotificationTypes = null, CancellationToken ct = default) =>
+        bool? dmReadReceipts = null, NotificationType[]? mutedNotificationTypes = null, CancellationToken ct = default, bool? leaderboardVisible = null) =>
         (await CallAsync<SettingsAck>("social:setSettings",
-            new { status = status?.Wire(), showLastSeen, dmReadReceipts, mutedNotificationTypes = mutedNotificationTypes?.Select(t => t.Wire()) }, ct)).Settings;
+            new { status = status?.Wire(), showLastSeen, dmReadReceipts, leaderboardVisible, mutedNotificationTypes = mutedNotificationTypes?.Select(t => t.Wire()) }, ct)).Settings;
+
+    /// <summary>
+    /// Block a user (idempotent): removes the friendship, drops pending requests and invites in both directions; their later friend requests are silently ignored.
+    /// The block list is private. Errors: <c>CANNOT_TARGET_SELF</c>, <c>USER_NOT_FOUND</c>, <c>BLOCK_LIMIT_REACHED</c>.
+    /// </summary>
+    public async Task<BlockedUserInfo> BlockUserAsync(string userId, CancellationToken ct = default) =>
+        (await CallAsync<BlockAck>("block:add", new { userId }, ct)).Blocked;
+
+    /// <summary>Remove a user from your block list (idempotent). The friendship is not restored.</summary>
+    public Task UnblockUserAsync(string userId, CancellationToken ct = default) =>
+        CallAsync<object?>("block:remove", new { userId }, ct);
+
+    /// <summary>List the users you blocked.</summary>
+    public async Task<BlockedUserInfo[]> GetBlockedUsersAsync(CancellationToken ct = default) =>
+        (await CallAsync<BlocksAck>("block:list", null, ct)).Blocks;
 
     /// <summary>Full social state. Pass the previous etag to get <c>NotModified</c> when nothing changed.</summary>
     public Task<SocialSnapshot> SyncSocialAsync(string? etag = null, CancellationToken ct = default) =>
@@ -575,16 +624,77 @@ public sealed class EthernalClient : IAsyncDisposable
         AuthedFetchAsync<UserDataEntry[]>(HttpMethod.Get,
             $"/userdata/{Uri.EscapeDataString(gameId)}", null, ct);
 
-    /// <summary>Fetch the public numeric leaderboard for a game key.</summary>
+    /// <summary>
+    /// Fetch the leaderboard of a <see cref="DataVisibility.Public"/> numeric key (written by a game server; games without server support have none: <c>NOT_FOUND</c>).
+    /// Rows carry their absolute <see cref="LeaderboardEntry.Rank"/>. <paramref name="order"/> is <c>"desc"</c> or <c>"asc"</c>, <paramref name="limit"/> 1–100,
+    /// <paramref name="offset"/> skips rows, <paramref name="friendsOnly"/> restricts the board to your friends and yourself (<c>scope=friends</c>).
+    /// </summary>
     public Task<LeaderboardEntry[]> GetLeaderboardAsync(
         string gameId, string key,
         string order = "desc", int limit = 10,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        int? offset = null, bool friendsOnly = false) =>
+        AuthedFetchAsync<LeaderboardEntry[]>(HttpMethod.Get,
+            LeaderboardPath(gameId, key, order, limit, offset, friendsOnly, null, null), null, ct);
+
+    /// <summary>
+    /// Like <see cref="GetLeaderboardAsync"/> but also returns your own row/rank (<see cref="LeaderboardResult.Me"/>, null when unranked; works while you are hidden)
+    /// and the total. With <paramref name="around"/> the page is a window of <paramref name="range"/> (1–50, default 5) rows above and below your rank instead of the top
+    /// (falls back to the top when unranked).
+    /// </summary>
+    public Task<LeaderboardResult> GetLeaderboardWithMeAsync(
+        string gameId, string key,
+        string order = "desc", int limit = 10,
+        CancellationToken ct = default,
+        int? offset = null, bool friendsOnly = false, bool around = false, int? range = null) =>
+        AuthedFetchAsync<LeaderboardResult>(HttpMethod.Get,
+            LeaderboardPath(gameId, key, order, limit, offset, friendsOnly, around, range), null, ct);
+
+    private static string LeaderboardPath(string gameId, string key, string order, int limit, int? offset, bool friendsOnly, bool? around, int? range)
     {
         var qs = $"?order={Uri.EscapeDataString(order)}&limit={limit}";
-        return AuthedFetchAsync<LeaderboardEntry[]>(HttpMethod.Get,
-            $"/leaderboard/{Uri.EscapeDataString(gameId)}/{Uri.EscapeDataString(key)}{qs}", null, ct);
+        if (offset is not null) qs += $"&offset={offset}";
+        if (friendsOnly) qs += "&scope=friends";
+        if (around is not null) qs += around.Value ? "&around=me" : "&me=true";
+        if (range is not null) qs += $"&range={range}";
+        return $"/leaderboard/{Uri.EscapeDataString(gameId)}/{Uri.EscapeDataString(key)}{qs}";
     }
+
+    // ─── Account ──────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Change the password. All previously issued tokens (access and refresh) of the account are invalidated and other sessions of the user are
+    /// disconnected (<see cref="SessionReplaced"/> with reason <c>PasswordChanged</c>); this client keeps its socket and stores the fresh tokens.
+    /// Throws <c>INVALID_CREDENTIALS</c> for a wrong current password.
+    /// </summary>
+    public async Task<AuthResult> ChangePasswordAsync(string currentPassword, string newPassword, CancellationToken ct = default)
+    {
+        var result = await AuthedFetchAsync<AuthResult>(HttpMethod.Post, "/auth/password",
+            new { currentPassword, newPassword, socketId = _socket?.Id }, ct);
+        StoreTokens(result.AccessToken, result.RefreshToken);
+        if (_socket is { Connected: true })
+        {
+            try { await CallAsync<object?>("auth:refresh", new { token = _accessToken }, ct); }
+            catch (EthernalException) { /* the socket keeps working until its token expires; the refresh loop handles it */ }
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Permanently delete the account and all its data (GDPR): user data, friendships, DMs, notifications, blocks and lobby membership are purged,
+    /// friends receive <c>friend:removed</c> and every session is disconnected. Requires the current <paramref name="password"/>
+    /// (<c>INVALID_CREDENTIALS</c> otherwise). Afterwards this client is logged out.
+    /// </summary>
+    public async Task DeleteAccountAsync(string password, CancellationToken ct = default)
+    {
+        await AuthedFetchAsync(HttpMethod.Delete, "/auth/account", new { password }, ct);
+        await LogoutLocalAsync();
+        _registeredGameId = null;
+    }
+
+    /// <summary>Download everything the hub stores about you (profile, data, friends, DMs, notifications, settings, blocks) as <see cref="AccountExport"/>.</summary>
+    public Task<AccountExport> ExportAccountDataAsync(CancellationToken ct = default) =>
+        AuthedFetchAsync<AccountExport>(HttpMethod.Get, "/account/export", null, ct);
 
     // ─── Internal: Socket ─────────────────────────────────────────────────────
 
@@ -703,8 +813,25 @@ public sealed class EthernalClient : IAsyncDisposable
         RegisterEvent<LobbyInviteCancelledData>(socket, "lobby:inviteCancelled",  d => LobbyInviteCancelled?.Invoke(d));
         RegisterEvent<LobbyInviteDeclinedData>(socket,  "lobby:inviteDeclined",   d => LobbyInviteDeclined?.Invoke(d));
 
+        string? connectError = null;
+        socket.OnError += (_, err) => connectError ??= err;
+
         _socket = socket;
-        await socket.ConnectAsync();
+        try
+        {
+            await socket.ConnectAsync();
+            if (!socket.Connected && connectError is not null)
+                throw new InvalidOperationException(connectError);
+        }
+        catch (Exception ex) when (ex is not EthernalException && !ct.IsCancellationRequested)
+        {
+            _socket = null;
+            socket.Dispose();
+            var raw = connectError ?? ex.Message;
+            if (raw == ErrorCode.RateLimited.Wire())
+                raw = await ConnectErrorProbe.RunAsync(_serverUrl, "/", AuthPayload(), TimeSpan.FromSeconds(3)) ?? raw;
+            throw EthernalException.FromConnectError(raw, ex);
+        }
     }
 
     private Dictionary<string, string> AuthPayload()
@@ -812,6 +939,9 @@ public sealed class EthernalClient : IAsyncDisposable
 
     private sealed class LobbyResult   { [JsonPropertyName("lobby")]   public Lobby   Lobby   { get; init; } = new(); }
     private sealed class LobbiesResult { [JsonPropertyName("lobbies")] public Lobby[] Lobbies { get; init; } = []; }
+    private sealed class TransactAck { [JsonPropertyName("results")] public UserDataOpResult[] Results { get; init; } = []; }
+    private sealed class BlockAck { [JsonPropertyName("blocked")] public BlockedUserInfo Blocked { get; init; } = new(); }
+    private sealed class BlocksAck { [JsonPropertyName("blocks")] public BlockedUserInfo[] Blocks { get; init; } = []; }
     private sealed class ResultAck { [JsonPropertyName("result")] public string Result { get; init; } = ""; }
     private sealed class FriendsAck { [JsonPropertyName("friends")] public FriendInfo[] Friends { get; init; } = []; }
     private sealed class PresenceAck { [JsonPropertyName("presence")] public FriendPresence[] Presence { get; init; } = []; }
@@ -856,7 +986,7 @@ public sealed class EthernalClient : IAsyncDisposable
                 var root = res.GetValue<JsonElement>(0);
                 if (root.TryGetProperty("ok", out var ok) && ok.GetBoolean()) { tcs.TrySetResult(root); return; }
                 var err = root.GetProperty("error").Deserialize<HubErrorPayload>(JsonOpts) ?? new HubErrorPayload();
-                tcs.TrySetException(new EthernalException(err.Code, err.Message, err.RetryAfterMs));
+                tcs.TrySetException(err.ToException());
             }
             catch (Exception ex) { tcs.TrySetException(ex); }
         }
@@ -945,7 +1075,9 @@ public sealed class EthernalClient : IAsyncDisposable
         ErrorResponse? err = null;
         try { err = JsonSerializer.Deserialize<ErrorResponse>(text, JsonOpts); } catch (JsonException) { /* non-JSON body */ }
         var status = (int)res.StatusCode;
-        return new EthernalException(err?.Code ?? $"HTTP_{status}", err?.Error ?? $"HTTP {status}: {text}");
+        var retryAfterMs = err?.RetryAfterMs;
+        if (retryAfterMs is null && res.Headers.RetryAfter?.Delta is { } delta) retryAfterMs = (int)delta.TotalMilliseconds;
+        return new EthernalException(err?.Code ?? $"HTTP_{status}", err?.Error ?? $"HTTP {status}: {text}", retryAfterMs, err?.Data);
     }
 
     private async Task<T> PostAsync<T>(string path, object body, CancellationToken ct)
@@ -967,6 +1099,9 @@ public sealed class EthernalClient : IAsyncDisposable
 
         if (res.StatusCode == System.Net.HttpStatusCode.Unauthorized && _refreshToken is not null)
         {
+            // A wrong password (change password / delete account) is no expired token: do not rotate the refresh token
+            var failure = await ToExceptionAsync(res, ct);
+            if (failure.Error == ErrorCode.InvalidCredentials) { res.Dispose(); throw failure; }
             res.Dispose();
             await DoRefreshAsync(ct);
             res = await SendAuthedAsync(method, path, body, ct);
@@ -1009,5 +1144,7 @@ public sealed class EthernalClient : IAsyncDisposable
     {
         [JsonPropertyName("error")] public string? Error { get; init; }
         [JsonPropertyName("code")]  public string? Code  { get; init; }
+        [JsonPropertyName("retryAfterMs")] public int? RetryAfterMs { get; init; }
+        [JsonPropertyName("data")]  public JsonElement? Data { get; init; }
     }
 }

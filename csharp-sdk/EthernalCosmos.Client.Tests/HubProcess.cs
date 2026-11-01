@@ -11,9 +11,9 @@ public sealed class HubProcess : IAsyncDisposable
 {
     private static readonly string[] LimitedEvents =
     [
-        "createLobby", "joinLobby", "joinLobbyByCode", "kickPlayer", "transferHost", "lockLobby", "unlockLobby", "requestJoinLobby",
+        "createLobby", "joinLobby", "joinLobbyByCode", "kickPlayer", "unkickPlayer", "transferHost", "lockLobby", "unlockLobby", "requestJoinLobby",
         "requestJoinLobbyByCode", "cancelJoinRequest", "respondJoinRequest", "listLobbies", "getLobbyInfo", "presenceList", "getUserData",
-        "getPlayerData", "gameAction", "registerGame", "sessionState", "setUserData", "bulkSetUserData", "deleteUserData", "leaveLobby",
+        "getPlayerData", "gameAction", "registerGame", "sessionState", "setUserData", "bulkSetUserData", "deleteUserData", "incrementUserData", "setUserDataIf", "transactUserData", "blockAction", "accountPassword", "accountDelete", "accountExport", "leaveLobby",
         "friendRequestByName", "friendRequest", "friendAction", "socialRead", "socialSettings", "notificationWrite", "dmSend", "dmTyping",
         "lobbyInvite", "lobbyInviteAction", "authRefresh", "setLobbyState",
     ];
@@ -79,6 +79,12 @@ public sealed class HubProcess : IAsyncDisposable
         {
             ["authRateLimits"] = new { login = authBig, register = authBig, refresh = authBig },
             ["socketLimits"] = LimitedEvents.ToDictionary(k => k, _ => (object)big),
+            ["restRateLimits"] = new[] { "userdata", "players", "leaderboard", "social" }.ToDictionary(k => k, _ => (object)new { windowMs = 60000, max = 1000000 }),
+            ["caps"] = new
+            {
+                maxSessionsPerUser = 1000, maxConnectionsPerIp = 100000, maxLobbiesPerGame = 100000, maxLobbiesTotal = 100000,
+                maxPendingJoinRequestsPerLobby = 1000, maxGameServersPerGame = 1000, maxGameServerConnectionsPerIp = 1000, capRetryAfterMs = 5000,
+            },
         };
         foreach (var (k, v) in limitOverrides ?? []) limits[k] = v;
         await File.WriteAllTextAsync(limitsPath, JsonSerializer.Serialize(limits));

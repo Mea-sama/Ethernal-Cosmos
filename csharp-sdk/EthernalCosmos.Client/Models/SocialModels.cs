@@ -82,6 +82,8 @@ public sealed class SocialSettings
     [JsonPropertyName("showLastSeen")]           public bool     ShowLastSeen           { get; init; } = true;
     /// <summary>Whether read receipts are sent for DMs.</summary>
     [JsonPropertyName("dmReadReceipts")]         public bool     DmReadReceipts         { get; init; } = true;
+    /// <summary>Whether you appear in leaderboards (default true); your own rank (<c>Me</c>) stays visible to you.</summary>
+    [JsonPropertyName("leaderboardVisible")]     public bool     LeaderboardVisible     { get; init; } = true;
     /// <summary>Notification types that are not stored or delivered.</summary>
     [JsonPropertyName("mutedNotificationTypes")] public NotificationType[] MutedNotificationTypes { get; init; } = [];
 }
@@ -352,4 +354,62 @@ public sealed class SocialSnapshot
     [JsonPropertyName("unreadNotifications")] public int                    UnreadNotifications { get; init; }
     /// <summary>Unread counts per conversation.</summary>
     [JsonPropertyName("conversations")]       public DmConversationUnread[] Conversations       { get; init; } = [];
+}
+
+/// <summary>An entry of the caller's private block list (<see cref="EthernalClient.GetBlockedUsersAsync"/>); never visible to the blocked user.</summary>
+public sealed class BlockedUserInfo
+{
+    /// <summary>Id of the blocked user.</summary>
+    [JsonPropertyName("userId")]    public string UserId    { get; init; } = "";
+    /// <summary>Display name of the blocked user.</summary>
+    [JsonPropertyName("username")]  public string Username  { get; init; } = "";
+    /// <summary>When the user was blocked (Unix ms).</summary>
+    [JsonPropertyName("blockedAt")] public long   BlockedAt { get; init; }
+}
+
+/// <summary>Profile part of an <see cref="AccountExport"/>.</summary>
+public sealed class AccountProfile
+{
+    /// <summary>Id of the user.</summary>
+    [JsonPropertyName("id")]        public string Id        { get; init; } = "";
+    /// <summary>Display name of the user.</summary>
+    [JsonPropertyName("username")]  public string Username  { get; init; } = "";
+    /// <summary>Account creation time (Unix ms).</summary>
+    [JsonPropertyName("createdAt")] public long   CreatedAt { get; init; }
+}
+
+/// <summary>One user-data row of an <see cref="AccountExport"/>.</summary>
+public sealed class ExportedUserData
+{
+    /// <summary>Id of the game.</summary>
+    [JsonPropertyName("gameId")]     public string  GameId     { get; init; } = "";
+    /// <summary>Data key.</summary>
+    [JsonPropertyName("key")]        public string  Key        { get; init; } = "";
+    /// <summary>Stored value (JSON).</summary>
+    [JsonPropertyName("value")]      public object? Value      { get; init; }
+    /// <summary>Raw visibility wire value.</summary>
+    [JsonPropertyName("visibility")] public string  Visibility { get; init; } = "";
+    /// <summary>Last update time (Unix ms).</summary>
+    [JsonPropertyName("updatedAt")]  public long    UpdatedAt  { get; init; }
+}
+
+/// <summary>Everything the hub stores about the caller (<see cref="EthernalClient.ExportAccountDataAsync"/>); never other users' private data or password hashes.</summary>
+public sealed class AccountExport
+{
+    /// <summary>Time of the export (Unix ms).</summary>
+    [JsonPropertyName("exportedAt")]    public long                 ExportedAt    { get; init; }
+    /// <summary>The account profile.</summary>
+    [JsonPropertyName("profile")]       public AccountProfile       Profile       { get; init; } = new();
+    /// <summary>All own user-data rows over all games.</summary>
+    [JsonPropertyName("userData")]      public ExportedUserData[]   UserData      { get; init; } = [];
+    /// <summary>All friends.</summary>
+    [JsonPropertyName("friends")]       public FriendInfo[]         Friends       { get; init; } = [];
+    /// <summary>Own sent and received direct messages within the retention window.</summary>
+    [JsonPropertyName("messages")]      public DirectMessage[]      Messages      { get; init; } = [];
+    /// <summary>Stored notifications.</summary>
+    [JsonPropertyName("notifications")] public HubNotification[]    Notifications { get; init; } = [];
+    /// <summary>Own social settings.</summary>
+    [JsonPropertyName("settings")]      public SocialSettings       Settings      { get; init; } = new();
+    /// <summary>Own block list.</summary>
+    [JsonPropertyName("blocks")]        public BlockedUserInfo[]    Blocks        { get; init; } = [];
 }

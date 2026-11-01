@@ -19,7 +19,7 @@ process.on('message', (msg) => {
     case 'save':
       process.send({
         type: 'SAVE_META',
-        payload: { userId, gameId: 'echo', entries: [{ key: 'rank.points', value: data, visibility: 'public' }] },
+        payload: { userId, gameId: 'echo', entries: [{ key: 'rank.points', value: data, visibility: 'friends' }] },
       });
       break;
   }
