@@ -264,14 +264,23 @@ Returns:
 
 ### `GET /leaderboard/:gameId/:key`
 
-Return the leaderboard for a `public` numeric key, sorted by `order`. Rows carry no `rank` field: the position in the array is the rank (rank-of-me/around-me/ties are tracked in #39).
+Return the leaderboard for a `public` (server-written) numeric key. Only games with `serverSupport` ≠ `none` have leaderboards (otherwise `404`). Non-numeric values are excluded. Ties are ordered by earlier `updatedAt`, then `userId`, so ranks are deterministic. Players with the social setting `leaderboardVisible: false` are omitted. Invalid parameters return `400 INVALID_INPUT`.
+
+By default the response is an array of rows with a `rank` (1-based, absolute). With `me=true` or `around=me` it is `{ entries, me, total }` instead.
+
+> Periodic resets (daily/weekly boards) are **not implemented**; use a per-period key (e.g. `score.2025-w01`) written by the game server.
 
 **Query parameters**
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `order` | `"asc" \| "desc"` | `"desc"` | Sort direction (desc = highest first) |
-| `limit` | `number` | `10` | Max rows returned (max: 100) |
+| `limit` | `number` | `10` | Max rows returned (1–100) |
+| `offset` | `number` | `0` | Rows to skip (≥ 0) |
+| `me` | `"true"` | — | Also return own row/rank as `me` (`null` if unranked; works while hidden) |
+| `around` | `"me"` | — | Return a window around the caller's rank instead of the top (falls back to the top if unranked) |
+| `range` | `number` | `5` | Entries above/below for `around=me` (1–50) |
+| `scope` | `"all" \| "friends"` | `"all"` | `friends`: only your friends and yourself (ranks among them) |
 
 **Example**
 
@@ -283,10 +292,12 @@ GET /leaderboard/chess/wins?order=desc&limit=5
 
 ```json
 [
-  { "userId": "uuid1", "username": "alice", "value": 42 },
-  { "userId": "uuid2", "username": "bob",   "value": 38 }
+  { "rank": 1, "userId": "uuid1", "username": "alice", "value": 42, "updatedAt": 1700000000000 },
+  { "rank": 2, "userId": "uuid2", "username": "bob",   "value": 38, "updatedAt": 1700000001000 }
 ]
 ```
+
+With `me=true`/`around=me`: `{ "entries": [...], "me": { "rank": 7, ... } | null, "total": 120 }`.
 
 ---
 

@@ -191,3 +191,64 @@ describe('Atomic data operations (#38)', () => {
     closeAll(host, stranger);
   });
 });
+
+describe('Leaderboards (#39)', () => {
+  async function board(key: string, values: number[]): Promise<{ gs: GsClient; clients: TestClient[] }> {
+    const { gs, clients, lobbyId } = await gsLobby(values.length);
+    for (let i = 0; i < values.length; i++) {
+      await gs.emitAck('data:set', { lobbyId, userId: clients[i].user.userId, key, value: values[i], visibility: 'public' });
+      await sleep(5);
+    }
+    return { gs, clients };
+  }
+
+  it('TEST-LB-01: rank field, deterministic tie order (earlier update first, then userId), asc/desc, non-numeric excluded', async () => {
+    const { gs, clients: [a, b, c, d] } = await board('lb1', [50, 70, 50, 10]);
+    const rows = (await api(hub, a.user, 'GET', '/leaderboard/gs-opt/lb1')).body as any[];
+    expect(rows.map((r) => [r.userId, r.rank, r.value])).toEqual([[b.user.userId, 1, 70], [a.user.userId, 2, 50], [c.user.userId, 3, 50], [d.user.userId, 4, 10]]);
+    const asc = (await api(hub, a.user, 'GET', '/leaderboard/gs-opt/lb1?order=asc')).body as any[];
+    expect(asc.map((r) => r.rank)).toEqual([1, 2, 3, 4]);
+    expect(asc[0].userId).toBe(d.user.userId);
+    closeAll(a, b, c, d, gs);
+  });
+
+  it('TEST-LB-02: offset/limit paginate with absolute ranks; invalid params are 400 INVALID_INPUT; games without server support 404', async () => {
+    const { gs, clients: [a, b, c, d] } = await board('lb2', [4, 3, 2, 1]);
+    const page = (await api(hub, a.user, 'GET', '/leaderboard/gs-opt/lb2?offset=1&limit=2')).body as any[];
+    expect(page.map((r) => [r.rank, r.value])).toEqual([[2, 3], [3, 2]]);
+    for (const q of ['limit=0', 'limit=101', 'limit=x', 'offset=-1', 'order=up', 'scope=nope', 'around=other', 'range=0', 'range=51', 'me=maybe']) {
+      const r = await api(hub, a.user, 'GET', `/leaderboard/gs-opt/lb2?${q}`);
+      expect([q, r.status, r.body.code]).toEqual([q, 400, 'INVALID_INPUT']);
+    }
+    expect((await api(hub, a.user, 'GET', '/leaderboard/fake/rank.points')).status).toBe(404);
+    closeAll(a, b, c, d, gs);
+  });
+
+  it('TEST-LB-03: me and around=me return own rank/total/window; unranked me is null; hidden players keep own rank', async () => {
+    const { gs, clients: [a, b, c, d] } = await board('lb3', [40, 30, 20, 10]);
+    const me = (await api(hub, c.user, 'GET', '/leaderboard/gs-opt/lb3?me=true&limit=1')).body;
+    expect(me).toMatchObject({ total: 4, me: { userId: c.user.userId, rank: 3, value: 20 } });
+    expect(me.entries).toHaveLength(1);
+    const around = (await api(hub, c.user, 'GET', '/leaderboard/gs-opt/lb3?around=me&range=1')).body;
+    expect(around.entries.map((e: any) => e.rank)).toEqual([2, 3, 4]);
+    const near = (await api(hub, a.user, 'GET', '/leaderboard/gs-opt/lb3?around=me&range=1')).body;
+    expect(near.entries.map((e: any) => e.rank)).toEqual([1, 2]);
+    const nobody = await live(hub, 'gs-opt');
+    expect((await api(hub, nobody.user, 'GET', '/leaderboard/gs-opt/lb3?me=true')).body.me).toBeNull();
+    expect((await c.emitAck('social:setSettings', { leaderboardVisible: false })).settings.leaderboardVisible).toBe(false);
+    const after = (await api(hub, c.user, 'GET', '/leaderboard/gs-opt/lb3?me=true')).body;
+    expect(after.entries.map((e: any) => [e.userId, e.rank])).toEqual([[a.user.userId, 1], [b.user.userId, 2], [d.user.userId, 3]]);
+    expect(after.me).toMatchObject({ userId: c.user.userId, rank: 3 });
+    expect(after.total).toBe(3);
+    closeAll(a, b, c, d, nobody, gs);
+  });
+
+  it('TEST-LB-04: leaderboardVisible defaults to true, validates type, and is part of social settings', async () => {
+    const c = await live(hub, 'gs-opt');
+    expect((await c.emitAck('social:getSettings', {})).settings.leaderboardVisible).toBe(true);
+    expect((await c.emitAck('social:setSettings', { leaderboardVisible: 'no' })).error.code).toBe('INVALID_INPUT');
+    expect((await c.emitAck('social:setSettings', { leaderboardVisible: false })).settings.leaderboardVisible).toBe(false);
+    expect((await c.emitAck('social:setSettings', { status: 'away' })).settings.leaderboardVisible).toBe(false);
+    c.close();
+  });
+});

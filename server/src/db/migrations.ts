@@ -149,6 +149,17 @@ export const MIGRATIONS: Migration[] = [
       `UPDATE user_data SET visibility = 'private' WHERE visibility = 'public' AND write_scope = 'client'`,
     ],
   },
+  {
+    version: 7,
+    name: 'leaderboards',
+    statements: [
+      // Numerischer Spiegel des JSON-Werts (NULL bei Nicht-Zahlen) für Bestenlisten
+      `ALTER TABLE user_data ADD COLUMN num_value REAL`,
+      `UPDATE user_data SET num_value = CAST(value AS REAL) WHERE json_type(value) IN ('integer', 'real')`,
+      `CREATE INDEX IF NOT EXISTS idx_user_data_lb ON user_data(game_id, key, num_value) WHERE visibility = 'public' AND num_value IS NOT NULL`,
+      `ALTER TABLE social_settings ADD COLUMN leaderboard_visible INTEGER NOT NULL DEFAULT 1`,
+    ],
+  },
 ];
 
 export async function runMigrations(db: Client, migrations: Migration[] = MIGRATIONS): Promise<number[]> {

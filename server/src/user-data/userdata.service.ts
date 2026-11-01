@@ -2,6 +2,7 @@ import { db } from '../db/database';
 import type { DataVisibility, DataWriteScope, UserDataEntry } from '@ethernal/shared';
 import { HubError } from '../errors';
 import { getGame } from '../games/game.registry';
+import { friendIds } from '../social/friends.service';
 
 // ─── Limits ───────────────────────────────────────────────────────────────────
 
@@ -187,14 +188,15 @@ async function runOps(userId: string, gameId: string, ops: DataOp[], actor: Data
 
       await tx.execute({
         sql: `
-          INSERT INTO user_data (user_id, game_id, key, value, visibility, updated_at, write_scope, version, written_by)
-          VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)
+          INSERT INTO user_data (user_id, game_id, key, value, visibility, updated_at, write_scope, version, written_by, num_value)
+          VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
           ON CONFLICT(user_id, game_id, key)
           DO UPDATE SET value = excluded.value, visibility = excluded.visibility,
                         updated_at = excluded.updated_at, write_scope = excluded.write_scope,
-                        version = user_data.version + 1, written_by = excluded.written_by
+                        version = user_data.version + 1, written_by = excluded.written_by,
+                        num_value = excluded.num_value
         `,
-        args: [userId, gameId, o.key, json, visibility, now, scope, writtenBy],
+        args: [userId, gameId, o.key, json, visibility, now, scope, writtenBy, typeof value === 'number' && Number.isFinite(value) ? value : null],
       });
       results.push({ key: o.key, value, version });
     }
@@ -304,40 +306,92 @@ export async function getVisibleData(
 // ─── Leaderboard ─────────────────────────────────────────────────────────────
 
 export interface LeaderboardEntry {
+  rank: number;
   userId: string;
   username: string;
   value: unknown;
   updatedAt: number;
 }
 
-/**
- * Top-N Spieler nach einem numerischen Key (nur public-Daten).
- * Sortierung via CAST(value AS REAL) – nicht-numerische Werte landen am Ende.
- */
-export async function getLeaderboard(
-  gameId: string,
-  key: string,
-  order: 'asc' | 'desc' = 'desc',
-  limit: number = 10
-): Promise<LeaderboardEntry[]> {
-  const orderSql = order === 'desc' ? 'DESC' : 'ASC';
-  const result = await db.execute({
-    sql: `
-      SELECT d.user_id, u.username, d.value, d.updated_at
-      FROM user_data d
-      JOIN users u ON u.id = d.user_id
-      WHERE d.game_id = ? AND d.key = ? AND d.visibility = 'public'
-      ORDER BY CAST(d.value AS REAL) ${orderSql}
-      LIMIT ?
-    `,
-    args: [gameId, key, limit],
-  });
-  return result.rows.map((row) => ({
-    userId: row.user_id as string,
-    username: row.username as string,
-    value: JSON.parse(row.value as string),
-    updatedAt: row.updated_at as number,
-  }));
+export interface LeaderboardQuery {
+  order?: 'asc' | 'desc';
+  limit?: number;
+  offset?: number;
+  /** Eigener Rang (auch wenn man selbst ausgeblendet ist) */
+  me?: boolean;
+  /** Fenster um den eigenen Rang statt Top-N */
+  around?: boolean;
+  range?: number;
+  /** `friends`: nur Freunde + man selbst */
+  scope?: 'all' | 'friends';
+  userId?: string;
+}
+
+export interface LeaderboardResult {
+  entries: LeaderboardEntry[];
+  me?: LeaderboardEntry | null;
+  total: number;
+}
+
+/** Ganze Zahlen sind exakt; Ordnung: Wert, früherer Erfolg (updated_at), user_id */
+const ORDER = (dir: string): string => `d.num_value ${dir}, d.updated_at ASC, d.user_id ASC`;
+
+/** Spiele ohne Server-Support haben keine Bestenlisten (NOT_FOUND). */
+export async function getLeaderboard(gameId: string, key: string, q: LeaderboardQuery = {}): Promise<LeaderboardResult> {
+  if (!gameHasLeaderboards(gameId)) throw new HubError('NOT_FOUND');
+  const dir = (q.order ?? 'desc') === 'desc' ? 'DESC' : 'ASC';
+  const limit = q.limit ?? 10;
+  let scopeSql = '';
+  const scopeArgs: string[] = [];
+  if (q.scope === 'friends') {
+    const ids = [...(await friendIds(q.userId!)), q.userId!];
+    scopeSql = ` AND d.user_id IN (${ids.map(() => '?').join(',')})`;
+    scopeArgs.push(...ids);
+  }
+  const base = `FROM user_data d JOIN users u ON u.id = d.user_id
+    LEFT JOIN social_settings s ON s.user_id = d.user_id
+    WHERE d.game_id = ? AND d.key = ? AND d.visibility = 'public' AND d.num_value IS NOT NULL${scopeSql}`;
+  const baseArgs = [gameId, key, ...scopeArgs];
+  const visible = `${base} AND COALESCE(s.leaderboard_visible, 1) = 1`;
+  const cols = 'd.user_id, u.username, d.value, d.updated_at, d.num_value';
+  const map = (rows: ArrayLike<{ [k: string]: unknown }>, from: number): LeaderboardEntry[] =>
+    Array.from(rows).map((row, i) => ({
+      rank: from + i + 1,
+      userId: row.user_id as string,
+      username: row.username as string,
+      value: JSON.parse(row.value as string),
+      updatedAt: row.updated_at as number,
+    }));
+
+  const total = Number((await db.execute({ sql: `SELECT COUNT(*) AS n ${visible}`, args: baseArgs })).rows[0].n);
+  let me: LeaderboardEntry | null | undefined;
+  let myRank = 0;
+  if ((q.me || q.around) && q.userId) {
+    const mine = (await db.execute({ sql: `SELECT ${cols} ${base} AND d.user_id = ?`, args: [...baseArgs, q.userId] })).rows[0];
+    if (mine) {
+      const cmp = dir === 'DESC' ? '>' : '<';
+      const ahead = Number((await db.execute({
+        sql: `SELECT COUNT(*) AS n ${visible} AND (d.num_value ${cmp} ? OR (d.num_value = ? AND (d.updated_at < ? OR (d.updated_at = ? AND d.user_id < ?))))`,
+        args: [...baseArgs, mine.num_value as number, mine.num_value as number, mine.updated_at as number, mine.updated_at as number, q.userId],
+      })).rows[0].n);
+      myRank = ahead + 1;
+      me = map([mine], ahead)[0];
+    } else {
+      me = null;
+    }
+  }
+
+  let offset = q.offset ?? 0;
+  let size = limit;
+  if (q.around) {
+    const range = q.range ?? 5;
+    const start = Math.max(0, (myRank || 1) - 1 - range);
+    offset = start;
+    size = (myRank ? myRank - 1 - start : 0) + range + 1;
+    if (!myRank) size = limit;
+  }
+  const rows = (await db.execute({ sql: `SELECT ${cols} ${visible} ORDER BY ${ORDER(dir)} LIMIT ? OFFSET ?`, args: [...baseArgs, size, offset] })).rows;
+  return { entries: map(rows as never, offset), ...(me !== undefined ? { me } : {}), total };
 }
 
 // ─── IPC-Kompatibilität ───────────────────────────────────────────────────────
