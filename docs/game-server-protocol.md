@@ -3,7 +3,7 @@
 A **game server** is a service that runs the authoritative game logic for lobbies of one game. It is not a lobby participant:
 one server serves N lobbies, a lobby has 0..1 server. Whether a game uses servers is the registry attribute
 [`serverSupport`](enums.md#serversupport) (`none` | `optional` | `required`). Enum values used below are listed in [enums.md](enums.md).
-Game-server SDKs are planned (issue #58); until then connect with plain `socket.io-client`.
+Game-server SDKs: Node.js is planned (issue #58); C# ships `GameServerClient` (see the last section). Otherwise connect with plain `socket.io-client`.
 
 ## Connecting
 
@@ -87,3 +87,20 @@ Without `visibility` the existing visibility is kept (new keys: `private`). Limi
 | Server returns within the grace | `resumed: true`, `server_resumed`, `serverStatus` `ok`. |
 | Grace expires | The hub tries to rebind each lobby (`lobby:assigned` with `reason: server_rebound`). No taker: `required` closes the lobby with `gameCrashed` (`code: null`); `optional` continues serverless (`server` cleared, `server_lost`). |
 | Server sets `draining` | No new lobbies; existing lobbies keep running (`serverStatus` `draining`, reason `server_draining`). |
+
+## Using GameServerClient (C#)
+
+The C# SDK wraps this protocol in `GameServerClient` (details: [sdk-csharp.md](sdk-csharp.md#gameserverclient)).
+
+```csharp
+await using var server = new GameServerClient(new GameServerClientOptions
+{
+    ServerUrl = "http://localhost:12346", ServerKey = "esk_...", GameId = "chess", ServerId = "chess-eu-1", Capacity = 20,
+});
+server.LobbyAssigned += a => Console.WriteLine($"{a.Lobby.Id}: {a.Reason}"); // NewLobby or ServerRebound (PreviousServerId, LostAt)
+await server.ConnectAsync();                                                 // resumes within the grace period
+
+await server.SetDataAsync(lobbyId, userId, "rank.points", 1200);           // members only, else NOT_ALLOWED
+await server.RelayToLobbyAsync(lobbyId, "round", new { n = 1 });
+await server.DrainAsync();                                                   // no new lobbies; existing ones keep running
+```
