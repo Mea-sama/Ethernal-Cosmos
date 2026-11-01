@@ -1,11 +1,12 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { connectGameServer, connectRegistered, issueServerKey, registerUser, sleep, startHub, type GsClient, type TestHub } from './helpers/hub';
 
 let hub: TestHub;
 let n = 0;
 const sid = (p: string): string => `${p}-${Date.now().toString(36)}-${n++}`;
-beforeAll(async () => { hub = await startHub(); });
-afterAll(async () => { await hub.stop(); });
+// One hub per test: lobbies of servers closed by an earlier test get rebound onto the next test's servers and fill their capacity
+beforeEach(async () => { hub = await startHub(); });
+afterEach(async () => { await hub.stop(); });
 
 async function server(gameId: string, opts: { region?: string; capacity?: number; serverId?: string } = {}): Promise<GsClient> {
   const { key } = await issueServerKey(hub, gameId);

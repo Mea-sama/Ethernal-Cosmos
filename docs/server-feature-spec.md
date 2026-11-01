@@ -406,6 +406,28 @@ Hub-side only: SDK parity is covered by the SDK test suites.
 | TEST-GS-17 | after grace the lobby is rebound to another server: lobby:assigned reason=server_rebound (+previousServerId, lostAt), members get server_rebound |
 | TEST-GS-18 | optional lobby without a replacement server continues serverless (server cleared, reason server_lost) |
 | TEST-GS-19 | draining marks lobbies (server_draining), refuses new lobbies, and can return to ok |
+| TEST-GSE2E-01 | none game is serverless; serverPreference is ignored and no server is ever assigned |
+| TEST-GSE2E-02 | required game: create with and without serverPreference needs a server; the lobby appears only once bound |
+| TEST-GSE2E-03 | optional game: serverless first, a server joining later binds only new lobbies; the old one stays serverless |
+| TEST-GSE2E-04 | serverless optional lobby ignores game-server actions (NOT_LOBBY_SERVER / NOT_ALLOWED) |
+| TEST-GSE2E-05 | region preference picks the matching server; unavailable region falls back to any server |
+| TEST-GSE2E-06 | two servers of one game share load within capacity; a full fleet answers NO_GAME_SERVER_AVAILABLE |
+| TEST-GSE2E-07 | one server hosts several lobbies; actions and commands stay isolated per lobby |
+| TEST-GSE2E-08 | loss then resume inside the grace keeps lobby and status (server_lost → server_resumed), no gameCrashed |
+| TEST-GSE2E-09 | loss beyond the grace rebinds to another server (previousServerId/lostAt, status kept); members get server_rebound, not gameCrashed |
+| TEST-GSE2E-10 | a rejecting replacement does not take over; the required lobby closes with gameCrashed (code null) |
+| TEST-GSE2E-11 | required lobby with no replacement closes with gameCrashed after the grace |
+| TEST-GSE2E-12 | optional lobby: no replacement → serverless continuation; with a replacement → rebound |
+| TEST-GSE2E-13 | draining server keeps its lobbies running but gets no new ones; new lobbies go to another server |
+| TEST-GSE2E-14 | a draining server can finish its lobby; one that drops is rebound to a non-draining server |
+| TEST-GSE2E-15 | wrong, malformed, foreign-game and missing keys never connect and do not disturb a healthy server |
+| TEST-GSE2E-16 | server A cannot act on or write data for server B's lobby (NOT_LOBBY_SERVER / NOT_ALLOWED) |
+| TEST-GSE2E-17 | data writes for non-members and members of other lobbies fail; the owner writes for members only |
+| TEST-GSE2E-18 | clients cannot write public/server-scope data in server games; the server-written value survives |
+| TEST-GSE2E-19 | server writes stay authorised inside the 60 s window after leaving, kick and lobby close |
+| TEST-GSE2E-20 | server kick with reason: playerKicked{reason}, player:left kicked, KICKED_FROM_LOBBY on every rejoin path |
+| TEST-GSE2E-21 | a kick survives a server rebind: kicked player cannot rejoin, others can |
+| TEST-GSE2E-22 | a blocked user still joins a server-bound lobby and the server is told about every member |
 | TEST-PROC-01 | subprocess games get a process; READY → gameStarting; gameAction is forwarded as PLAYER_ACTION |
 | TEST-PROC-02 | subprocess crash → gameCrashed with exit code |
 | TEST-PROC-03 | MAX_INSTANCES is enforced (INSTANCE_LIMIT) and a freed slot is reusable once the lobby dissolves |
