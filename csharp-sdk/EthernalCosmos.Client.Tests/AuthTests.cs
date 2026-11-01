@@ -154,4 +154,29 @@ public class AuthTests(HubFixture hub)
         await h.DisposeAsync();
         Assert.False(string.IsNullOrEmpty(await disconnected));
     }
+
+    [Fact]
+    public async Task Disconnected_is_raised_exactly_once_after_a_local_DisconnectAsync_and_login_resumes()
+    {
+        var h = await HubProcess.StartAsync();
+        await using var _h = h;
+        var name = HubFixture.UniqueName("ld");
+        for (var i = 0; i < 5; i++)
+        {
+            await using var client = new EthernalClient(new EthernalClientOptions { ServerUrl = h.Url });
+            if (i == 0) await client.RegisterAsync(name, "password123"); else await client.LoginAsync(name, "password123");
+            var reasons = new List<string>();
+            client.Disconnected += reasons.Add;
+            var disconnected = Wait.For<string>(x => client.Disconnected += x, x => client.Disconnected -= x, timeout: TimeSpan.FromSeconds(5));
+            await client.DisconnectAsync();
+            Assert.False(string.IsNullOrEmpty(await disconnected));
+            await Task.Delay(150);
+            Assert.Single(reasons);
+            await Assert.ThrowsAsync<InvalidOperationException>(() => client.GetSessionStateAsync());
+        }
+
+        await using var again = new EthernalClient(new EthernalClientOptions { ServerUrl = h.Url });
+        await again.LoginAsync(name, "password123");
+        Assert.False(string.IsNullOrEmpty((await again.GetSessionStateAsync()).State.UserId));
+    }
 }

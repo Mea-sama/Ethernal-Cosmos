@@ -34,6 +34,7 @@ new EthernalClient(options: EthernalClientOptions)
 |---|---|---|---|
 | `serverUrl` | `string` | — | Hub base URL, e.g. `http://localhost:12346` (a trailing `/` is removed). |
 | `requestTimeout` | `number` | `5000` | Milliseconds to wait for a socket answer before rejecting with `TIMEOUT`. |
+| `clientType` | `'game' \| 'panel'` | `'game'` | `'game'` is the primary session (a new `'game'` connection of the same user replaces the old one → `session:replaced`). `'panel'` is an extra companion session (e.g. a social overlay) that coexists with it and receives the same user events (DMs, `dm:readState`, join-request confirmations). |
 
 ---
 
@@ -146,9 +147,14 @@ Snapshot of the current lobby. Throws `NOT_IN_LOBBY`.
 requestJoinLobby(lobbyId: string): Promise<Lobby>
 requestJoinLobbyByCode(code: string): Promise<Lobby>
 cancelJoinRequest(lobbyId: string): Promise<void>
+getJoinRequests(): Promise<JoinRequestsResult>
 respondJoinRequest(requesterId: string, accept: boolean): Promise<void>
 ```
-`requestJoinLobby*` joins immediately if the lobby is open; for a locked lobby the promise stays pending until the host answers (≈15 s timeout) and resolves with the lobby (you are already a member). A rejection by the host, a timeout or a changed lobby rejects with `LOBBY_LOCKED`; `cancelJoinRequest` rejects the pending promise with `JOIN_REQUEST_NOT_FOUND`. The host receives `joinRequestReceived` and answers with `respondJoinRequest` (`NOT_HOST`, `JOIN_REQUEST_NOT_FOUND`, `LOBBY_FULL`). Raw outcome events: `joinRequestPending`, `joinRequestAccepted`, `joinRequestRejected`, `joinRequestWithdrawn`.
+`requestJoinLobby*` joins immediately if the lobby is open; for a locked lobby the promise stays pending until the host answers (≈15 s timeout) and resolves with the lobby (you are already a member). A rejection by the host, a timeout or a changed lobby rejects with `LOBBY_LOCKED`; a cancelled request rejects the pending promise with `JOIN_REQUEST_NOT_FOUND` (driven by the hub's `joinRequestWithdrawn` confirmation, so it also works when the request is cancelled from another session of your account). The host receives `joinRequestReceived` and answers with `respondJoinRequest` (`NOT_HOST`, `JOIN_REQUEST_NOT_FOUND`, `LOBBY_FULL`).
+
+`getJoinRequests()` pulls the current state without events (e.g. after app start/reconnect): `{ incoming: JoinRequestInfo[]; outgoing?: JoinRequestInfo }` where `JoinRequestInfo = { lobbyId, requesterId, username, expiresAt }` — `incoming` are requests waiting for you as host, `outgoing` is your own open request. `expiresAt` (ms since epoch) is when the hub auto-rejects the request.
+
+Raw outcome events: `joinRequestPending` (requester), `joinRequestAccepted`, `joinRequestRejected` (declined / timeout / unlocked / superseded, to the requester), `joinRequestWithdrawn` (host: requester cancelled or timed out; for `cancelled` also confirmed to all sessions of the requester).
 
 ### `lobbyUpdated` and its `reason`
 `lobbyUpdated(lobby, reason?)` fires on every lobby change; the second argument is a [`LobbyChangeReason`](enums.md#lobbychangereason).
@@ -317,12 +323,14 @@ client.on('notification', (n) => {
 | Method | Returns | Throws |
 |---|---|---|
 | `sendDirectMessage(toUserId, text)` | `DirectMessage { id, from, to, text, seq, sentAt }` | `NOT_FRIENDS`, `INVALID_INPUT` (empty), `MESSAGE_TOO_LONG`, `RATE_LIMITED` |
-| `getDmHistory(withUserId, opts?: { before?, limit? })` | `{ messages, nextBefore? }` — oldest first; page backwards with `before = nextBefore`. | `NOT_FRIENDS` |
-| `listConversations()` | `DmConversation[]` — `{ withUserId, username, unreadCount, lastMessage }` | |
-| `markConversationRead(withUserId)` | `number` of messages marked read | `NOT_FRIENDS` |
+| `getDmHistory(withUserId, opts?: { before?, limit? })` | `DmHistoryResult { messages, nextBefore?, lastReadSeq, firstUnreadSeq?, unreadCount, peerLastReadSeq? }` — oldest first; page backwards with `before = nextBefore`. Read fields describe the current state; does not mark anything read. | `NOT_FRIENDS` |
+| `openDmConversation(withUserId, limit?)` | `DmHistoryResult` with the last `limit` (default 10, max 100) messages. `lastReadSeq` / `firstUnreadSeq` / `unreadCount` are the state **before** opening (draw the "new messages" divider at `firstUnreadSeq`); afterwards the hub marks everything read. `peerLastReadSeq` = how far the friend read your messages (omitted if they disabled read receipts). | `NOT_FRIENDS`, `INVALID_INPUT` |
+| `getDmUnread()` | `DmUnreadResult { conversations: DmConversationUnread[], totalUnread }` — chats with unread DMs (`{ withUserId, unreadCount, firstUnreadSeq, lastSeq, lastMessageAt }`) and the app-badge total, no events. | |
+| `listConversations()` | `DmConversation[]` — `{ withUserId, username, unreadCount, lastReadSeq, lastMessage }` | |
+| `markConversationRead(withUserId, upToSeq?)` | `DmReadState { withUserId, marked, lastReadSeq, unreadCount, totalUnread }` — marks messages up to `upToSeq` (default: all) read; `marked` = newly read. | `NOT_FRIENDS`, `INVALID_INPUT` |
 | `sendTyping(toUserId)` | `void` — typing indicator | `NOT_FRIENDS` |
 
-Events: `dm:received` (`DirectMessage`), `dm:delivered` (`{ byUserId, messageIds }`, for messages sent while the recipient was offline, when they come back), `dm:read` (`{ byUserId, upToSeq }`, suppressed when the reader disabled `dmReadReceipts`), `dm:typing` (`{ fromUserId }`).
+Events: `dm:received` (`DirectMessage`), `dm:delivered` (`{ byUserId, messageIds }`, for messages sent while the recipient was offline, when they come back), `dm:read` (`{ byUserId, upToSeq }`, suppressed when the reader disabled `dmReadReceipts`), `dm:readState` (`DmReadState`, `marked` is 0 — the read cursor advanced; also delivered to your other sessions so every device clears its badge), `dm:typing` (`{ fromUserId }`).
 
 ### Lobby invites and joining friends
 
@@ -382,11 +390,11 @@ client.on('lobbyUpdated', (lobby, reason) => {});   // lobby: Lobby, reason?: Lo
 | `gameCrashed` | `{ lobbyId, code: number \| null }` |
 | `message` | `RelayMessage` |
 | `messageBinary` | `RelayBinaryMessage` |
-| `joinRequestReceived` | `{ lobbyId, requesterId, username }` (host) |
-| `joinRequestPending` | `{ lobbyId }` |
+| `joinRequestReceived` | `{ lobbyId, requesterId, username, expiresAt }` (host) |
+| `joinRequestPending` | `{ lobbyId, expiresAt }` |
 | `joinRequestAccepted` | `{ lobby: Lobby }` |
 | `joinRequestRejected` | `{ lobbyId, reason: JoinRequestRejectReason }` |
-| `joinRequestWithdrawn` | `{ requesterId, reason: JoinRequestWithdrawReason }` (host) |
+| `joinRequestWithdrawn` | `{ lobbyId, requesterId, reason: JoinRequestWithdrawReason }` (host; for `cancelled` also the requester's sessions) |
 
 ### Data and social
 
@@ -405,6 +413,7 @@ client.on('lobbyUpdated', (lobby, reason) => {});   // lobby: Lobby, reason?: Lo
 | `dm:received` | `DirectMessage` |
 | `dm:delivered` | `{ byUserId, messageIds }` |
 | `dm:read` | `{ byUserId, upToSeq }` |
+| `dm:readState` | `DmReadState` |
 | `dm:typing` | `{ fromUserId }` |
 | `lobby:inviteReceived` | `LobbyInvite` |
 | `lobby:inviteCancelled` | `{ inviteId, lobbyId, reason: LobbyInviteCancelReason }` |
@@ -444,4 +453,4 @@ Wire enums are exported as **const objects with a same-named type**: use them as
 
 ## Types
 
-Exported types: `EthernalClientOptions`, `EthernalClientEvents`, `CreateLobbyOptions`, `RelaySendOptions`, `AuthResult`, `LeaderboardEntry`, `BinaryPayload`, `Lobby`, `UserDataEntry`, `BulkDataEntry`, `RelayMessage`, `RelayBinaryMessage`, `HubErrorPayload`, `GameInfo`, `SessionState`, `HelloPayload`, `FriendInfo`, `FriendRequestInfo`, `FriendRequestsResult`, `FriendPresence`, `SocialSettings`, `SocialSnapshot`, `HubNotification`, `NotificationBacklog`, `NotificationCounts`, `NotificationListResult`, `DirectMessage`, `DmConversation`, `DmHistoryResult`, `LobbyInvite`, `FriendLobbyInfo`. The definitions live in `shared/src/types/`.
+Exported types: `EthernalClientOptions`, `EthernalClientEvents`, `CreateLobbyOptions`, `RelaySendOptions`, `AuthResult`, `LeaderboardEntry`, `BinaryPayload`, `Lobby`, `UserDataEntry`, `BulkDataEntry`, `RelayMessage`, `RelayBinaryMessage`, `HubErrorPayload`, `GameInfo`, `SessionState`, `HelloPayload`, `FriendInfo`, `FriendRequestInfo`, `FriendRequestsResult`, `FriendPresence`, `SocialSettings`, `SocialSnapshot`, `HubNotification`, `NotificationBacklog`, `NotificationCounts`, `NotificationListResult`, `DirectMessage`, `DmConversation`, `DmHistoryResult`, `DmReadState`, `DmUnreadResult`, `DmConversationUnread`, `JoinRequestInfo`, `JoinRequestsResult`, `LobbyInvite`, `FriendLobbyInfo`. The definitions live in `shared/src/types/`.

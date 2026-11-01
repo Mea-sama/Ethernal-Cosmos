@@ -1,10 +1,20 @@
 using System.Net.Http.Json;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using EthernalCosmos.Client.Models;
 using SocketIOClient;
 
 namespace EthernalCosmos.Client;
+
+/// <summary>Kind of socket session a client opens.</summary>
+public enum ClientType
+{
+    /// <summary>The player's game session (default); a newer game session of the same user replaces it.</summary>
+    Game,
+    /// <summary>A companion session (overlay, chat panel, second device) that coexists with the game session.</summary>
+    Panel,
+}
 
 /// <summary>
 /// Options for configuring the <see cref="EthernalClient"/>.
@@ -16,6 +26,13 @@ public sealed class EthernalClientOptions
 
     /// <summary>Timeout for socket request/response patterns. Default: 5 seconds.</summary>
     public TimeSpan RequestTimeout { get; init; } = TimeSpan.FromSeconds(5);
+
+    /// <summary>
+    /// <see cref="ClientType.Game"/> (default) is the player's game session: a newer game session of the same user replaces it (<c>SessionReplaced</c>).
+    /// Use <see cref="ClientType.Panel"/> for an additional companion session (overlay, chat panel, second device) that
+    /// coexists with the game session, receives user-targeted events (DMs, read state, join-request confirmations) but does not take part in game presence.
+    /// </summary>
+    public ClientType ClientType { get; init; } = ClientType.Game;
 }
 
 /// <summary>
@@ -36,7 +53,10 @@ public sealed class EthernalClient : IAsyncDisposable
 
     /// <summary>Raised when the socket connection is established (also after an automatic reconnect).</summary>
     public event Action?                        Connected;
-    /// <summary>Raised when the socket connection is lost; the argument is the reason.</summary>
+    /// <summary>
+    /// Raised once per lost connection; the argument is the reason. Also raised (with <c>"io client disconnect"</c>)
+    /// after a local <see cref="DisconnectAsync"/>, <see cref="LogoutAsync"/> or dispose.
+    /// </summary>
     public event Action<string>?                Disconnected;
     /// <summary>Fired when authentication fails (e.g. token expired and refresh failed).</summary>
     public event Action<string>?                AuthError;
@@ -88,7 +108,10 @@ public sealed class EthernalClient : IAsyncDisposable
     public event Action<JoinRequestAcceptedData>?  JoinRequestAccepted;
     /// <summary>Requester: the request ended without joining (declined, timed out, host changed, or lobby closed).</summary>
     public event Action<JoinRequestRejectedData>?  JoinRequestRejected;
-    /// <summary>Host: a pending request was withdrawn (requester cancelled or it timed out).</summary>
+    /// <summary>
+    /// A pending request was withdrawn (requester cancelled or it timed out). Host: for both reasons.
+    /// Requester: confirmation of <see cref="CancelJoinRequestAsync"/> (reason <c>Cancelled</c>, on all own sessions).
+    /// </summary>
     public event Action<JoinRequestWithdrawnData>? JoinRequestWithdrawn;
 
     // Social
@@ -114,6 +137,8 @@ public sealed class EthernalClient : IAsyncDisposable
     public event Action<DmDeliveredData>?         DirectMessageDelivered;
     /// <summary>A friend read your messages.</summary>
     public event Action<DmReadData>?              DirectMessageRead;
+    /// <summary>The read cursor of a chat advanced; also sent to your other sessions so every device clears its badge.</summary>
+    public event Action<DmReadState>?             DirectMessageReadStateChanged;
     /// <summary>A friend is typing to you.</summary>
     public event Action<DmTypingData>?            DirectMessageTyping;
     /// <summary>A friend invited you to a lobby.</summary>
@@ -133,6 +158,7 @@ public sealed class EthernalClient : IAsyncDisposable
 
     private readonly string        _serverUrl;
     private readonly TimeSpan      _timeout;
+    private readonly ClientType    _clientType;
     private readonly HttpClient    _http;
 
     private SocketIOClient.SocketIO? _socket;
@@ -141,9 +167,9 @@ public sealed class EthernalClient : IAsyncDisposable
     private string? _registeredGameId;
     private (string? ClientVersion, string? Platform) _registerOptions;
 
-    // Pending one-shot request/response queues (keyed by success-event name)
-    private readonly Dictionary<string, Queue<TaskCompletionSource<SocketIOResponse>>> _pending = [];
-    private readonly object _pendingLock = new();
+    // Ensures Disconnected is raised exactly once per connection loss (library event and local close race)
+    private readonly ConditionalWeakTable<SocketIOClient.SocketIO, StrongBox<int>> _disconnectRaised = new();
+    private long _serverClockOffsetMs;
 
     // ─── Constructor ──────────────────────────────────────────────────────────
 
@@ -152,6 +178,7 @@ public sealed class EthernalClient : IAsyncDisposable
     {
         _serverUrl = options.ServerUrl.TrimEnd('/');
         _timeout   = options.RequestTimeout;
+        _clientType = options.ClientType;
         _http      = new HttpClient { BaseAddress = new Uri(_serverUrl + "/") };
     }
 
@@ -191,7 +218,7 @@ public sealed class EthernalClient : IAsyncDisposable
 
     private async Task LogoutLocalAsync()
     {
-        if (_socket is not null) { await _socket.DisconnectAsync(); _socket = null; }
+        await CloseSocketAsync();
         _accessToken = null;
         _refreshToken = null;
     }
@@ -204,15 +231,18 @@ public sealed class EthernalClient : IAsyncDisposable
             try { await PostAsync<object?>("/auth/logout", new { refreshToken = _refreshToken }, ct); }
             catch { /* best-effort */ }
         }
-        if (_socket is not null)
-        {
-            await _socket.DisconnectAsync();
-            _socket = null;
-        }
+        await CloseSocketAsync();
         _accessToken  = null;
         _refreshToken = null;
         _registeredGameId = null;
     }
+
+    /// <summary>
+    /// Close the socket without logging out: tokens and the registered game are kept and the hub holds your lobby seat for
+    /// the game's reconnect grace period. Raises <see cref="Disconnected"/> (<c>"io client disconnect"</c>) exactly once.
+    /// Call <see cref="LoginAsync"/> again to resume.
+    /// </summary>
+    public Task DisconnectAsync() => CloseSocketAsync();
 
     // ─── Session ──────────────────────────────────────────────────────────────
 
@@ -286,8 +316,12 @@ public sealed class EthernalClient : IAsyncDisposable
     public Task UnlockLobbyAsync(CancellationToken ct = default) => CallAsync<object?>("unlockLobby", null, ct);
 
     /// <summary>
-    /// Request to join a locked lobby by ID. Resolves once the host accepts (already joined
-    /// server-side) or throws when declined, timed out (~15s), or the host/lobby changes meanwhile.
+    /// Request to join a locked lobby by ID. Resolves once the host accepts (already joined server-side).
+    /// Throws <see cref="EthernalException"/> when the request ends otherwise: declined / host changed / lobby closed
+    /// (<c>LOBBY_LOCKED</c>), expired (also <c>LOBBY_LOCKED</c>; see <see cref="JoinRequestPendingData.ExpiresAt"/>), or withdrawn
+    /// via <see cref="CancelJoinRequestAsync"/> from any session of this user (<c>JOIN_REQUEST_NOT_FOUND</c>).
+    /// Inspect <see cref="JoinRequestRejected"/> for the exact reason.
+    /// The matching events (<see cref="JoinRequestRejected"/>, <see cref="JoinRequestWithdrawn"/>) are raised as well.
     /// </summary>
     public Task<Lobby> RequestJoinLobbyAsync(string lobbyId) =>
         JoinRequestAsync("requestJoinLobby", new { lobbyId });
@@ -296,9 +330,20 @@ public sealed class EthernalClient : IAsyncDisposable
     public Task<Lobby> RequestJoinLobbyByCodeAsync(string code) =>
         JoinRequestAsync("requestJoinLobbyByCode", new { code });
 
-    /// <summary>Withdraw your own pending join request before the host has responded.</summary>
+    /// <summary>
+    /// Withdraw your own pending join request before the host has responded. The hub confirms with
+    /// <see cref="JoinRequestWithdrawn"/> (<c>Cancelled</c>) on all your sessions and the host is notified; a pending
+    /// <see cref="RequestJoinLobbyAsync"/> call fails immediately. Throws <c>JOIN_REQUEST_NOT_FOUND</c> if there is no such request.
+    /// </summary>
     public Task CancelJoinRequestAsync(string lobbyId, CancellationToken ct = default) =>
         CallAsync<object?>("cancelJoinRequest", new { lobbyId }, ct);
+
+    /// <summary>
+    /// Pull pending join requests without relying on events: <see cref="JoinRequestsResult.Incoming"/> for the host of a
+    /// locked lobby, <see cref="JoinRequestsResult.Outgoing"/> for your own open request. Use it after a reconnect.
+    /// </summary>
+    public Task<JoinRequestsResult> GetJoinRequestsAsync(CancellationToken ct = default) =>
+        CallAsync<JoinRequestsResult>("getJoinRequests", null, ct);
 
     /// <summary>(Host only) Accept or reject a pending join request (see <see cref="JoinRequestReceived"/>).</summary>
     public Task RespondJoinRequestAsync(string requesterId, bool accept, CancellationToken ct = default) =>
@@ -306,26 +351,29 @@ public sealed class EthernalClient : IAsyncDisposable
 
     // ─── Relay ────────────────────────────────────────────────────────────────
 
-    /// <summary>Broadcast a typed message to all other players in the lobby.</summary>
-    public Task SendToLobbyAsync(string type, object? payload = null, CancellationToken ct = default) =>
-        CallAsync<object?>("sendToLobby", new { type, payload }, ct);
+    /// <summary>Broadcast a typed message to all other players in the lobby; with <paramref name="echo"/> the sender (all own sessions) receives it via <see cref="Message"/> too.</summary>
+    public Task SendToLobbyAsync(string type, object? payload = null, CancellationToken ct = default, bool echo = false) =>
+        CallAsync<object?>("sendToLobby", new { type, payload, echo = echo ? true : (bool?)null }, ct);
 
-    /// <summary>Send a typed message directly to one player in the lobby.</summary>
-    public Task SendToPlayerAsync(string playerId, string type, object? payload = null, CancellationToken ct = default) =>
-        CallAsync<object?>("sendToPlayer", new { playerId, type, payload }, ct);
+    /// <summary>Send a typed message directly to one player in the lobby; with <paramref name="echo"/> you may target yourself (otherwise <c>CANNOT_TARGET_SELF</c>).</summary>
+    public Task SendToPlayerAsync(string playerId, string type, object? payload = null, CancellationToken ct = default, bool echo = false) =>
+        CallAsync<object?>("sendToPlayer", new { playerId, type, payload, echo = echo ? true : (bool?)null }, ct);
 
-    /// <summary>Broadcast a binary message to all other players in the lobby.</summary>
-    public Task SendToLobbyBinaryAsync(int typeCode, byte[] payload, CancellationToken ct = default)
+    /// <summary>Broadcast a binary message to all other players in the lobby; with <paramref name="echo"/> the sender receives it via <see cref="MessageBinary"/> too.</summary>
+    public Task SendToLobbyBinaryAsync(int typeCode, byte[] payload, CancellationToken ct = default, bool echo = false)
     {
         if (payload is null) throw new ArgumentNullException(nameof(payload));
-        return CallAsync<object?>("sendToLobbyBinary", new { typeCode, payload }, ct, binary: true);
+        // Optional field must be absent (not null) on the wire for the strict hub validation
+        object data = echo ? new { typeCode, payload, echo = true } : new { typeCode, payload };
+        return CallAsync<object?>("sendToLobbyBinary", data, ct, binary: true);
     }
 
-    /// <summary>Send a binary message directly to one player in the lobby.</summary>
-    public Task SendToPlayerBinaryAsync(string playerId, int typeCode, byte[] payload, CancellationToken ct = default)
+    /// <summary>Send a binary message directly to one player in the lobby; with <paramref name="echo"/> you may target yourself.</summary>
+    public Task SendToPlayerBinaryAsync(string playerId, int typeCode, byte[] payload, CancellationToken ct = default, bool echo = false)
     {
         if (payload is null) throw new ArgumentNullException(nameof(payload));
-        return CallAsync<object?>("sendToPlayerBinary", new { playerId, typeCode, payload }, ct, binary: true);
+        object data = echo ? new { playerId, typeCode, payload, echo = true } : new { playerId, typeCode, payload };
+        return CallAsync<object?>("sendToPlayerBinary", data, ct, binary: true);
     }
 
     // ─── Game Actions ─────────────────────────────────────────────────────────
@@ -434,13 +482,32 @@ public sealed class EthernalClient : IAsyncDisposable
     public Task<DmHistoryResult> GetDmHistoryAsync(string withUserId, long? before = null, int? limit = null, CancellationToken ct = default) =>
         CallAsync<DmHistoryResult>("dm:history", new { withUserId, before, limit }, ct);
 
-    /// <summary>List DM conversations with their last message and unread count.</summary>
+    /// <summary>
+    /// Open a chat: returns the last <paramref name="limit"/> (default 10) messages plus the read state from <b>before</b>
+    /// opening (<see cref="DmHistoryResult.FirstUnreadSeq"/>, <see cref="DmHistoryResult.UnreadCount"/>, <see cref="DmHistoryResult.PeerLastReadSeq"/>);
+    /// afterwards the hub marks everything read and raises <see cref="DirectMessageReadStateChanged"/> on all your sessions.
+    /// </summary>
+    public Task<DmHistoryResult> OpenDmConversationAsync(string withUserId, int? limit = null, CancellationToken ct = default) =>
+        CallAsync<DmHistoryResult>("dm:open", new { withUserId, limit }, ct);
+
+    /// <summary>Pull the chats with unread DMs and the total count (app badge) without events.</summary>
+    public Task<DmUnreadResult> GetDmUnreadAsync(CancellationToken ct = default) =>
+        CallAsync<DmUnreadResult>("dm:unread", null, ct);
+
+    /// <summary>
+    /// Mark incoming messages of a chat read up to <paramref name="upToSeq"/> (default: everything) and return the new
+    /// <see cref="DmReadState"/>. Also raises <see cref="DirectMessageReadStateChanged"/> on all your sessions.
+    /// </summary>
+    public Task<DmReadState> MarkDmReadAsync(string withUserId, long? upToSeq = null, CancellationToken ct = default) =>
+        CallAsync<DmReadState>("dm:markRead", new { withUserId, upToSeq }, ct);
+
+    /// <summary>List DM conversations with their last message, unread count and read cursor.</summary>
     public async Task<DmConversation[]> ListConversationsAsync(CancellationToken ct = default) =>
         (await CallAsync<ConversationsAck>("dm:conversations", null, ct)).Conversations;
 
-    /// <summary>Mark a conversation read; returns the number of messages marked.</summary>
+    /// <summary>Mark a whole conversation read; returns the number of messages marked (see <see cref="MarkDmReadAsync"/> for partial marking and the full read state).</summary>
     public async Task<int> MarkConversationReadAsync(string withUserId, CancellationToken ct = default) =>
-        (await CallAsync<MarkedAck>("dm:markRead", new { withUserId }, ct)).Marked;
+        (await MarkDmReadAsync(withUserId, null, ct)).Marked;
 
     /// <summary>Tell a friend you are typing.</summary>
     public Task SendTypingAsync(string toUserId, CancellationToken ct = default) =>
@@ -523,21 +590,18 @@ public sealed class EthernalClient : IAsyncDisposable
 
     private async Task ConnectSocketAsync(CancellationToken ct)
     {
-        if (_socket is not null)
-        {
-            await _socket.DisconnectAsync();
-            _socket = null;
-        }
+        await CloseSocketAsync();
 
         var socket = new SocketIOClient.SocketIO(_serverUrl, new SocketIOOptions
         {
-            Auth           = new Dictionary<string, string> { ["token"] = $"Bearer {_accessToken}" },
+            Auth           = AuthPayload(),
             ReconnectionAttempts = int.MaxValue,
             ReconnectionDelay    = 1000,
         });
 
         socket.OnConnected += async (_, _) =>
         {
+            if (_disconnectRaised.TryGetValue(socket, out var flag)) flag.Value = 0;
             Connected?.Invoke();
             if (_registeredGameId is not null)
             {
@@ -545,7 +609,7 @@ public sealed class EthernalClient : IAsyncDisposable
                 catch (Exception ex) { ServerError?.Invoke(ex.Message); }
             }
         };
-        socket.OnDisconnected += (_, reason) => Disconnected?.Invoke(reason);
+        socket.OnDisconnected += (_, reason) => RaiseDisconnected(socket, reason);
 
         socket.OnError += (_, err) => ServerError?.Invoke(err);
 
@@ -557,8 +621,7 @@ public sealed class EthernalClient : IAsyncDisposable
                 {
                     await DoRefreshAsync(CancellationToken.None);
                     // Update auth and reconnect manually
-                    socket.Options.Auth = new Dictionary<string, string>
-                        { ["token"] = $"Bearer {_accessToken}" };
+                    socket.Options.Auth = AuthPayload();
                 }
                 catch
                 {
@@ -567,7 +630,11 @@ public sealed class EthernalClient : IAsyncDisposable
             }
         };
 
-        RegisterEvent<HelloPayload>(socket,        "hello",            d => Hello?.Invoke(d));
+        RegisterEvent<HelloPayload>(socket,        "hello",            d =>
+        {
+            _serverClockOffsetMs = d.ServerTime - DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            Hello?.Invoke(d);
+        });
         RegisterEvent<SessionResumedData>(socket,  "session:resumed",  d => SessionResumed?.Invoke(d));
         RegisterEvent<SessionReplacedData>(socket, "session:replaced", d => SessionReplaced?.Invoke(d));
         RegisterEvent<HubErrorPayload>(socket,     "errorDetail",      d =>
@@ -630,26 +697,46 @@ public sealed class EthernalClient : IAsyncDisposable
         RegisterEvent<DirectMessage>(socket,           "dm:received",             d => DirectMessageReceived?.Invoke(d));
         RegisterEvent<DmDeliveredData>(socket,         "dm:delivered",            d => DirectMessageDelivered?.Invoke(d));
         RegisterEvent<DmReadData>(socket,              "dm:read",                 d => DirectMessageRead?.Invoke(d));
+        RegisterEvent<DmReadState>(socket,             "dm:readState",            d => DirectMessageReadStateChanged?.Invoke(d));
         RegisterEvent<DmTypingData>(socket,            "dm:typing",               d => DirectMessageTyping?.Invoke(d));
         RegisterEvent<LobbyInvite>(socket,             "lobby:inviteReceived",    d => LobbyInviteReceived?.Invoke(d));
         RegisterEvent<LobbyInviteCancelledData>(socket, "lobby:inviteCancelled",  d => LobbyInviteCancelled?.Invoke(d));
         RegisterEvent<LobbyInviteDeclinedData>(socket,  "lobby:inviteDeclined",   d => LobbyInviteDeclined?.Invoke(d));
 
         _socket = socket;
-        _pending.Clear();
         await socket.ConnectAsync();
+    }
+
+    private Dictionary<string, string> AuthPayload()
+    {
+        var auth = new Dictionary<string, string> { ["token"] = $"Bearer {_accessToken}" };
+        if (_clientType == ClientType.Panel) auth["clientType"] = "panel";
+        return auth;
+    }
+
+    private void RaiseDisconnected(SocketIOClient.SocketIO socket, string reason)
+    {
+        var flag = _disconnectRaised.GetOrCreateValue(socket);
+        if (Interlocked.Exchange(ref flag.Value, 1) != 0) return;
+        try { Disconnected?.Invoke(reason); }
+        catch { /* a faulty subscriber must not break the SDK */ }
+    }
+
+    /// <summary>Closes the current socket (if any) and guarantees one <see cref="Disconnected"/> notification for it.</summary>
+    private async Task CloseSocketAsync()
+    {
+        var socket = _socket;
+        if (socket is null) return;
+        _socket = null;
+        try { await socket.DisconnectAsync(); }
+        catch { /* already closed */ }
+        RaiseDisconnected(socket, "io client disconnect");
     }
 
     private void RegisterEvent<T>(SocketIOClient.SocketIO socket, string eventName, Action<T> handler)
     {
         socket.On(eventName, response =>
         {
-            // Fulfil a pending one-shot request (e.g. RequestJoinLobbyAsync); the public event is still raised
-            lock (_pendingLock)
-            {
-                if (_pending.TryGetValue(eventName, out var q) && q.Count > 0)
-                    q.Dequeue().TrySetResult(response);
-            }
             try
             {
                 var value = response.GetValue<T>(0);
@@ -663,14 +750,6 @@ public sealed class EthernalClient : IAsyncDisposable
     {
         socket.On(eventName, response =>
         {
-            lock (_pendingLock)
-            {
-                if (_pending.TryGetValue(eventName, out var q) && q.Count > 0)
-                {
-                    q.Dequeue().TrySetResult(response);
-                    return;
-                }
-            }
             try { handler(response.GetValue<JsonElement>(0)); }
             catch { /* ignore */ }
         });
@@ -680,14 +759,6 @@ public sealed class EthernalClient : IAsyncDisposable
     {
         socket.On(eventName, response =>
         {
-            lock (_pendingLock)
-            {
-                if (_pending.TryGetValue(eventName, out var q) && q.Count > 0)
-                {
-                    q.Dequeue().TrySetResult(response);
-                    return;
-                }
-            }
 
             try
             {
@@ -748,7 +819,6 @@ public sealed class EthernalClient : IAsyncDisposable
     private sealed class FriendLobbyAck { [JsonPropertyName("lobby")] public FriendLobbyInfo? Lobby { get; init; } }
     private sealed class MessageAck { [JsonPropertyName("message")] public DirectMessage Message { get; init; } = new(); }
     private sealed class ConversationsAck { [JsonPropertyName("conversations")] public DmConversation[] Conversations { get; init; } = []; }
-    private sealed class MarkedAck { [JsonPropertyName("marked")] public int Marked { get; init; } }
     private sealed class InviteAck { [JsonPropertyName("invite")] public LobbyInvite Invite { get; init; } = new(); }
     private sealed class InvitesAck { [JsonPropertyName("invites")] public LobbyInvite[] Invites { get; init; } = []; }
     private sealed class FriendRequestReceivedData { [JsonPropertyName("request")] public FriendRequestInfo Request { get; init; } = new(); }
@@ -797,47 +867,57 @@ public sealed class EthernalClient : IAsyncDisposable
     }
 
     /// <summary>
-    /// Sends a join request and resolves/rejects on the host's eventual answer
-    /// ("joinRequestAccepted" / "joinRequestRejected"); the server allows ~15s for the host.
+    /// Sends a join request and completes with the lobby when the host accepts; throws <see cref="EthernalException"/> on
+    /// rejection (declined, timeout, host change, lobby closed) or when the request is withdrawn/cancelled.
     /// </summary>
     private async Task<Lobby> JoinRequestAsync(string emitEvent, object data)
     {
-        var acceptedTcs = new TaskCompletionSource<SocketIOResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var rejectedTcs = new TaskCompletionSource<SocketIOResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
-        lock (_pendingLock)
+        var outcome = new TaskCompletionSource<Lobby>(TaskCreationOptions.RunContinuationsAsynchronously);
+        string? lobbyId = null;
+        // Fallback in case the final event never arrives; moved to the hub's expiry once known
+        long deadlineMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + 16_000;
+
+        void OnPending(JoinRequestPendingData d)
         {
-            Enqueue("joinRequestAccepted", acceptedTcs);
-            Enqueue("joinRequestRejected", rejectedTcs);
+            lobbyId = d.LobbyId;
+            Interlocked.Exchange(ref deadlineMs, d.ExpiresAt - Interlocked.Read(ref _serverClockOffsetMs) + 3_000);
+        }
+        void OnAccepted(JoinRequestAcceptedData d) => outcome.TrySetResult(d.Lobby);
+        void OnRejected(JoinRequestRejectedData d)
+        {
+            if (lobbyId is not null && d.LobbyId != lobbyId) return;
+            outcome.TrySetException(new EthernalException("LOBBY_LOCKED", $"Beitrittsanfrage abgelehnt ({d.Reason})"));
+        }
+        void OnWithdrawn(JoinRequestWithdrawnData d)
+        {
+            if (lobbyId is null || d.LobbyId != lobbyId || d.Reason != JoinRequestWithdrawReason.Cancelled) return;
+            outcome.TrySetException(new EthernalException("JOIN_REQUEST_NOT_FOUND", "Beitrittsanfrage zurückgezogen"));
         }
 
-        void Dequeue()
-        {
-            lock (_pendingLock)
-            {
-                foreach (var (key, waiter) in new[] { ("joinRequestAccepted", acceptedTcs), ("joinRequestRejected", rejectedTcs) })
-                    if (_pending.TryGetValue(key, out var q))
-                        _pending[key] = new Queue<TaskCompletionSource<SocketIOResponse>>(q.Where(w => w != waiter));
-            }
-        }
-
+        JoinRequestPending += OnPending;
+        JoinRequestAccepted += OnAccepted;
+        JoinRequestRejected += OnRejected;
+        JoinRequestWithdrawn += OnWithdrawn;
         try
         {
             var ack = (await EmitWithAckAsync(emitEvent, data, CancellationToken.None)).Deserialize<JoinRequestAck>(JsonOpts)!;
             if (ack.Lobby is not null) return ack.Lobby;
 
-            var done = await Task.WhenAny(acceptedTcs.Task, rejectedTcs.Task, Task.Delay(16_000));
-            if (done == acceptedTcs.Task) return acceptedTcs.Task.Result.GetValue<JoinRequestAcceptedData>(0).Lobby;
-            if (done == rejectedTcs.Task)
-                throw new EthernalException("LOBBY_LOCKED",
-                    $"Beitrittsanfrage abgelehnt ({rejectedTcs.Task.Result.GetValue<JoinRequestRejectedData>(0).Reason})");
-            throw new EthernalException("TIMEOUT", "Timeout beim Warten auf die Beitrittsanfrage");
+            while (true)
+            {
+                var remaining = Interlocked.Read(ref deadlineMs) - DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                if (remaining <= 0 && !outcome.Task.IsCompleted)
+                    throw new EthernalException("TIMEOUT", "Timeout beim Warten auf die Beitrittsanfrage");
+                var done = await Task.WhenAny(outcome.Task, Task.Delay((int)Math.Max(remaining, 1)));
+                if (done == outcome.Task) return await outcome.Task;
+            }
         }
-        finally { Dequeue(); }
-
-        void Enqueue(string key, TaskCompletionSource<SocketIOResponse> waiter)
+        finally
         {
-            if (!_pending.TryGetValue(key, out var q)) _pending[key] = q = new Queue<TaskCompletionSource<SocketIOResponse>>();
-            q.Enqueue(waiter);
+            JoinRequestPending -= OnPending;
+            JoinRequestAccepted -= OnAccepted;
+            JoinRequestRejected -= OnRejected;
+            JoinRequestWithdrawn -= OnWithdrawn;
         }
     }
 
@@ -917,11 +997,9 @@ public sealed class EthernalClient : IAsyncDisposable
     /// <summary>Disconnects and releases all resources.</summary>
     public async ValueTask DisposeAsync()
     {
-        if (_socket is not null)
-        {
-            await _socket.DisconnectAsync();
-            _socket.Dispose();
-        }
+        var socket = _socket;
+        await CloseSocketAsync();
+        socket?.Dispose();
         _http.Dispose();
     }
 

@@ -152,7 +152,9 @@ socket.emit('requestJoinLobbyByCode', { code: string });
 Requests to join a locked lobby. If the lobby isn't actually locked, this joins immediately (same
 as `joinLobby`). If locked, the server acks with `joinRequestPending` and notifies the host via
 `joinRequestReceived`. The host then calls `respondJoinRequest`. Unanswered requests are
-auto-rejected after ~15 seconds.
+auto-rejected after ~15 seconds (`joinRequestRejected` reason `timeout` to the requester,
+`joinRequestWithdrawn` reason `timeout` to the host). `joinRequestPending` / `joinRequestReceived`
+carry `expiresAt` (ms epoch) so UIs can show a countdown.
 
 ---
 
@@ -162,7 +164,19 @@ auto-rejected after ~15 seconds.
 socket.emit('cancelJoinRequest', { lobbyId: string });
 ```
 
-Withdraws your own pending request. The host is notified via `joinRequestWithdrawn`.
+Withdraws your own pending request. The host is notified via `joinRequestWithdrawn` (reason `cancelled`);
+all sessions of the requester receive the same event as confirmation. Unknown request ⇒ `JOIN_REQUEST_NOT_FOUND`.
+
+---
+
+#### `getJoinRequests`
+
+```ts
+socket.emit('getJoinRequests', (res: { ok: true; incoming: JoinRequestInfo[]; outgoing?: JoinRequestInfo }) => {});
+```
+
+Pull API, no events needed: `incoming` = requests waiting for you as host, `outgoing` = your own open request.
+`JoinRequestInfo = { lobbyId, requesterId, username, expiresAt }`.
 
 ---
 
@@ -380,7 +394,7 @@ Emitted to a player who has been kicked by the host.
 #### `joinRequestReceived` _(to host)_
 
 ```ts
-socket.on('joinRequestReceived', (data: { lobbyId: string; requesterId: string; username: string }) => { ... });
+socket.on('joinRequestReceived', (data: { lobbyId: string; requesterId: string; username: string; expiresAt: number }) => { ... });
 ```
 
 ---
@@ -388,7 +402,7 @@ socket.on('joinRequestReceived', (data: { lobbyId: string; requesterId: string; 
 #### `joinRequestPending` _(to requester)_
 
 ```ts
-socket.on('joinRequestPending', (data: { lobbyId: string }) => { ... });
+socket.on('joinRequestPending', (data: { lobbyId: string; expiresAt: number }) => { ... });
 ```
 
 Ack confirming the request was sent and is awaiting the host.
@@ -416,13 +430,13 @@ socket.on('joinRequestRejected', (data: {
 
 ---
 
-#### `joinRequestWithdrawn` _(to host)_
+#### `joinRequestWithdrawn` _(to host; to the requester too when `cancelled`)_
 
 ```ts
-socket.on('joinRequestWithdrawn', (data: { requesterId: string; reason: JoinRequestWithdrawReason }) => { ... });
+socket.on('joinRequestWithdrawn', (data: { lobbyId: string; requesterId: string; reason: JoinRequestWithdrawReason }) => { ... });
 ```
 
-A pending request disappeared before you responded (requester cancelled, or it timed out; see [`JoinRequestWithdrawReason`](enums.md#joinrequestwithdrawreason)).
+A pending request disappeared before it was answered (requester cancelled or disconnected, or it timed out; see [`JoinRequestWithdrawReason`](enums.md#joinrequestwithdrawreason)).
 
 ---
 

@@ -224,13 +224,17 @@ public sealed class JoinRequestReceivedData
     [JsonPropertyName("requesterId")] public string RequesterId { get; init; } = "";
     /// <summary>Display name of the user.</summary>
     [JsonPropertyName("username")]    public string Username    { get; init; } = "";
+    /// <summary>When the hub auto-rejects the request (Unix ms).</summary>
+    [JsonPropertyName("expiresAt")]   public long   ExpiresAt   { get; init; }
 }
 
 /// <summary>Own join request is waiting for the host.</summary>
 public sealed class JoinRequestPendingData
 {
     /// <summary>Id of the lobby.</summary>
-    [JsonPropertyName("lobbyId")] public string LobbyId { get; init; } = "";
+    [JsonPropertyName("lobbyId")]   public string LobbyId   { get; init; } = "";
+    /// <summary>When the hub auto-rejects the request (Unix ms).</summary>
+    [JsonPropertyName("expiresAt")] public long   ExpiresAt { get; init; }
 }
 
 /// <summary>Own join request was accepted.</summary>
@@ -249,13 +253,37 @@ public sealed class JoinRequestRejectedData
     [JsonPropertyName("reason")]  public JoinRequestRejectReason Reason { get; init; }
 }
 
-/// <summary>A join request was withdrawn.</summary>
+/// <summary>A join request was withdrawn. Sent to the host and, for <see cref="JoinRequestWithdrawReason.Cancelled"/>, also to all sessions of the requester.</summary>
 public sealed class JoinRequestWithdrawnData
 {
+    /// <summary>Id of the lobby.</summary>
+    [JsonPropertyName("lobbyId")]     public string LobbyId     { get; init; } = "";
     /// <summary>User id of the player asking to join.</summary>
     [JsonPropertyName("requesterId")] public string RequesterId { get; init; } = "";
     /// <summary>Why this happened.</summary>
     [JsonPropertyName("reason")]      public JoinRequestWithdrawReason Reason { get; init; }
+}
+
+/// <summary>A pending join request, as returned by <see cref="EthernalClient.GetJoinRequestsAsync"/>.</summary>
+public sealed class JoinRequestInfo
+{
+    /// <summary>Id of the lobby.</summary>
+    [JsonPropertyName("lobbyId")]     public string LobbyId     { get; init; } = "";
+    /// <summary>User id of the player asking to join.</summary>
+    [JsonPropertyName("requesterId")] public string RequesterId { get; init; } = "";
+    /// <summary>Display name of the requester.</summary>
+    [JsonPropertyName("username")]    public string Username    { get; init; } = "";
+    /// <summary>When the hub auto-rejects the request (Unix ms).</summary>
+    [JsonPropertyName("expiresAt")]   public long   ExpiresAt   { get; init; }
+}
+
+/// <summary>Pending join requests of the caller (pull API).</summary>
+public sealed class JoinRequestsResult
+{
+    /// <summary>Requests waiting for the caller as host of a locked lobby.</summary>
+    [JsonPropertyName("incoming")] public JoinRequestInfo[] Incoming { get; init; } = [];
+    /// <summary>The caller's own open request; null when there is none.</summary>
+    [JsonPropertyName("outgoing")] public JoinRequestInfo?  Outgoing { get; init; }
 }
 
 /// <summary>Error payload of the <c>error</c> socket event.</summary>

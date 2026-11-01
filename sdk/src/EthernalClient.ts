@@ -25,6 +25,9 @@ import type {
   DirectMessage,
   DmConversation,
   DmHistoryResult,
+  DmReadState,
+  DmUnreadResult,
+  JoinRequestsResult,
   LobbyInvite,
   FriendLobbyInfo,
   PublicUser,
@@ -38,7 +41,7 @@ export type { Lobby, UserDataEntry } from '@ethernal/shared';
 export type {
   FriendInfo, FriendRequestInfo, FriendRequestsResult, FriendPresence,
   SocialSettings, SocialSnapshot, HubNotification, NotificationBacklog,
-  NotificationCounts, NotificationListResult, DirectMessage, DmConversation, DmHistoryResult, LobbyInvite,
+  NotificationCounts, NotificationListResult, DirectMessage, DmConversation, DmHistoryResult, DmReadState, DmUnreadResult, DmConversationUnread, JoinRequestInfo, JoinRequestsResult, LobbyInvite,
   FriendLobbyInfo,
 } from '@ethernal/shared';
 export type { RelayMessage, RelayBinaryMessage, HubErrorPayload, GameInfo, SessionState, HelloPayload, BulkDataEntry } from '@ethernal/shared';
@@ -73,6 +76,13 @@ export interface EthernalClientOptions {
    * @default 5000
    */
   requestTimeout?: number;
+  /**
+   * `'game'` (default): the primary session; a new `'game'` connection of the same user replaces the old one
+   * (`session:replaced`). `'panel'`: an additional companion session (e.g. a social overlay) that coexists
+   * with the game session and receives user-room events (DMs, `dm:readState`, join-request confirmations).
+   * @default 'game'
+   */
+  clientType?: 'game' | 'panel';
 }
 
 /** Result of `register()` and `login()`. */
@@ -150,17 +160,18 @@ type EthernalSocket = Socket<ServerToClientEvents, ClientToServerEvents>;
 export class EthernalClient extends EventEmitter {
   private readonly serverUrl: string;
   private readonly requestTimeout: number;
+  private readonly clientType: 'game' | 'panel';
 
   private socket: EthernalSocket | null = null;
   private registeredGameId: string | null = null;
   private accessToken: string | null = null;
   private refreshToken: string | null = null;
-  private abortJoinRace: ((error: EthernalError) => void) | null = null;
 
   constructor(options: EthernalClientOptions) {
     super();
     this.serverUrl = options.serverUrl.replace(/\/$/, '');
     this.requestTimeout = options.requestTimeout ?? 5000;
+    this.clientType = options.clientType ?? 'game';
   }
 
   // ─── Auth ─────────────────────────────────────────────────────────────────
@@ -351,13 +362,23 @@ export class EthernalClient extends EventEmitter {
   }
 
   /**
-   * Withdraw your own pending join request; the pending {@link requestJoinLobby} promise rejects
-   * with `JOIN_REQUEST_NOT_FOUND`. The host receives `joinRequestWithdrawn` (reason `cancelled`).
+   * Withdraw your own pending join request. The hub confirms with `joinRequestWithdrawn`
+   * (reason `cancelled`) to all your sessions and to the host; the pending {@link requestJoinLobby}
+   * promise rejects with `JOIN_REQUEST_NOT_FOUND` (also when the cancel came from another
+   * session of your account).
    * @throws {EthernalError} `JOIN_REQUEST_NOT_FOUND`
    */
   async cancelJoinRequest(lobbyId: string): Promise<void> {
     await this.call('cancelJoinRequest', { lobbyId });
-    this.abortJoinRace?.(new EthernalError('JOIN_REQUEST_NOT_FOUND', 'Beitrittsanfrage zurückgezogen'));
+  }
+
+  /**
+   * Pull the pending join requests without waiting for events (e.g. after a reconnect or app start):
+   * `incoming` = requests waiting for you as host of your lobby, `outgoing` = your own open request.
+   * Every entry carries `expiresAt` (ms since epoch) after which the hub auto-rejects it.
+   */
+  async getJoinRequests(): Promise<JoinRequestsResult> {
+    return this.call<JoinRequestsResult>('getJoinRequests');
   }
 
   /**
@@ -601,11 +622,31 @@ export class EthernalClient extends EventEmitter {
   }
 
   /**
-   * Mark all messages from `withUserId` as read (the sender gets `dm:read` if read receipts are enabled).
-   * @returns number of messages marked
+   * Open a chat: returns the last `limit` messages (default 10, max 100, oldest first) plus the read
+   * state *before* opening (`lastReadSeq`, `firstUnreadSeq`, `unreadCount`, `peerLastReadSeq`), so the UI can
+   * draw a "new messages" divider. The hub then marks everything read (see `dm:readState`).
+   * @throws {EthernalError} `NOT_FRIENDS`, `INVALID_INPUT`
    */
-  async markConversationRead(withUserId: string): Promise<number> {
-    return (await this.call<{ marked: number }>('dm:markRead', { withUserId })).marked;
+  async openDmConversation(withUserId: string, limit?: number): Promise<DmHistoryResult> {
+    return this.call<DmHistoryResult>('dm:open', { withUserId, ...(limit !== undefined ? { limit } : {}) });
+  }
+
+  /**
+   * Pull the chats with unread messages and the total (for an app badge), without events.
+   * Each entry has `unreadCount`, `firstUnreadSeq`, `lastSeq` and `lastMessageAt`.
+   */
+  async getDmUnread(): Promise<DmUnreadResult> {
+    return this.call<DmUnreadResult>('dm:unread');
+  }
+
+  /**
+   * Mark messages from `withUserId` as read, up to `upToSeq` (default: all). The sender gets `dm:read`
+   * if read receipts are enabled; all your sessions get `dm:readState`.
+   * @returns the new read state: `marked` (newly read), `lastReadSeq`, remaining `unreadCount` and `totalUnread`
+   * @throws {EthernalError} `NOT_FRIENDS`, `INVALID_INPUT`
+   */
+  async markConversationRead(withUserId: string, upToSeq?: number): Promise<DmReadState> {
+    return this.call<DmReadState>('dm:markRead', { withUserId, ...(upToSeq !== undefined ? { upToSeq } : {}) });
   }
 
   /** Ephemeral typing indicator; the friend receives `dm:typing`. @throws {EthernalError} `NOT_FRIENDS` */
@@ -740,7 +781,7 @@ export class EthernalClient extends EventEmitter {
     // Using an auth callback means socket.io will re-evaluate the token on
     // every (re)connect attempt — so a refreshed access token is used automatically.
     const socket: EthernalSocket = io(this.serverUrl, {
-      auth: (cb) => cb({ token: `Bearer ${this.accessToken ?? ''}` }),
+      auth: (cb) => cb({ ...(this.clientType === 'panel' ? { clientType: 'panel' } : {}), token: `Bearer ${this.accessToken ?? ''}` }),
       reconnection: true,
       reconnectionDelay: 1000,
       reconnectionAttempts: Infinity,
@@ -823,6 +864,7 @@ export class EthernalClient extends EventEmitter {
     forward('dm:received');
     forward('dm:delivered');
     forward('dm:read');
+    forward('dm:readState');
     forward('dm:typing');
     forward('lobby:inviteReceived');
     forward('lobby:inviteCancelled');
@@ -865,7 +907,10 @@ export class EthernalClient extends EventEmitter {
       );
       const ack = (res: { ok: boolean; error?: HubErrorPayload } & Record<string, unknown>) => {
         clearTimeout(timer);
-        if (res.ok) resolve(res as unknown as T);
+        if (res.ok) {
+          const { ok: _ok, ...rest } = res;
+          resolve(rest as unknown as T);
+        }
         else reject(new EthernalError(res.error!.code, res.error!.message, res.error!.retryAfterMs));
       };
       (sock as unknown as { emit: (e: string, ...a: unknown[]) => void }).emit(event, ...args, ack);
@@ -881,6 +926,7 @@ export class EthernalClient extends EventEmitter {
     return new Promise((resolve, reject) => {
       let sock: {
         once: (event: string, cb: (...args: unknown[]) => void) => void;
+        on: (event: string, cb: (...args: unknown[]) => void) => void;
         off: (event: string, cb: (...args: unknown[]) => void) => void;
         emit: (event: string, ...args: unknown[]) => void;
       };
@@ -892,9 +938,9 @@ export class EthernalClient extends EventEmitter {
       }
       const cleanup = () => {
         clearTimeout(timer);
-        this.abortJoinRace = null;
         sock.off('joinRequestAccepted', onAccepted);
         sock.off('joinRequestRejected', onRejected);
+        sock.off('joinRequestWithdrawn', onWithdrawn);
       };
       const timer = setTimeout(() => {
         cleanup();
@@ -909,12 +955,15 @@ export class EthernalClient extends EventEmitter {
         const d = args[0] as { reason: JoinRequestRejectReason };
         reject(new EthernalError('LOBBY_LOCKED', `Beitrittsanfrage abgelehnt (${d.reason})`));
       };
-      this.abortJoinRace = (e) => {
+      // Server confirmation that the request was cancelled (here or on another device)
+      const onWithdrawn = (...args: unknown[]) => {
+        if ((args[0] as { reason: string }).reason !== 'cancelled') return;
         cleanup();
-        reject(e);
+        reject(new EthernalError('JOIN_REQUEST_NOT_FOUND', 'Beitrittsanfrage zurückgezogen'));
       };
       sock.once('joinRequestAccepted', onAccepted);
       sock.once('joinRequestRejected', onRejected);
+      sock.on('joinRequestWithdrawn', onWithdrawn);
       sock.emit(event, data, (res: { ok: boolean; error?: HubErrorPayload; lobby?: Lobby }) => {
         if (!res.ok) {
           cleanup();

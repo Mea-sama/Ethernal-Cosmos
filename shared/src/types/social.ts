@@ -110,7 +110,7 @@ export interface DmHistoryResult {
 /** Result of `dm:markRead` / payload of `dm:readState`. */
 export interface DmReadState {
   withUserId: string;
-  /** Number of messages newly marked read by this call (0 in `dm:readState` pushes) */
+  /** Number of messages newly marked read by the call that moved the cursor (also in `dm:readState` pushes) */
   marked: number;
   lastReadSeq: number;
   /** Unread messages still left in this chat (0 if everything up to the latest message was read) */

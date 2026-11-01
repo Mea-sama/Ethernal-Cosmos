@@ -115,4 +115,41 @@ public class RelayTests(HubFixture hub)
         await using var loner = await hub.NewUserAsync();
         Assert.Equal(ErrorCode.NotInLobby, (await Assert.ThrowsAsync<EthernalException>(() => loner.Client.SendToLobbyAsync("x"))).Error);
     }
+
+    [Fact]
+    public async Task Echo_option_delivers_own_text_messages_back_to_the_sender()
+    {
+        var (host, guest, _) = await PairAsync();
+        await using var _h = host;
+        await using var _g = guest;
+        var own = Wait.For<RelayMessage>(h => host.Client.Message += h, h => host.Client.Message -= h, m => m.Type == "echo-lobby");
+        var other = Wait.For<RelayMessage>(h => guest.Client.Message += h, h => guest.Client.Message -= h, m => m.Type == "echo-lobby");
+        await host.Client.SendToLobbyAsync("echo-lobby", new Move(1, 2), echo: true);
+        Assert.Equal(host.UserId, (await own).From);
+        Assert.Equal(new Move(1, 2), (await own).PayloadAs<Move>());
+        Assert.Equal(host.UserId, (await other).From);
+
+        var self = Wait.For<RelayMessage>(h => host.Client.Message += h, h => host.Client.Message -= h, m => m.Type == "echo-self");
+        await host.Client.SendToPlayerAsync(host.UserId, "echo-self", new Move(5, 6), echo: true);
+        Assert.Equal(new Move(5, 6), (await self).PayloadAs<Move>());
+    }
+
+    [Fact]
+    public async Task Echo_option_delivers_own_binary_messages_back_to_the_sender()
+    {
+        var (host, guest, _) = await PairAsync();
+        await using var _h = host;
+        await using var _g = guest;
+        byte[] bytes = [9, 8, 7, 255];
+        var own = Wait.For<RelayBinaryMessage>(h => host.Client.MessageBinary += h, h => host.Client.MessageBinary -= h, m => m.TypeCode == 11);
+        var other = Wait.For<RelayBinaryMessage>(h => guest.Client.MessageBinary += h, h => guest.Client.MessageBinary -= h, m => m.TypeCode == 11);
+        await host.Client.SendToLobbyBinaryAsync(11, bytes, echo: true);
+        Assert.Equal(bytes, (await own).Payload);
+        Assert.Equal(bytes, (await other).Payload);
+
+        var self = Wait.For<RelayBinaryMessage>(h => host.Client.MessageBinary += h, h => host.Client.MessageBinary -= h, m => m.TypeCode == 12);
+        await host.Client.SendToPlayerBinaryAsync(host.UserId, 12, bytes, echo: true);
+        Assert.Equal(bytes, (await self).Payload);
+        await Assert.ThrowsAsync<EthernalException>(() => host.Client.SendToPlayerBinaryAsync(host.UserId, 12, bytes));
+    }
 }

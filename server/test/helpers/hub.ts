@@ -27,6 +27,7 @@ async function freePort(): Promise<number> {
 /** Spiele für Tests (zusätzlich zu den eingebauten) */
 const TEST_GAMES = [
   { id: 'fake', name: 'Fake', maxPlayers: 3, entryScript: path.join(__dirname, '../fixtures/fake-game.js'), reconnectGraceMs: 1500, serverKeys: ['rank\\..*'], publicSettingKeys: ['mode'] },
+  { id: 'evil', name: 'Evil', maxPlayers: 3, entryScript: path.join(__dirname, '../fixtures/evil-game.js'), reconnectGraceMs: 1500 },
   { id: 'relay', name: 'Relay', maxPlayers: 2, reconnectGraceMs: 1500 },
   { id: 'relay-nograce', name: 'Relay no grace', maxPlayers: 4, reconnectGraceMs: 0 },
   { id: 'broken', name: 'Broken', maxPlayers: 2, entryScript: '/nonexistent/game.js' },

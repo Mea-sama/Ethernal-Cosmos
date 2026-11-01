@@ -179,23 +179,103 @@ public class LobbyTests(HubFixture hub)
     }
 
     [Fact]
-    public async Task Join_request_can_be_cancelled_by_the_requester()
+    public async Task Join_request_cancel_is_confirmed_to_host_and_all_requester_sessions()
     {
         await using var host = await hub.NewUserAsync("other");
         await using var guest = await hub.NewUserAsync("other");
+        await using var guest2 = new EthernalClient(new EthernalClientOptions { ServerUrl = hub.Url, ClientType = ClientType.Panel });
+        await guest2.LoginAsync(guest.Username, "password123");
         var lobby = await host.Client.CreateLobbyAsync("gated3");
         await host.Client.LockLobbyAsync();
 
         var received = Wait.For<JoinRequestReceivedData>(h => host.Client.JoinRequestReceived += h, h => host.Client.JoinRequestReceived -= h);
-        var withdrawn = Wait.For<JoinRequestWithdrawnData>(h => host.Client.JoinRequestWithdrawn += h, h => host.Client.JoinRequestWithdrawn -= h);
+        var hostSees = Wait.For<JoinRequestWithdrawnData>(h => host.Client.JoinRequestWithdrawn += h, h => host.Client.JoinRequestWithdrawn -= h);
+        var guestSees = Wait.For<JoinRequestWithdrawnData>(h => guest.Client.JoinRequestWithdrawn += h, h => guest.Client.JoinRequestWithdrawn -= h);
+        var guest2Sees = Wait.For<JoinRequestWithdrawnData>(h => guest2.JoinRequestWithdrawn += h, h => guest2.JoinRequestWithdrawn -= h);
         var request = guest.Client.RequestJoinLobbyAsync(lobby.Id);
         await received;
 
         await guest.Client.CancelJoinRequestAsync(lobby.Id);
-        var data = await withdrawn;
-        Assert.Equal(guest.UserId, data.RequesterId);
-        Assert.Equal(JoinRequestWithdrawReason.Cancelled, data.Reason);
-        _ = request.ContinueWith(t => _ = t.Exception, TaskScheduler.Default); // pending call is abandoned
+        foreach (var data in new[] { await hostSees, await guestSees, await guest2Sees })
+        {
+            Assert.Equal(guest.UserId, data.RequesterId);
+            Assert.Equal(lobby.Id, data.LobbyId);
+            Assert.Equal(JoinRequestWithdrawReason.Cancelled, data.Reason);
+        }
+
+        var ex = await Assert.ThrowsAsync<EthernalException>(() => request);
+        Assert.Equal(ErrorCode.JoinRequestNotFound, ex.Error);
+        var again = await Assert.ThrowsAsync<EthernalException>(() => guest.Client.CancelJoinRequestAsync(lobby.Id));
+        Assert.Equal(ErrorCode.JoinRequestNotFound, again.Error);
+    }
+
+    [Fact]
+    public async Task GetJoinRequestsAsync_mirrors_both_sides_and_clears_after_decline()
+    {
+        await using var host = await hub.NewUserAsync("other");
+        await using var guest = await hub.NewUserAsync("other");
+        var lobby = await host.Client.CreateLobbyAsync("gated4");
+        await host.Client.LockLobbyAsync();
+        Assert.Empty((await host.Client.GetJoinRequestsAsync()).Incoming);
+
+        var received = Wait.For<JoinRequestReceivedData>(h => host.Client.JoinRequestReceived += h, h => host.Client.JoinRequestReceived -= h);
+        var pending = Wait.For<JoinRequestPendingData>(h => guest.Client.JoinRequestPending += h, h => guest.Client.JoinRequestPending -= h);
+        var rejected = Wait.For<JoinRequestRejectedData>(h => guest.Client.JoinRequestRejected += h, h => guest.Client.JoinRequestRejected -= h);
+        var request = guest.Client.RequestJoinLobbyAsync(lobby.Id);
+        var rec = await received;
+        var pend = await pending;
+        Assert.True(pend.ExpiresAt > DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - 60_000);
+        Assert.Equal(pend.ExpiresAt, rec.ExpiresAt);
+
+        var h = await host.Client.GetJoinRequestsAsync();
+        var incoming = Assert.Single(h.Incoming);
+        Assert.Equal(new[] { lobby.Id, guest.UserId, guest.Username, pend.ExpiresAt.ToString() }, new[] { incoming.LobbyId, incoming.RequesterId, incoming.Username, incoming.ExpiresAt.ToString() });
+        Assert.Null(h.Outgoing);
+        var g = await guest.Client.GetJoinRequestsAsync();
+        Assert.Empty(g.Incoming);
+        Assert.Equal(lobby.Id, g.Outgoing!.LobbyId);
+        Assert.Equal(guest.UserId, g.Outgoing.RequesterId);
+
+        await host.Client.RespondJoinRequestAsync(guest.UserId, accept: false);
+        var ex = await Assert.ThrowsAsync<EthernalException>(() => request);
+        Assert.Equal(ErrorCode.LobbyLocked, ex.Error);
+        var rej = await rejected;
+        Assert.Equal(lobby.Id, rej.LobbyId);
+        Assert.Equal(JoinRequestRejectReason.Declined, rej.Reason);
+        Assert.Null((await guest.Client.GetJoinRequestsAsync()).Outgoing);
+        Assert.Empty((await host.Client.GetJoinRequestsAsync()).Incoming);
+    }
+
+    [Fact]
+    public async Task Join_request_times_out_on_both_sides()
+    {
+        await using var h = await HubProcess.StartAsync(limitOverrides: new() { ["joinRequestTimeoutMs"] = 900 });
+        await using var host = new EthernalClient(new EthernalClientOptions { ServerUrl = h.Url });
+        await using var guest = new EthernalClient(new EthernalClientOptions { ServerUrl = h.Url });
+        await host.RegisterAsync(HubFixture.UniqueName("th"), "password123");
+        await guest.RegisterAsync(HubFixture.UniqueName("tg"), "password123");
+        await host.RegisterGameAsync("other");
+        await guest.RegisterGameAsync("other");
+        var lobby = await host.CreateLobbyAsync("timeout");
+        await host.LockLobbyAsync();
+
+        var received = Wait.For<JoinRequestReceivedData>(x => host.JoinRequestReceived += x, x => host.JoinRequestReceived -= x);
+        var withdrawn = Wait.For<JoinRequestWithdrawnData>(x => host.JoinRequestWithdrawn += x, x => host.JoinRequestWithdrawn -= x);
+        var rejected = Wait.For<JoinRequestRejectedData>(x => guest.JoinRequestRejected += x, x => guest.JoinRequestRejected -= x);
+        var request = guest.RequestJoinLobbyAsync(lobby.Id);
+        var rec = await received;
+
+        var ex = await Assert.ThrowsAsync<EthernalException>(() => request);
+        Assert.Equal(ErrorCode.LobbyLocked, ex.Error);
+        var rej = await rejected;
+        Assert.Equal(lobby.Id, rej.LobbyId);
+        Assert.Equal(JoinRequestRejectReason.Timeout, rej.Reason);
+        var w = await withdrawn;
+        Assert.Equal(lobby.Id, w.LobbyId);
+        Assert.Equal(rec.RequesterId, w.RequesterId);
+        Assert.Equal(JoinRequestWithdrawReason.Timeout, w.Reason);
+        Assert.Empty((await host.GetJoinRequestsAsync()).Incoming);
+        Assert.Null((await guest.GetJoinRequestsAsync()).Outgoing);
     }
 
     [Fact]

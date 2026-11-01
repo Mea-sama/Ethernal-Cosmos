@@ -586,7 +586,11 @@ export function registerIpcRouting(io: AppServer): void {
         break;
       }
       case 'SAVE_META': {
-        const { userId, gameId, entries } = msg.payload;
+        const { userId, gameId, entries } = msg.payload ?? ({} as Partial<typeof msg.payload>);
+        if (typeof userId !== 'string' || typeof gameId !== 'string' || !Array.isArray(entries)) {
+          console.warn(`[IPC] SAVE_META mit ungültigem Payload in Lobby ${lobbyId} verworfen`);
+          break;
+        }
         if (!lobbyManager.isParticipant(lobbyId, gameId, userId)) {
           console.warn(`[IPC] SAVE_META abgelehnt (${userId}/${gameId}) in Lobby ${lobbyId}`);
           break;

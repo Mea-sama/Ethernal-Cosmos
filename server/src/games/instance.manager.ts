@@ -102,26 +102,12 @@ class InstanceManager {
     );
 
     child.on('message', (raw: unknown) => {
-      const msg = raw as IpcGameToHub;
-      // GET_USER_DATA wird direkt hier behandelt, kein Callback nötig
-      if (msg.type === 'GET_USER_DATA') {
-        const { requestId, userId, gameId } = msg.payload;
-        // Nur Daten von Teilnehmern dieser Lobby und nur für das Spiel der Lobby herausgeben
-        const allowed = lobbyManager.isParticipant(lobby.id, gameId, userId);
-        if (!allowed) console.warn(`[IPC] GET_USER_DATA abgelehnt (${userId}/${gameId}) in Lobby ${lobby.id}`);
-        (allowed ? getAllOwnAsRecord(userId, gameId) : Promise.resolve({} as Record<string, unknown>))
-          .then((data) => {
-            this.sendToInstance(lobby.id, {
-              type: 'USER_DATA_RESPONSE',
-              payload: { requestId, userId, gameId, data },
-            });
-          })
-          .catch((err) =>
-            console.error(`[IPC] GET_USER_DATA fehlgeschlagen (${userId}/${gameId}):`, err)
-          );
-        return;
+      // Ein fehlerhafter Subprocess darf den Hub nie zum Absturz bringen
+      try {
+        this.handleChildMessage(lobby, raw);
+      } catch (err) {
+        console.error(`[IPC] Ungültige Nachricht von Lobby ${lobby.id} verworfen:`, err);
       }
-      this.onMessage?.(lobby.id, msg);
     });
 
     const instance: RunningInstance = {
@@ -169,6 +155,30 @@ class InstanceManager {
   }
 
   // ─── Nachricht an Subprocess senden ──────────────────────────────────────
+
+  private handleChildMessage(lobby: Lobby, raw: unknown): void {
+    if (!raw || typeof raw !== 'object' || typeof (raw as { type?: unknown }).type !== 'string') return;
+    const msg = raw as IpcGameToHub;
+    // GET_USER_DATA wird direkt hier behandelt, kein Callback nötig
+    if (msg.type === 'GET_USER_DATA') {
+      const { requestId, userId, gameId } = msg.payload;
+      // Nur Daten von Teilnehmern dieser Lobby und nur für das Spiel der Lobby herausgeben
+      const allowed = lobbyManager.isParticipant(lobby.id, gameId, userId);
+      if (!allowed) console.warn(`[IPC] GET_USER_DATA abgelehnt (${userId}/${gameId}) in Lobby ${lobby.id}`);
+      (allowed ? getAllOwnAsRecord(userId, gameId) : Promise.resolve({} as Record<string, unknown>))
+        .then((data) => {
+          this.sendToInstance(lobby.id, {
+            type: 'USER_DATA_RESPONSE',
+            payload: { requestId, userId, gameId, data },
+          });
+        })
+        .catch((err) =>
+          console.error(`[IPC] GET_USER_DATA fehlgeschlagen (${userId}/${gameId}):`, err)
+        );
+      return;
+    }
+    this.onMessage?.(lobby.id, msg);
+  }
 
   sendToInstance(lobbyId: string, msg: IpcHubToGame): void {
     const inst = this.instances.get(lobbyId);

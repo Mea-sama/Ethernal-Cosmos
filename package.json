@@ -16,7 +16,8 @@
     "build": "npm run build:shared && npm run build:server && npm run build:sdk",
     "test": "npm run build && vitest run",
     "test:only": "vitest run",
-    "gen:enums": "node scripts/gen-csharp-enums.mjs"
+    "gen:enums": "node scripts/gen-csharp-enums.mjs",
+    "check:conformance": "node scripts/check-conformance.mjs"
   },
   "devDependencies": {
     "ts-node": "^10.9.2",

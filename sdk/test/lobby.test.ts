@@ -1,7 +1,8 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { ErrorCode, JoinRequestRejectReason, LobbyChangeReason, LobbyStatus } from '../src';
 import { startHub, type TestHub } from '../../server/test/helpers/hub';
-import { Fleet, PASSWORD, rejectsWith, sleep } from './helpers';
+import { EthernalClient } from '../src';
+import { Fleet, PASSWORD, Recorder, rejectsWith, sleep } from './helpers';
 
 let hub: TestHub;
 let fleet: Fleet;
@@ -166,8 +167,8 @@ describe('lobbies: host actions', () => {
     // accepted
     const pendingA = a.client.requestJoinLobbyByCode(lobby.inviteCode!);
     const [req] = await host.rec.waitFor('joinRequestReceived', (d: any) => d.requesterId === a.userId);
-    expect(req).toMatchObject({ lobbyId: lobby.id, requesterId: a.userId, username: a.username });
-    expect((await a.rec.waitFor('joinRequestPending'))[0]).toEqual({ lobbyId: lobby.id });
+    expect(req).toMatchObject({ lobbyId: lobby.id, requesterId: a.userId, username: a.username, expiresAt: expect.any(Number) });
+    expect((await a.rec.waitFor('joinRequestPending'))[0]).toEqual({ lobbyId: lobby.id, expiresAt: expect.any(Number) });
     await host.client.respondJoinRequest(a.userId, true);
     expect((await pendingA).id).toBe(lobby.id);
     expect((await a.rec.waitFor('joinRequestAccepted'))[0].lobby.id).toBe(lobby.id);
@@ -185,7 +186,8 @@ describe('lobbies: host actions', () => {
     await host.rec.waitFor('joinRequestReceived', (d: any) => d.requesterId === c.userId);
     await c.client.cancelJoinRequest(lobby.id);
     expect((await pendingC).code).toBe(ErrorCode.JoinRequestNotFound);
-    expect((await host.rec.waitFor('joinRequestWithdrawn', (d: any) => d.requesterId === c.userId))[0].reason).toBe('cancelled');
+    expect((await host.rec.waitFor('joinRequestWithdrawn', (d: any) => d.requesterId === c.userId))[0]).toEqual({ lobbyId: lobby.id, requesterId: c.userId, reason: 'cancelled' });
+    expect((await c.rec.waitFor('joinRequestWithdrawn', (d: any) => d.requesterId === c.userId))[0]).toEqual({ lobbyId: lobby.id, requesterId: c.userId, reason: 'cancelled' });
     expect((await rejectsWith(c.client.cancelJoinRequest(lobby.id))).code).toBe(ErrorCode.JoinRequestNotFound);
 
     // unlock: pending requests end with reason "unlocked", then plain joins work
@@ -254,5 +256,56 @@ describe('session: resume after disconnect', () => {
     await host.rec.updated(LobbyChangeReason.PlayerLeft, (l) => !l.players.some((p: any) => p.userId === guest.userId), 6000);
     await guest.client.login(guest.username, PASSWORD);
     expect((await guest.client.getSessionState()).lobby).toBeUndefined();
+  });
+});
+
+describe('join requests: pull API, timeout, multi-session cancel', () => {
+  let shortHub: TestHub;
+  beforeAll(async () => {
+    shortHub = await startHub({ limits: { joinRequestTimeoutMs: 900 } });
+  });
+  afterAll(async () => {
+    await shortHub.stop();
+  });
+
+  it('getJoinRequests lists incoming (host) and outgoing (requester); times out with joinRequestRejected(timeout)', async () => {
+    fleet = new Fleet(shortHub);
+    const host = await fleet.player('other');
+    const guest = await fleet.player('other');
+    const lobby = await host.client.createLobby({ name: 'timeout' });
+    expect(await host.client.getJoinRequests()).toEqual({ incoming: [] });
+    await host.client.lockLobby();
+
+    const pending = rejectsWith(guest.client.requestJoinLobby(lobby.id));
+    const [recv] = await host.rec.waitFor('joinRequestReceived', (d: any) => d.requesterId === guest.userId);
+    const host1 = await host.client.getJoinRequests();
+    expect(host1.incoming).toEqual([{ lobbyId: lobby.id, requesterId: guest.userId, username: guest.username, expiresAt: recv.expiresAt }]);
+    expect(host1.outgoing).toBeUndefined();
+    const guest1 = await guest.client.getJoinRequests();
+    expect(guest1.incoming).toEqual([]);
+    expect(guest1.outgoing).toMatchObject({ lobbyId: lobby.id, requesterId: guest.userId, expiresAt: recv.expiresAt });
+
+    expect((await pending).code).toBe(ErrorCode.LobbyLocked);
+    expect((await guest.rec.waitFor('joinRequestRejected'))[0]).toEqual({ lobbyId: lobby.id, reason: JoinRequestRejectReason.Timeout });
+    expect((await host.rec.waitFor('joinRequestWithdrawn', (d: any) => d.reason === 'timeout'))[0]).toEqual({ lobbyId: lobby.id, requesterId: guest.userId, reason: 'timeout' });
+    expect((await host.client.getJoinRequests()).incoming).toEqual([]);
+    expect((await guest.client.getJoinRequests()).outgoing).toBeUndefined();
+  });
+
+  it('cancelling on one session is confirmed to the requester\'s other session and rejects its pending promise', async () => {
+    fleet = new Fleet(hub);
+    const host = await fleet.player('other');
+    const guest = await fleet.player('other');
+    const lobby = await host.client.createLobby({ name: 'multi' });
+    await host.client.lockLobby();
+    const second = fleet.track(new EthernalClient({ serverUrl: hub.url, clientType: 'panel' }));
+    const rec2 = new Recorder(second);
+    await second.login(guest.username, PASSWORD);
+
+    const pending = rejectsWith(guest.client.requestJoinLobby(lobby.id));
+    await host.rec.waitFor('joinRequestReceived', (d: any) => d.requesterId === guest.userId);
+    await second.cancelJoinRequest(lobby.id);
+    expect((await pending).code).toBe(ErrorCode.JoinRequestNotFound);
+    expect((await rec2.waitFor('joinRequestWithdrawn'))[0].reason).toBe('cancelled');
   });
 });

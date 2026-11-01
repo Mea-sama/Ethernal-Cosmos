@@ -224,38 +224,151 @@ Legend: ✅ supported · ⚠️ possible with caveats · ❌ not supported witho
 | Spectators in relay games | ⚠️ | No role; model as extra players up to `maxPlayers` |
 | Asynchronous/offline turns | ❌ | No offline messaging/push, no persistent lobbies |
 
-## 12. Test plan & current coverage
+## 12. Test plan & conformance suite
 
-**Existing automation (all require a live server; run via PowerShell scripts at repo root):** `test/security-visibility.ts` (data visibility: same-lobby vs other, covers FEAT-DATA-06), `test/binary-*-app` (binary relay incl. cross-app Node↔C#, load and limit tests; FEAT-COMM-02/04, FEAT-LIMIT), `run-all-tests.ps1`, `run-limit-test.ps1`. **No existing test covers:** lock/join-request flow, host transfer/kick, private-lobby codes, disconnect/takeover behaviour, subprocess lifecycle, REST data CRUD, leaderboard, presence, auth refresh rotation.
+The hub is covered by an executable **conformance suite** (`server/test/conformance/*.test.ts`, run with `npx vitest run server/test/conformance`). Each row below is one test whose title starts with the same ID. The table states the **current (post-rework) expected behaviour**; the older pre-rework quirks listed in the sections above are superseded where the reworked docs (`docs/socket-events.md`, `docs/game-server-protocol.md`, `docs/enums.md`) say otherwise. `npm run check:conformance` fails CI if a row has no test or a test uses an ID that is not listed here; see `docs/conformance.md`.
 
-Proposed tests (expected result = documented behaviour above; failure on a `[QUIRK]/[BUG]` test = the issue got fixed ⇒ update this document):
+Hub-side only: SDK parity is covered by the SDK test suites.
 
-| ID | Scenario | Expected today |
-|---|---|---|
-| TEST-LOBBY-01 | A creates lobby; A creates again | 2nd ⇒ `Du bist bereits in einer Lobby` |
-| TEST-LOBBY-02 | Fill lobby to `maxPlayers`; extra joiner; one leaves | `full` ⇒ `LOBBY_FULL` ⇒ status back to `open` |
-| TEST-LOBBY-03 | Host leaves with 2 others | Host → oldest remaining; `lobbyUpdated` |
-| TEST-LOBBY-04 | Last player leaves | Lobby gone; `listLobbies` no longer shows; (subprocess game) process still alive — QUIRK-LOBBY-03 |
-| TEST-LOBBY-05 | Private lobby: not in `listLobbies`; join by code (lowercase) works | ✔ |
-| TEST-LOBBY-06 | Private lobby ID taken from `presence:list`, then `joinLobby` by ID | **Succeeds** (QUIRK-PRES-01) |
-| TEST-LOBBY-07 | Non-host `kick/transfer/lock` | `NOT_HOST` messages |
-| TEST-LOBBY-08 | Kicked player rejoins immediately | Succeeds (QUIRK-LOBBY-09) |
-| TEST-LOBBY-09 | Member socket killed (no `leaveLobby`) | Removed within ~7 s; `lobbyUpdated`, host transfer if host |
-| TEST-LOBBY-10 | `createLobby` with `settings` of ~500 kB on subprocess game | Spawn failure / ghost lobby (QUIRK-LOBBY-04/05) |
-| TEST-LOBBY-11 | Whitespace-only name `"   "` | Accepted, empty name (QUIRK-LOBBY-06) |
-| TEST-LOBBY-12 | Same user opens second `game` socket while in lobby | Old socket dropped; user left lobby (QUIRK-LOBBY-02) |
-| TEST-JOIN-01 | Lock lobby; second user `requestJoinLobby` | Documented: `joinRequestPending`+host `joinRequestReceived`; **actual: TypeError** (BUG-JOIN-01) |
-| TEST-JOIN-02 | After fix: accept / decline / timeout (15 s) / cancel / requester disconnect / host leaves / unlock while pending | Per FEAT-JOIN-03..05, QUIRK-JOIN-02 |
-| TEST-COMM-01 | `sendToLobby` from 3 clients | Others receive, sender does not |
-| TEST-COMM-02 | `sendToPlayer` to player in other lobby / offline | Error strings per FEAT-COMM-03 |
-| TEST-COMM-03 | Binary 1000 B ok, 1001 B rejected, typeCode 65536 rejected | per FEAT-COMM-02 |
-| TEST-COMM-04 | Panel-socket join then relay from game socket before `getLobbyInfo` | `Du bist in keiner Lobby` (PANEL quirk) |
-| TEST-DATA-01 | PUT without visibility on previously `public` key | becomes `private` (FEAT-DATA-03) |
-| TEST-DATA-02 | Client PUTs `public` score, reads `/leaderboard` | Appears (QUIRK-DATA-01) |
-| TEST-DATA-03 | Visibility matrix: private/lobby/public × self/same-lobby/other/offline | per FEAT-DATA-06 (existing partial test) |
-| TEST-DATA-04 | PATCH 0 / 101 entries; invalid key chars; unknown gameId | 400 / 400 / accepted |
-| TEST-AUTH-01 | Use socket after JWT expiry / logout | Socket stays usable (QUIRK-AUTH-01/02) |
-| TEST-PRES-01 | Presence events across lobby create/join/leave/disconnect | per FEAT-PRES-02/03 |
+| ID | Expected behaviour |
+|---|---|
+| TEST-SESS-01 | hello announces protocol version, session id, capabilities |
+| TEST-SESS-02 | createLobby/listLobbies before registerGame fail with GAME_NOT_REGISTERED (ack form) |
+| TEST-SESS-03 | unknown game id is rejected with UNKNOWN_GAME |
+| TEST-SESS-04 | switching game while in a lobby fails with LEAVE_LOBBY_FIRST, works after leaving |
+| TEST-SESS-05 | without ack, errors arrive as error + errorDetail events |
+| TEST-SESS-06 | registerGame returns the registry entry; getState reflects it |
+| TEST-LOBBY-01 | creating a second lobby while in one fails with ALREADY_IN_LOBBY |
+| TEST-LOBBY-02 | full lobby rejects joiners with LOBBY_FULL; duplicate join and bad codes have stable codes |
+| TEST-LOBBY-03 | host leaves, oldest remaining player becomes host |
+| TEST-LOBBY-04 | last player leaving dissolves the lobby (gone from listLobbies) |
+| TEST-LOBBY-05 | private lobby is hidden from listLobbies; join by code works case-insensitively |
+| TEST-LOBBY-06 | private lobby cannot be joined or requested by ID (LOBBY_PRIVATE); no ID leaks to strangers |
+| TEST-LOBBY-07 | non-host kick/transfer/lock/unlock/setLobbyState are rejected with NOT_HOST |
+| TEST-LOBBY-08 | host kick notifies the victim; there is no ban, an immediate rejoin succeeds |
+| TEST-LOBBY-09 | killed socket keeps the seat during grace (connected:false), then the player is removed and host transferred |
+| TEST-LOBBY-10 | oversized settings → SETTINGS_TOO_LARGE; failed subprocess start leaves no ghost lobby |
+| TEST-LOBBY-11 | names are trimmed; empty/whitespace names are INVALID_INPUT |
+| TEST-LOBBY-12 | a second game socket of the same user takes over (session:replaced), the lobby stays |
+| TEST-LOBBY-13 | lobbies are bound to the registered game; the client cannot choose gameId (GAME_MISMATCH) |
+| TEST-LOBBY-14 | listings only expose publicSettingKeys and never invite codes |
+| TEST-LOBBY-15 | setLobbyState: host only, in_progress locks joining, repeat is INVALID_STATE, closed is final |
+| TEST-LOBBY-16 | lobbyUpdated carries a reason (player_joined, host_transferred) |
+| TEST-JOIN-01 | locked lobby rejects joinLobby (LOBBY_LOCKED); requestJoinLobby → pending, host accepts |
+| TEST-JOIN-02 | decline → requester gets joinRequestRejected(declined); unknown request → JOIN_REQUEST_NOT_FOUND |
+| TEST-JOIN-03 | unanswered request times out: requester gets rejected(timeout), host gets withdrawn(timeout) |
+| TEST-JOIN-04 | cancelJoinRequest notifies host and requester sessions; second cancel → JOIN_REQUEST_NOT_FOUND |
+| TEST-JOIN-05 | requester disconnect withdraws the request for the host |
+| TEST-JOIN-06 | host leaving informs the requester (lobby_closed / host_changed) |
+| TEST-JOIN-07 | getJoinRequests mirrors both sides and carries expiresAt |
+| TEST-JOIN-08 | requestJoinLobby on an unlocked lobby joins immediately; unlock lets joinLobby work again |
+| TEST-COMM-01 | sendToLobby reaches the other members, never the sender |
+| TEST-COMM-02 | sendToPlayer works in-lobby; other-lobby/self/no-lobby have stable error codes |
+| TEST-COMM-03 | binary relay validates type code and size, delivers valid frames |
+| TEST-COMM-04 | JSON relay validates type and size; seq increases monotonically |
+| TEST-COMM-05 | relay is rejected for a client in no lobby even right after joining via another session (NOT_IN_LOBBY) |
+| TEST-RECON-01 | reconnect within grace restores the lobby (hello.lobbyId, session:resumed) and relay works |
+| TEST-RECON-02 | grace expiry removes the player and transfers host; the lobby survives for the rest |
+| TEST-RECON-03 | reconnectGraceMs 0 removes the player immediately |
+| TEST-RECON-04 | takeover by a new session keeps the lobby (session:replaced → session:resumed) |
+| TEST-RECON-05 | subprocess receives PLAYER_DISCONNECT, PLAYER_RECONNECT and (after grace) PLAYER_LEAVE |
+| TEST-RECON-06 | explicit leaveLobby sends PLAYER_LEAVE immediately (no grace) |
+| TEST-DATA-01 | PUT without visibility keeps the existing visibility and bumps the version |
+| TEST-DATA-02 | serverKeys are read-only for clients (REST single+PATCH transactional, socket); subprocess writes via SAVE_META |
+| TEST-DATA-03 | visibility matrix: private never, lobby for lobby-mates, public for everyone |
+| TEST-DATA-04 | validation: unknown game, bad key chars, value size, per-game quota |
+| TEST-DATA-05 | socket parity: setUserData / bulkSetUserData / deleteUserData / getUserData and codes |
+| TEST-DATA-06 | SAVE_META for a game other than the lobby game is discarded |
+| TEST-DATA-07 | leaderboard lists public numeric client keys sorted desc; private keys never appear |
+| TEST-AUTH-01 | socket without refresh gets AUTH_EXPIRED after expiry and is disconnected |
+| TEST-AUTH-02 | auth:refresh keeps the socket alive beyond the original expiry |
+| TEST-AUTH-03 | auth:refresh with another user's token is INVALID_TOKEN |
+| TEST-AUTH-04 | logout disconnects all sockets of the user |
+| TEST-AUTH-05 | logout-all revokes refresh tokens and disconnects sockets |
+| TEST-AUTH-06 | refresh rotation: a reused refresh token is REFRESH_TOKEN_REVOKED |
+| TEST-AUTH-07 | usernames are unique and login is case-insensitive; REST errors carry code + error text |
+| TEST-AUTH-08 | socket connect without / with invalid token fails with UNAUTHENTICATED / INVALID_TOKEN |
+| TEST-LIMIT-01 | socket rate limit answers RATE_LIMITED with retryAfterMs in the ack |
+| TEST-LIMIT-02 | HTTP auth rate limit returns 429 RATE_LIMITED |
+| TEST-INFRA-01 | /health and /api/games are reachable; test games are registered |
+| TEST-FRIEND-01 | friend request by name only answers REQUEST_SENT / NO_SUCH_PLAYER (no user enumeration) |
+| TEST-FRIEND-02 | accept: events on both sides, lists, only {userId, username} exposed |
+| TEST-FRIEND-03 | decline: requester only learns "declined" (requestId, user); not friends; request gone |
+| TEST-FRIEND-04 | FRIEND_SILENT_DECLINE suppresses the decline event |
+| TEST-FRIEND-05 | cancel: receiver gets friend:requestCancelled, request and notification vanish |
+| TEST-FRIEND-06 | befriend by userId from the lobby (lobby members only) |
+| TEST-FRIEND-07 | crossing requests (A→B then B→A) auto-accept |
+| TEST-FRIEND-08 | remove friend notifies both; removing again is NOT_FRIENDS |
+| TEST-FRIEND-09 | limits: max friends, max outgoing requests, rate limit on name requests (RATE_LIMITED + retryAfterMs) |
+| TEST-FRIEND-10 | pending requests expire via scheduler and are purged from the DB |
+| TEST-FRIEND-11 | DELETE /social/data cascades friendships, requests, DMs and notifications |
+| TEST-FRIEND-12 | REST parity: request, list, respond, remove; unauthenticated is 401 |
+| TEST-PRES-01 | friends receive friend:presence on lobby changes; strangers receive nothing |
+| TEST-PRES-02 | presence:friends pull (socket + REST) reports online status and gameId |
+| TEST-PRES-03 | invisible appears offline (no gameId/lobby); status changes push; invalid status INVALID_INPUT |
+| TEST-PRES-04 | private lobbies never expose an ID (lobbyJoinable=false); public ones are joinable without an ID |
+| TEST-PRES-05 | lastSeen only when allowed; the reconnect grace period still counts as online |
+| TEST-NOTIF-01 | offline recipient gets a backlog on next login; counts, paging and markRead are consistent |
+| TEST-NOTIF-02 | live notification reaches all sessions; mute suppresses; invalid mute type INVALID_INPUT |
+| TEST-NOTIF-03 | per-user cap drops the oldest notifications |
+| TEST-NOTIF-04 | retention: scheduler purges expired notifications from the DB |
+| TEST-NOTIF-05 | friend_online goes to online friends on offline→online (not to offline friends/strangers); invisible is silent; mute suppresses |
+| TEST-DM-01 | only friends can DM; length and content validated |
+| TEST-DM-02 | live delivery to an online recipient: text unchanged (no markup processing), no extra notification |
+| TEST-DM-03 | offline DM: collapsed notification, unread, dm:delivered on reconnect, dm:read on markRead |
+| TEST-DM-04 | history paginates chronologically with a backwards cursor |
+| TEST-DM-05 | read cursor: dm:unread, dm:open (last 10 + pre-open markers), partial dm:markRead upToSeq, dm:readState push, peerLastReadSeq, receipts off |
+| TEST-DM-06 | unfriend deletes the history for both immediately; re-friending starts empty |
+| TEST-DM-07 | per-conversation cap keeps the newest; flood limit answers RATE_LIMITED |
+| TEST-DM-08 | retention: scheduler deletes messages after DM_RETENTION_DAYS |
+| TEST-DM-09 | typing indicator is ephemeral; REST parity for send/history/list/read |
+| TEST-INVITE-01 | invite an online friend: event + notification; idempotent per (lobby, friend); accept joins even a private lobby |
+| TEST-INVITE-02 | acceptInvite bypasses a lock; invite and notification disappear; reuse is INVITE_NOT_FOUND |
+| TEST-INVITE-03 | declining informs the inviter (lobby:inviteDeclined); only the invitee may decline |
+| TEST-INVITE-04 | error paths: NOT_IN_LOBBY, NOT_FRIENDS, GAME_MISMATCH, FRIEND_OFFLINE, ALREADY_IN_LOBBY, NOT_HOST (inviteHostOnly) |
+| TEST-INVITE-05 | full lobby: invites auto-cancel (lobby_full) and new invites fail with LOBBY_FULL |
+| TEST-INVITE-06 | invites are cancelled when the lobby is left/dissolved or by the inviter (cancelInvite) |
+| TEST-INVITE-07 | invites expire (LOBBY_INVITE_TTL_MS) with reason expired |
+| TEST-INVITE-08 | an unreached invite survives reconnect (notification backlog + lobby:invites pull) |
+| TEST-INVITE-09 | unfriending cancels open invites (reason unfriended) |
+| TEST-INVITE-10 | joinFriend: open → direct join, locked → join request, private → only with invite, other game → GAME_MISMATCH |
+| TEST-INVITE-11 | social:friendLobby: friends only; a private lobby never reveals its ID |
+| TEST-SYNC-01 | social:sync returns a consistent full state; GET /social/sync is identical |
+| TEST-SYNC-02 | etag: unchanged → notModified (socket + REST 304), changed → new etag |
+| TEST-SYNC-03 | every REST pull route returns the same data as its socket event |
+| TEST-GS-01 | registerGame reports serverSupport and regions; default is none |
+| TEST-GS-02 | valid key connects; invalid, foreign-game and revoked keys get INVALID_SERVER_KEY |
+| TEST-GS-03 | game with serverSupport none → GAME_SERVER_NOT_ALLOWED; unknown game → UNKNOWN_GAME |
+| TEST-GS-04 | admin API rejects missing/wrong token (401), refuses games without server support (403), never lists plaintext keys |
+| TEST-GS-05 | required game without a server → NO_GAME_SERVER_AVAILABLE and no ghost lobby |
+| TEST-GS-06 | required with server: lobby bound (lobby:assigned reason=new_lobby), listing exposes only serverBound/region |
+| TEST-GS-07 | optional: serverless without server, bound with one, serverPreference mode none bypasses it |
+| TEST-GS-08 | server rejects or times out: optional → serverless, required → LOBBY_START_FAILED |
+| TEST-GS-09 | capacity, region preference with fallback, and draining decide placement |
+| TEST-GS-10 | hub→server events and server→hub commands (relay, state, setState, setSettings, kick, gameOver) |
+| TEST-GS-11 | a server cannot act on lobbies of another server (NOT_LOBBY_SERVER for every command) |
+| TEST-GS-12 | the server is never a lobby participant |
+| TEST-GS-13 | reconnect with the same serverId within grace resumes (resumed:true + lobbies) |
+| TEST-GS-14 | required lobby of a lost server is closed with gameCrashed after grace; gameAction → SERVER_UNAVAILABLE meanwhile |
+| TEST-GS-15 | same serverId with a new connection replaces the old one (takeover) |
+| TEST-GS-16 | server loss → lobbyUpdated server_lost (serverStatus lost); resume → server_resumed (serverStatus ok) |
+| TEST-GS-17 | after grace the lobby is rebound to another server: lobby:assigned reason=server_rebound (+previousServerId, lostAt), members get server_rebound |
+| TEST-GS-18 | optional lobby without a replacement server continues serverless (server cleared, reason server_lost) |
+| TEST-GS-19 | draining marks lobbies (server_draining), refuses new lobbies, and can return to ok |
+| TEST-PROC-01 | subprocess games get a process; READY → gameStarting; gameAction is forwarded as PLAYER_ACTION |
+| TEST-PROC-02 | subprocess crash → gameCrashed with exit code |
+| TEST-PROC-03 | MAX_INSTANCES is enforced (INSTANCE_LIMIT) and a freed slot is reusable once the lobby dissolves |
+| TEST-PROC-04 | lobby settings reach the subprocess as env (LOBBY_SETTINGS) and are size-limited |
+| TEST-SEC-01 | hub secrets (JWT_SECRET, ADMIN_TOKEN) are not in the subprocess environment |
+| TEST-SEC-02 | flooding stdout/stderr does not break the hub or the lobby |
+| TEST-SEC-03 | flooding the IPC channel stays bounded; the hub stays responsive |
+| TEST-SEC-04 | invalid / foreign / oversized SAVE_META is rejected and never crashes the hub |
+| TEST-SEC-05 | malformed IPC messages (unknown type, missing payload) never crash the hub |
+| TEST-LOAD-01 | 60 clients connect, register a game, form lobbies and relay 240 messages without errors |
+| TEST-GENRE-01 | turn-based — host-relayed turns alternate between two players with ordered delivery |
+| TEST-GENRE-02 | realtime/shooter — high-rate JSON and binary relay arrive complete and in order |
+| TEST-GENRE-03 | co-op with game server — server owns state, players act, state and results flow back |
+| TEST-GENRE-04 | lobby + social flow — meet in a lobby, befriend, DM, invite a third friend, who joins |
 
 ## 13. Prioritised findings for follow-up (summary)
 

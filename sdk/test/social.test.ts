@@ -8,7 +8,8 @@ import {
   OwnPresenceStatus,
 } from '../src';
 import { startHub, type TestHub } from '../../server/test/helpers/hub';
-import { Fleet, PASSWORD, befriend, rejectsWith, sleep, uname } from './helpers';
+import { EthernalClient } from '../src';
+import { Fleet, PASSWORD, Recorder, befriend, rejectsWith, sleep, uname } from './helpers';
 
 let hub: TestHub;
 let fleet: Fleet;
@@ -223,7 +224,7 @@ describe('direct messages', () => {
     const conv = (await b.client.listConversations()).find((c) => c.withUserId === a.userId);
     expect(conv).toMatchObject({ username: a.username, unreadCount: 2, lastMessage: { text: 'world' } });
 
-    expect(await b.client.markConversationRead(a.userId)).toBe(2);
+    expect(await b.client.markConversationRead(a.userId)).toMatchObject({ withUserId: a.userId, marked: 2, lastReadSeq: m2.seq, unreadCount: 0, totalUnread: 0 });
     const [read] = await a.rec.waitFor('dm:read', (d: any) => d.byUserId === b.userId);
     expect(read.upToSeq).toBe(m2.seq);
     expect((await b.client.listConversations()).find((c) => c.withUserId === a.userId)?.unreadCount).toBe(0);
@@ -347,5 +348,51 @@ describe('lobby invites and joining friends', () => {
     const stranger = await fleet.player('other', 'is');
     expect((await rejectsWith(stranger.client.getFriendLobby(a.userId))).code).toBe(ErrorCode.NotFriends);
     expect((await rejectsWith(stranger.client.joinFriend(a.userId))).code).toBe(ErrorCode.NotFriends);
+  });
+});
+
+describe('direct messages: read cursor and unread badge', () => {
+  it('getDmUnread, openDmConversation (last 10, marks read), partial markConversationRead, dm:readState, peerLastReadSeq', async () => {
+    fleet = new Fleet(hub);
+    const a = await fleet.player(undefined, 'ra');
+    const b = await fleet.player(undefined, 'rb');
+    await befriend(a, b);
+    const b2 = fleet.track(new EthernalClient({ serverUrl: hub.url, clientType: 'panel' }));
+    const rec2 = new Recorder(b2);
+    await b2.login(b.username, PASSWORD);
+
+    const sent = [];
+    for (let i = 1; i <= 12; i++) sent.push(await a.client.sendDirectMessage(b.userId, `m${i}`));
+    await b.rec.waitFor('dm:received', (m: any) => m.id === sent[11].id);
+
+    const unread = await b.client.getDmUnread();
+    expect(unread.totalUnread).toBe(12);
+    expect(unread.conversations).toEqual([
+      { withUserId: a.userId, unreadCount: 12, firstUnreadSeq: sent[0].seq, lastSeq: sent[11].seq, lastMessageAt: expect.any(Number) },
+    ]);
+    expect((await b.client.listConversations())[0]).toMatchObject({ unreadCount: 12, lastReadSeq: 0 });
+
+    // partial read: first 5 messages
+    const partial = await b.client.markConversationRead(a.userId, sent[4].seq);
+    expect(partial).toMatchObject({ withUserId: a.userId, marked: 5, lastReadSeq: sent[4].seq, unreadCount: 7, totalUnread: 7 });
+    expect((await rec2.waitFor('dm:readState', (d: any) => d.unreadCount === 7))[0]).toMatchObject({ withUserId: a.userId, lastReadSeq: sent[4].seq, totalUnread: 7 });
+    expect((await a.rec.waitFor('dm:read', (d: any) => d.upToSeq === sent[4].seq))[0].byUserId).toBe(b.userId);
+    expect((await b.client.getDmUnread()).conversations[0]).toMatchObject({ unreadCount: 7, firstUnreadSeq: sent[5].seq });
+
+    // open: last 10 messages, state from before opening, then everything is read
+    const opened = await b.client.openDmConversation(a.userId);
+    expect(opened.messages.map((m) => m.text)).toEqual(sent.slice(2).map((m) => m.text));
+    expect(opened).toMatchObject({ lastReadSeq: sent[4].seq, firstUnreadSeq: sent[5].seq, unreadCount: 7 });
+    expect((await rec2.waitFor('dm:readState', (d: any) => d.unreadCount === 0))[0]).toMatchObject({ withUserId: a.userId, lastReadSeq: sent[11].seq, totalUnread: 0 });
+    expect(await b.client.getDmUnread()).toEqual({ conversations: [], totalUnread: 0 });
+    const reopened = await b.client.openDmConversation(a.userId, 3);
+    expect(reopened.messages.map((m) => m.text)).toEqual(['m10', 'm11', 'm12']);
+    expect(reopened).toMatchObject({ lastReadSeq: sent[11].seq, unreadCount: 0 });
+    expect(reopened.firstUnreadSeq).toBeUndefined();
+
+    // the sender sees how far the friend has read
+    const asSender = await a.client.openDmConversation(b.userId);
+    expect(asSender.peerLastReadSeq).toBe(sent[11].seq);
+    expect((await rejectsWith(b.client.openDmConversation(uname('nobody')))).code).toBeTruthy();
   });
 });

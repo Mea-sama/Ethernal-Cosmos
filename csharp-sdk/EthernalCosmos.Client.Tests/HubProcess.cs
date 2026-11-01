@@ -52,7 +52,7 @@ public sealed class HubProcess : IAsyncDisposable
         return port;
     }
 
-    public static async Task<HubProcess> StartAsync(Dictionary<string, string>? env = null)
+    public static async Task<HubProcess> StartAsync(Dictionary<string, string>? env = null, Dictionary<string, object>? limitOverrides = null)
     {
         var root = FindRepoRoot();
         var hubJs = Path.Combine(root, "server", "dist", "index.js");
@@ -80,6 +80,7 @@ public sealed class HubProcess : IAsyncDisposable
             ["authRateLimits"] = new { login = authBig, register = authBig, refresh = authBig },
             ["socketLimits"] = LimitedEvents.ToDictionary(k => k, _ => (object)big),
         };
+        foreach (var (k, v) in limitOverrides ?? []) limits[k] = v;
         await File.WriteAllTextAsync(limitsPath, JsonSerializer.Serialize(limits));
 
         var port = FreePort();

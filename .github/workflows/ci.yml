@@ -15,7 +15,9 @@ jobs:
           node-version: 20
           cache: npm
       - run: npm ci
-      - run: npm test
+      - run: npm run build
+      - run: npm run check:conformance
+      - run: npm run test:only
 
   csharp-sdk:
     runs-on: ubuntu-latest
