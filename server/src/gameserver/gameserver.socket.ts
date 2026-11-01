@@ -27,6 +27,8 @@ import {
   validateMessageType,
   type AppServer,
 } from '../lobby/lobby.socket';
+import { applyOps, bulkSet, getAllOwn } from '../user-data/userdata.service';
+import { KeySchema, OpsSchema, VisibilitySchema } from '../user-data/userdata.schemas';
 import { setGameServerHooks } from './hooks';
 import { verifyGameServerKey } from './keys.service';
 
@@ -223,12 +225,12 @@ function ownLobby(socket: ServerSocket, lobbyId: unknown): Lobby {
 function onServerEvent(
   socket: ServerSocket,
   event: keyof GameServerToHubEvents,
-  fn: (data: any) => Record<string, unknown> | void,
+  fn: (data: any) => Record<string, unknown> | void | Promise<Record<string, unknown> | void>,
 ): void {
-  (socket as unknown as { on(e: string, l: (...a: unknown[]) => void): void }).on(event, (...args: unknown[]) => {
+  (socket as unknown as { on(e: string, l: (...a: unknown[]) => void): void }).on(event, async (...args: unknown[]) => {
     const ack = typeof args[args.length - 1] === 'function' ? (args.pop() as (r: unknown) => void) : undefined;
     try {
-      const result = fn(args[0]);
+      const result = await fn(args[0]);
       ack?.({ ok: true, ...(result ?? {}) });
     } catch (err) {
       const hubErr = isHubError(err) ? err : err instanceof z.ZodError ? new HubError('INVALID_INPUT') : new HubError('INTERNAL');
@@ -237,6 +239,20 @@ function onServerEvent(
     }
   });
 }
+
+/** Ein Server darf nur für (frühere) Mitglieder seiner Lobbys schreiben (bis 60 s nach Lobby-Ende). */
+function dataTarget(socket: ServerSocket, data: unknown): { lobbyId: string; userId: string } {
+  const { lobbyId, userId } = z.object({ lobbyId: z.string().min(1).max(64), userId: z.string().min(1).max(64) }).passthrough().parse(data);
+  if (!lobbyManager.serverMayWriteFor(socket.data.serverId, socket.data.gameId, lobbyId, userId)) throw new HubError('NOT_ALLOWED');
+  return { lobbyId, userId };
+}
+
+const ServerEntrySchema = z.object({
+  key: KeySchema,
+  value: z.unknown(),
+  visibility: VisibilitySchema.optional(),
+  writeScope: z.enum(['client', 'server']).optional(),
+});
 
 // ─── Registrierung ────────────────────────────────────────────────────────────
 
@@ -388,6 +404,47 @@ export function registerGameServerNamespace(io: AppServer): void {
       lobbyManager.setStatus(lobbyId, 'closed');
       broadcastLobbyChange(io, lobby, 'state_changed');
       scheduleClosedRelease(io, lobbyId);
+    });
+
+    // ── Spielerdaten (server-authoritativ, #55) ──
+    onServerEvent(socket, 'data:set', async (data) => {
+      const { userId } = dataTarget(socket, data);
+      const e = ServerEntrySchema.parse(data);
+      await bulkSet(userId, hs.gameId, [e], 'server', { writtenBy: hs.serverId });
+    });
+
+    onServerEvent(socket, 'data:bulk', async (data) => {
+      const { userId } = dataTarget(socket, data);
+      const { entries } = z.object({ entries: z.array(ServerEntrySchema).min(1).max(100) }).passthrough().parse(data);
+      await bulkSet(userId, hs.gameId, entries, 'server', { writtenBy: hs.serverId });
+    });
+
+    onServerEvent(socket, 'data:increment', async (data) => {
+      const { userId } = dataTarget(socket, data);
+      const { key, by, visibility, writeScope } = z
+        .object({ key: KeySchema, by: z.number().finite(), visibility: VisibilitySchema.optional(), writeScope: z.enum(['client', 'server']).optional() })
+        .passthrough()
+        .parse(data);
+      const [result] = await applyOps(userId, hs.gameId, [{ op: 'increment', key, by, visibility, writeScope }], 'server', { writtenBy: hs.serverId });
+      return { ...result };
+    });
+
+    onServerEvent(socket, 'data:setIf', async (data) => {
+      const { userId } = dataTarget(socket, data);
+      const { expectedVersion, ...rest } = ServerEntrySchema.extend({ expectedVersion: z.number().int().min(0) }).passthrough().parse(data);
+      const [result] = await applyOps(userId, hs.gameId, [{ op: 'setIf', key: rest.key, value: rest.value, expectedVersion, visibility: rest.visibility, writeScope: rest.writeScope }], 'server', { writtenBy: hs.serverId });
+      return { ...result };
+    });
+
+    onServerEvent(socket, 'data:transact', async (data) => {
+      const { userId } = dataTarget(socket, data);
+      const { ops } = z.object({ ops: OpsSchema }).passthrough().parse(data);
+      return { results: await applyOps(userId, hs.gameId, ops, 'server', { writtenBy: hs.serverId }) };
+    });
+
+    onServerEvent(socket, 'data:get', async (data) => {
+      const { userId } = dataTarget(socket, data);
+      return { entries: await getAllOwn(userId, hs.gameId) };
     });
 
     onServerEvent(socket, 'server:status', (data) => {

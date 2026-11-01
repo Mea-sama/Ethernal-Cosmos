@@ -31,7 +31,10 @@ export class LobbyManager {
   private participants = new Map<string, Set<string>>();
 
   /** Aufgelöste Lobbys, deren Teilnehmer noch kurz Daten-IPC nutzen dürfen (z.B. finales SAVE_META) */
-  private recent = new Map<string, { gameId: string; participants: Set<string>; until: number }>();
+  private recent = new Map<string, { gameId: string; serverId?: string; participants: Set<string>; until: number; serverUntil: number }>();
+
+  /** lobbyId → Zeitpunkt, an dem die Lobby geschlossen wurde (Schreibfrist für Game-Server) */
+  private closedAt = new Map<string, number>();
 
   /** lobbyId → gekickte User (weicher Kick, lebt und stirbt mit der Lobby) */
   private kicked = new Map<string, Set<string>>();
@@ -216,8 +219,16 @@ export class LobbyManager {
     if (lobby.inviteCode) this.inviteCodeIndex.delete(lobby.inviteCode);
     const members = this.participants.get(lobbyId);
     this.participants.delete(lobbyId);
+    const closedAt = this.closedAt.get(lobbyId);
+    this.closedAt.delete(lobbyId);
     if (members) {
-      this.recent.set(lobbyId, { gameId: lobby.gameId, participants: members, until: Date.now() + RECENT_LOBBY_TTL_MS });
+      this.recent.set(lobbyId, {
+        gameId: lobby.gameId,
+        serverId: lobby.server?.serverId,
+        participants: members,
+        until: Date.now() + RECENT_LOBBY_TTL_MS,
+        serverUntil: (closedAt ?? Date.now()) + RECENT_LOBBY_TTL_MS,
+      });
     }
     console.log(`[Lobby] Aufgelöst: "${lobby.name}" (${lobbyId})`);
   }
@@ -240,6 +251,7 @@ export class LobbyManager {
     const lobby = this.lobbies.get(lobbyId);
     if (!lobby || lobby.status === 'closed') return;
     lobby.status = status;
+    if (status === 'closed') this.closedAt.set(lobbyId, Date.now());
   }
 
   setServer(lobbyId: string, server: Lobby['server'] | undefined): void {
@@ -319,6 +331,22 @@ export class LobbyManager {
       return false;
     }
     return recent.gameId === gameId && recent.participants.has(userId);
+  }
+
+  /**
+   * Darf dieser Game-Server Daten für den User schreiben? Nur für (frühere) Mitglieder einer an ihn
+   * gebundenen Lobby seines Spiels, bis RECENT_LOBBY_TTL_MS nach dem Schließen der Lobby.
+   */
+  serverMayWriteFor(serverId: string, gameId: string, lobbyId: string, userId: string): boolean {
+    const lobby = this.lobbies.get(lobbyId);
+    if (lobby) {
+      if (lobby.server?.serverId !== serverId || lobby.gameId !== gameId || !this.participants.get(lobbyId)?.has(userId)) return false;
+      const closedAt = this.closedAt.get(lobbyId);
+      return closedAt === undefined || Date.now() <= closedAt + RECENT_LOBBY_TTL_MS;
+    }
+    const recent = this.recent.get(lobbyId);
+    if (!recent || recent.serverUntil < Date.now()) return false;
+    return recent.serverId === serverId && recent.gameId === gameId && recent.participants.has(userId);
   }
 
   // ─── Host-Aktionen ─────────────────────────────────────────────────────────

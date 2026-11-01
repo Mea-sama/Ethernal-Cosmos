@@ -54,7 +54,7 @@ export async function startHub(opts: { limits?: Record<string, unknown>; env?: R
       socketLimits: Object.fromEntries(
         ['createLobby', 'joinLobby', 'joinLobbyByCode', 'kickPlayer', 'unkickPlayer', 'transferHost', 'lockLobby', 'unlockLobby', 'requestJoinLobby',
          'requestJoinLobbyByCode', 'cancelJoinRequest', 'respondJoinRequest', 'listLobbies', 'getLobbyInfo', 'presenceList', 'getUserData',
-         'getPlayerData', 'gameAction', 'registerGame', 'sessionState', 'setUserData', 'bulkSetUserData', 'deleteUserData', 'leaveLobby',
+         'getPlayerData', 'gameAction', 'registerGame', 'sessionState', 'setUserData', 'bulkSetUserData', 'deleteUserData', 'incrementUserData', 'setUserDataIf', 'transactUserData', 'leaveLobby',
          'friendRequestByName', 'friendRequest', 'friendAction', 'socialRead', 'socialSettings', 'notificationWrite', 'dmSend', 'dmTyping',
          'lobbyInvite', 'lobbyInviteAction', 'authRefresh', 'setLobbyState']
           .map((k) => [k, big])

@@ -2,8 +2,8 @@
 // Ein Game-Server ist ein Dienst, kein Lobby-Teilnehmer: ein Server bedient N Lobbys, eine Lobby hat 0..1 Server.
 
 import type { Ack } from './errors';
-import type { LobbyAssignReason, ServerMode, LobbyChangeReason, LobbyClosedReason, PlayerLeftReason } from './enums';
-import type { Lobby, LobbyStatus } from './index';
+import type { DataWriteScope, DataVisibility, LobbyAssignReason, ServerMode, LobbyChangeReason, LobbyClosedReason, PlayerLeftReason } from './enums';
+import type { Lobby, LobbyStatus, UserDataEntry, UserDataOp, UserDataOpResult } from './index';
 
 /** Handshake (socket.handshake.auth) eines Game-Servers */
 export interface GameServerHandshake {
@@ -41,6 +41,22 @@ export interface ServerPreference {
   region?: string;
 }
 
+/** Ziel eines Daten-Events: der User muss (frühere) Mitglied einer an diesen Server gebundenen Lobby sein */
+export interface GameServerDataTarget {
+  lobbyId: string;
+  userId: string;
+}
+
+/** Ein serverseitig geschriebener Eintrag; `visibility: 'public'` markiert einen Bestenlisten-Key */
+export interface GameServerDataEntry {
+  key: string;
+  value: unknown;
+  /** Fehlt sie, bleibt die bestehende Sichtbarkeit erhalten (neu: 'private') */
+  visibility?: DataVisibility;
+  /** 'server' sperrt den Key für Client-Schreibzugriffe */
+  writeScope?: DataWriteScope;
+}
+
 /** Hub → Game-Server */
 export interface HubToGameServerEvents {
   hello: (data: { serverId: string; gameId: string; resumed: boolean; lobbies: Lobby[] }) => void;
@@ -72,6 +88,18 @@ export interface GameServerToHubEvents {
   'lobby:setSettings': (data: { lobbyId: string; settings: Record<string, unknown> }, ack?: Ack<{ lobby: Lobby }>) => void;
   'lobby:gameOver': (data: { lobbyId: string; result?: unknown }, ack?: Ack) => void;
   'lobby:close': (data: { lobbyId: string }, ack?: Ack) => void;
+  /** Spielerdaten schreiben (Server-Scope, `public` = Bestenlisten-Key); Nicht-Mitglieder ⇒ NOT_ALLOWED */
+  'data:set': (data: GameServerDataTarget & GameServerDataEntry, ack?: Ack) => void;
+  /** Mehrere Keys atomar schreiben (alles oder nichts, max. 100) */
+  'data:bulk': (data: GameServerDataTarget & { entries: GameServerDataEntry[] }, ack?: Ack) => void;
+  /** Atomar erhöhen (fehlender Key = 0); Ack liefert neuen Wert + Version */
+  'data:increment': (data: GameServerDataTarget & { key: string; by: number; visibility?: DataVisibility; writeScope?: DataWriteScope }, ack?: Ack<{ key: string; value: number; version: number }>) => void;
+  /** Compare-and-set; bei Konflikt `error.code = VERSION_CONFLICT`, `error.data.current` */
+  'data:setIf': (data: GameServerDataTarget & GameServerDataEntry & { expectedVersion: number }, ack?: Ack<{ key: string; value: unknown; version: number }>) => void;
+  /** Alles-oder-nichts-Transaktion aus set/increment/setIf/delete (max. 100) */
+  'data:transact': (data: GameServerDataTarget & { ops: UserDataOp[] }, ack?: Ack<{ results: UserDataOpResult[] }>) => void;
+  /** Alle Daten des Users für dieses Spiel lesen */
+  'data:get': (data: GameServerDataTarget, ack?: Ack<{ entries: UserDataEntry[] }>) => void;
   /** Auslastung/Draining melden */
   'server:status': (data: { draining?: boolean; capacity?: number }, ack?: Ack<{ info: GameServerInfo }>) => void;
 }

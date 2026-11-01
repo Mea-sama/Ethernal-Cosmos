@@ -298,6 +298,18 @@ Request own KV data. Server responds with `userData`.
 
 ---
 
+#### `incrementUserData` / `setUserDataIf` / `transactUserData`
+
+```ts
+socket.emit('incrementUserData', { gameId, key, by: number, visibility? }, ack); // → { key, value, version }
+socket.emit('setUserDataIf',     { gameId, key, value, expectedVersion: number, visibility? }, ack); // → { key, value, version }
+socket.emit('transactUserData',  { gameId, ops: UserDataOp[] }, ack);            // → { results: UserDataOpResult[] }
+```
+
+Atomic counterparts of the REST routes (see `rest-api.md`). On a version mismatch the ack error is `VERSION_CONFLICT` with `error.data.current = { value, version } | null`.
+
+---
+
 #### `getPlayerData`
 
 ```ts
@@ -307,7 +319,7 @@ socket.emit('getPlayerData', {
 });
 ```
 
-Request another player's visible KV data. Server responds with `playerData`.
+Request a player's KV data you may see (self: private/lobby/friends; friend: friends (+ lobby in a shared lobby); lobby-mate: lobby). Everyone else, including unknown players, gets `NOT_ALLOWED`. Server responds with `playerData`.
 
 ---
 

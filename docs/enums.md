@@ -163,7 +163,8 @@ Used in: `UserDataEntry.visibility`, `setUserData`
 |---|---|---|
 | `private` | `DataVisibility.Private` | only the owner |
 | `lobby` | `DataVisibility.Lobby` | owner and lobby members |
-| `public` | `DataVisibility.Public` | everyone (also on leaderboards) |
+| `friends` | `DataVisibility.Friends` | owner and friends |
+| `public` | `DataVisibility.Public` | leaderboard key; only a game server can set it |
 
 ## DataWriteScope
 
@@ -330,3 +331,5 @@ Used in: `errorDetail`, ack errors, REST error `code`
 | `FRIEND_NOT_IN_LOBBY` | `ErrorCode.FriendNotInLobby` |  |
 | `INVITE_NOT_FOUND` | `ErrorCode.InviteNotFound` |  |
 | `MESSAGE_TOO_LONG` | `ErrorCode.MessageTooLong` |  |
+| `NOT_ALLOWED` | `ErrorCode.NotAllowed` |  |
+| `VERSION_CONFLICT` | `ErrorCode.VersionConflict` |  |

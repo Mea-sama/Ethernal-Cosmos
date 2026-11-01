@@ -42,6 +42,8 @@ export interface SocialSettings {
   status: OwnPresenceStatus;
   showLastSeen: boolean;
   dmReadReceipts: boolean;
+  /** Erscheint in Bestenlisten (Standard true); der eigene Rang (`me`) bleibt sichtbar */
+  leaderboardVisible: boolean;
   mutedNotificationTypes: NotificationType[];
 }
 

@@ -100,6 +100,9 @@ const defaultLimits: ServerLimits = {
     setUserData: { refillPerSecond: 8, burst: 30 },
     bulkSetUserData: { refillPerSecond: 2, burst: 6 },
     deleteUserData: { refillPerSecond: 8, burst: 30 },
+    incrementUserData: { refillPerSecond: 8, burst: 30 },
+    setUserDataIf: { refillPerSecond: 8, burst: 30 },
+    transactUserData: { refillPerSecond: 2, burst: 6 },
     leaveLobby: { refillPerSecond: 1, burst: 5 },
     // Social
     friendRequestByName: { refillPerSecond: 0.1, burst: 10 },

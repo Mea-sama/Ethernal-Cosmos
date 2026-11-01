@@ -107,7 +107,8 @@ export type JoinRequestWithdrawReason = (typeof JoinRequestWithdrawReason)[keyof
 export const DataVisibility = {
   Private: 'private', // only the owner
   Lobby: 'lobby', // owner and lobby members
-  Public: 'public', // everyone (also on leaderboards)
+  Friends: 'friends', // owner and friends
+  Public: 'public', // leaderboard key; only a game server can set it
 } as const;
 export type DataVisibility = (typeof DataVisibility)[keyof typeof DataVisibility];
 
@@ -242,5 +243,7 @@ export const ErrorCode = {
   FriendNotInLobby: 'FRIEND_NOT_IN_LOBBY',
   InviteNotFound: 'INVITE_NOT_FOUND',
   MessageTooLong: 'MESSAGE_TOO_LONG',
+  NotAllowed: 'NOT_ALLOWED',
+  VersionConflict: 'VERSION_CONFLICT',
 } as const;
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];

@@ -5,8 +5,8 @@ import { verifyToken, setSessionTerminator } from '../auth/auth.service';
 import { lobbyManager } from './lobby.manager';
 import { getGame } from '../games/game.registry';
 import { instanceManager } from '../games/instance.manager';
-import { bulkSet, deleteKey, getAllOwn, getVisibleData, writeEntries } from '../user-data/userdata.service';
-import { GameIdSchema, KeySchema, VisibilitySchema, BulkEntriesSchema } from '../user-data/userdata.schemas';
+import { applyOps, bulkSet, deleteKey, getAllOwn, getPlayerData, writeEntries } from '../user-data/userdata.service';
+import { GameIdSchema, KeySchema, VisibilitySchema, BulkEntriesSchema, OpsSchema } from '../user-data/userdata.schemas';
 import { serverLimits } from '../config/limits';
 import { HubError, isHubError } from '../errors';
 import { sessionManager, userRoom, gameRoom } from '../session/session.manager';
@@ -996,6 +996,29 @@ export function registerLobbyHandlers(io: AppServer): void {
       await writeEntries(userId, gameId, entries, 'client');
     });
 
+    handle(socket, 'incrementUserData', { limit: 'incrementUserData' }, async (data) => {
+      const { gameId, key, by, visibility } = parseInput(
+        z.object({ gameId: GameIdSchema, key: KeySchema, by: z.number().finite(), visibility: VisibilitySchema.optional() }),
+        data,
+      );
+      const [result] = await applyOps(userId, gameId, [{ op: 'increment', key, by, visibility }], 'client');
+      return { ...result };
+    });
+
+    handle(socket, 'setUserDataIf', { limit: 'setUserDataIf' }, async (data) => {
+      const { gameId, key, value, expectedVersion, visibility } = parseInput(
+        z.object({ gameId: GameIdSchema, key: KeySchema, value: z.unknown(), expectedVersion: z.number().int().min(0), visibility: VisibilitySchema.optional() }),
+        data,
+      );
+      const [result] = await applyOps(userId, gameId, [{ op: 'setIf', key, value, expectedVersion, visibility }], 'client');
+      return { ...result };
+    });
+
+    handle(socket, 'transactUserData', { limit: 'transactUserData' }, async (data) => {
+      const { gameId, ops } = parseInput(z.object({ gameId: GameIdSchema, ops: OpsSchema }), data);
+      return { results: await applyOps(userId, gameId, ops, 'client') };
+    });
+
     handle(socket, 'deleteUserData', { limit: 'deleteUserData' }, async (data) => {
       const { gameId, key } = parseInput(z.object({ gameId: GameIdSchema, key: KeySchema }), data);
       await deleteKey(userId, gameId, key, 'client');
@@ -1008,10 +1031,7 @@ export function registerLobbyHandlers(io: AppServer): void {
         new HubError('INVALID_INPUT', 'Ungültige Spiel-ID'),
       );
       if (!getGame(gameId)) throw new HubError('UNKNOWN_GAME');
-      const requesterLobby = lobbyManager.getLobbyByUserId(userId);
-      const targetLobby = lobbyManager.getLobbyByUserId(playerId);
-      const inSameLobby = !!(requesterLobby && targetLobby && requesterLobby.id === targetLobby.id);
-      const entries = await getVisibleData(playerId, gameId, inSameLobby);
+      const entries = await getPlayerData(userId, playerId, gameId);
       socket.emit('playerData', { playerId, gameId, entries });
       return { playerId, gameId, entries };
     });
