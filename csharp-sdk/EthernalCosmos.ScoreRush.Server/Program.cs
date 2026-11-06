@@ -3,73 +3,42 @@ using System.Numerics;
 using System.Text.Json;
 using EthernalCosmos.Client;
 using EthernalCosmos.Client.Models;
+using EthernalCosmos.ScoreRush.Server;
 using EthernalCosmos.ScoreRush.Shared;
 
-var argsMap = ParseArgs(args);
-var serverUrl = Arg(argsMap, "serverUrl", "http://127.0.0.1:12346");
-var gameId = Arg(argsMap, "gameId", ScoreRushGame.GameId);
-var serverKey = Arg(argsMap, "serverKey", "");
-var serverId = Arg(argsMap, "serverId", "score-rush-server-1");
-var region = Arg(argsMap, "region", "eu");
-var capacity = ArgInt(argsMap, "capacity", 24);
-
-if (string.IsNullOrWhiteSpace(serverKey))
+var startup = ScoreRushServerStartup.ValidateArgs(args);
+if (!startup.IsValid)
 {
-    Console.WriteLine("Missing --serverKey. Example: dotnet run --project csharp-sdk/EthernalCosmos.ScoreRush.Server -- --serverKey esk_...");
+    Console.WriteLine(startup.Message);
+    WaitForManualExit();
     return 2;
 }
 
-var options = new GameServerClientOptions
+try
 {
-    ServerUrl = serverUrl,
-    ServerKey = serverKey,
-    GameId = gameId,
-    ServerId = serverId,
-    Region = region,
-    Capacity = capacity,
-    Version = "0.1.0",
-};
-
-await using var gs = new GameServerClient(options);
-var app = new ScoreRushServerApp(gs);
-await app.RunAsync();
-return 0;
-
-static Dictionary<string, string> ParseArgs(string[] raw)
+    await using var gs = new GameServerClient(startup.Options!);
+    var app = new ScoreRushServerApp(gs);
+    await app.RunAsync();
+    return 0;
+}
+catch (Exception ex)
 {
-    var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-    for (var i = 0; i < raw.Length; i++)
-    {
-        var token = raw[i];
-        if (!token.StartsWith("--", StringComparison.Ordinal)) continue;
-        var key = token[2..];
-        string value;
-        var eq = key.IndexOf('=');
-        if (eq >= 0)
-        {
-            value = key[(eq + 1)..];
-            key = key[..eq];
-        }
-        else if (i + 1 < raw.Length && !raw[i + 1].StartsWith("--", StringComparison.Ordinal))
-        {
-            value = raw[++i];
-        }
-        else
-        {
-            value = "true";
-        }
-
-        map[key] = value;
-    }
-
-    return map;
+    Console.WriteLine($"Score Rush server failed to start: {ex.Message}");
+    Console.WriteLine("This window will stay open so you can inspect the error and close it manually.");
+    WaitForManualExit();
+    return 1;
 }
 
-static string Arg(IReadOnlyDictionary<string, string> argsMap, string key, string fallback) =>
-    argsMap.TryGetValue(key, out var value) ? value : fallback;
+static void WaitForManualExit()
+{
+    if (!Environment.UserInteractive)
+    {
+        return;
+    }
 
-static int ArgInt(IReadOnlyDictionary<string, string> argsMap, string key, int fallback) =>
-    argsMap.TryGetValue(key, out var value) && int.TryParse(value, out var parsed) ? parsed : fallback;
+    Console.WriteLine("Press Enter to exit.");
+    Console.ReadLine();
+}
 
 internal sealed class ScoreRushServerApp(GameServerClient client)
 {

@@ -12,6 +12,9 @@ if (-not $env:NODE_ENV) {
 if (-not $env:JWT_SECRET) {
     $env:JWT_SECRET = "dev-local-only-change-me"
 }
+if (-not $env:ADMIN_TOKEN) {
+    $env:ADMIN_TOKEN = "admin-test"
+}
 if (-not $env:ALLOWED_ORIGINS) {
     $origins = @(
         "https://mea-sama.duckdns.org:12346",
@@ -23,6 +26,9 @@ if (-not $env:ALLOWED_ORIGINS) {
         "http://127.0.0.1:3002"
     )
     $env:ALLOWED_ORIGINS = ($origins -join ',')
+}
+if (-not $env:ETHERNAL_HUB_URL) {
+    $env:ETHERNAL_HUB_URL = "http://127.0.0.1:12348"
 }
 
 Write-Output "Baue Server..."

@@ -17,6 +17,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\EthernalCosmos.Client\EthernalCosmos.Client.csproj" />
+    <ProjectReference Include="..\EthernalCosmos.ScoreRush.Server\EthernalCosmos.ScoreRush.Server.csproj" />
   </ItemGroup>
 
 </Project>

@@ -11,6 +11,7 @@ csharp-sdk/**/obj/
 
 # Environment
 .env
+.secrets/
 
 # Process files
 *.pid
