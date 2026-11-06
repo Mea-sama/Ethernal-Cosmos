@@ -1,4 +1,6 @@
 <Solution>
   <Project Path="EthernalCosmos.Client/EthernalCosmos.Client.csproj" />
   <Project Path="EthernalCosmos.Client.Tests/EthernalCosmos.Client.Tests.csproj" />
+  <Project Path="EthernalCosmos.ScoreRush.Server/EthernalCosmos.ScoreRush.Server.csproj" />
+  <Project Path="EthernalCosmos.ScoreRush.Client/EthernalCosmos.ScoreRush.Client.csproj" />
 </Solution>

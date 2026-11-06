@@ -16,6 +16,16 @@ import type { GameInfo } from '@ethernal/shared';
 const EXTERNAL: Omit<GameInfo, 'hosted'>[] = [
   // Einträge hier hinzufügen:
   // { id: 'my-chess-app', name: 'My Chess App', description: 'Externe Schach-App', maxPlayers: 2, link: 'https://github.com/...' },
+  {
+    id: 'score-rush-2p',
+    name: 'Score Rush 2P',
+    description: 'Raylib C# mini game with authoritative game server and leaderboard-backed rounds.',
+    maxPlayers: 2,
+    serverSupport: 'required',
+    regions: ['eu', 'us'],
+    reconnectGraceMs: 120_000,
+    link: 'https://github.com/Mea-sama/Ethernal-Cosmos'
+  },
   { id: 'my-tester-app', name: 'My Test App', description: 'External Testing Application', maxPlayers: 4, link: 'https://github.com/your-repo' }
 ];
 
