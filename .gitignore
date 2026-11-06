@@ -15,6 +15,9 @@ csharp-sdk/**/obj/
 # Process files
 *.pid
 
+# Tests and logs
+test/
+
 # Caddy — logs, certificates, and runtime data
 caddy/*.log
 caddy/*.log.gz
